@@ -1,0 +1,245 @@
+import enum
+from datetime import date, datetime
+from typing import Optional
+
+from sqlalchemy import (
+    Date,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    func,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Channel(str, enum.Enum):
+    email = "email"
+    whatsapp = "whatsapp"
+    linkedin = "linkedin"
+    facebook = "facebook"
+    instagram = "instagram"
+
+
+class Direction(str, enum.Enum):
+    inbound = "inbound"
+    outbound = "outbound"
+
+
+class HandledBy(str, enum.Enum):
+    agent = "agent"
+    human = "human"
+
+
+class InteractionStatus(str, enum.Enum):
+    draft = "draft"
+    approved = "approved"
+    sent = "sent"
+    rejected = "rejected"
+
+
+class LeadScoreLabel(str, enum.Enum):
+    HOT = "HOT"
+    WARM = "WARM"
+    COLD = "COLD"
+
+
+class QuotationStatus(str, enum.Enum):
+    draft = "draft"
+    approved = "approved"
+    sent = "sent"
+    expired = "expired"
+
+
+class ExportStatus(str, enum.Enum):
+    pending = "pending"
+    shipped = "shipped"
+    delivered = "delivered"
+    cancelled = "cancelled"
+
+
+class ConsentStatus(str, enum.Enum):
+    unknown = "unknown"
+    granted = "granted"
+    denied = "denied"
+
+
+class EventType(str, enum.Enum):
+    birthday = "birthday"
+    national_day = "national_day"
+    follow_up = "follow_up"
+    promotion_congrats = "promotion_congrats"
+
+
+class ScheduledEventStatus(str, enum.Enum):
+    pending = "pending"
+    draft_created = "draft_created"
+    completed = "completed"
+    skipped = "skipped"
+
+
+class Buyer(Base):
+    __tablename__ = "buyers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    website_url: Mapped[Optional[str]] = mapped_column(String(512))
+    country: Mapped[Optional[str]] = mapped_column(String(100))
+    industry: Mapped[Optional[str]] = mapped_column(String(255))
+    linkedin_company_url: Mapped[Optional[str]] = mapped_column(String(512))
+    source: Mapped[Optional[str]] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    contacts: Mapped[list["Contact"]] = relationship(back_populates="buyer")
+    export_history: Mapped[list["ExportHistory"]] = relationship(back_populates="buyer")
+    lead_scores: Mapped[list["LeadScore"]] = relationship(back_populates="buyer")
+    quotations: Mapped[list["Quotation"]] = relationship(back_populates="buyer")
+
+
+class Contact(Base):
+    __tablename__ = "contacts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    buyer_id: Mapped[int] = mapped_column(ForeignKey("buyers.id"), nullable=False)
+    full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    designation: Mapped[Optional[str]] = mapped_column(String(255))
+    email: Mapped[Optional[str]] = mapped_column(String(255))
+    phone: Mapped[Optional[str]] = mapped_column(String(50))
+    linkedin_profile_url: Mapped[Optional[str]] = mapped_column(String(512))
+    nationality: Mapped[Optional[str]] = mapped_column(String(100))
+    date_of_birth: Mapped[Optional[date]] = mapped_column(Date)
+    preferred_language: Mapped[Optional[str]] = mapped_column(String(50), default="en")
+    consent_status: Mapped[ConsentStatus] = mapped_column(
+        Enum(ConsentStatus), default=ConsentStatus.unknown, nullable=False
+    )
+    data_source: Mapped[Optional[str]] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    buyer: Mapped["Buyer"] = relationship(back_populates="contacts")
+    interactions: Mapped[list["Interaction"]] = relationship(back_populates="contact")
+    scheduled_events: Mapped[list["ScheduledEvent"]] = relationship(back_populates="contact")
+
+
+class Product(Base):
+    __tablename__ = "products"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    category: Mapped[Optional[str]] = mapped_column(String(100))
+    spec_sheet: Mapped[Optional[dict]] = mapped_column(JSONB)
+    price_tiers: Mapped[Optional[dict]] = mapped_column(JSONB)
+    moq: Mapped[Optional[str]] = mapped_column(String(100))
+    packaging_options: Mapped[Optional[dict]] = mapped_column(JSONB)
+    certifications: Mapped[Optional[dict]] = mapped_column(JSONB)
+
+    export_history: Mapped[list["ExportHistory"]] = relationship(back_populates="product")
+    quotations: Mapped[list["Quotation"]] = relationship(back_populates="product")
+
+
+class ExportHistory(Base):
+    __tablename__ = "export_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    buyer_id: Mapped[int] = mapped_column(ForeignKey("buyers.id"), nullable=False)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    order_date: Mapped[date] = mapped_column(Date, nullable=False)
+    quantity: Mapped[Optional[float]] = mapped_column(Numeric(12, 2))
+    unit_price: Mapped[Optional[float]] = mapped_column(Numeric(12, 2))
+    destination_port: Mapped[Optional[str]] = mapped_column(String(255))
+    incoterms: Mapped[Optional[str]] = mapped_column(String(20))
+    status: Mapped[ExportStatus] = mapped_column(Enum(ExportStatus), default=ExportStatus.pending)
+
+    buyer: Mapped["Buyer"] = relationship(back_populates="export_history")
+    product: Mapped["Product"] = relationship(back_populates="export_history")
+
+
+class Interaction(Base):
+    __tablename__ = "interactions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id"), nullable=False)
+    channel: Mapped[Channel] = mapped_column(Enum(Channel), nullable=False)
+    direction: Mapped[Direction] = mapped_column(Enum(Direction), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    subject: Mapped[Optional[str]] = mapped_column(String(500))
+    sentiment: Mapped[Optional[str]] = mapped_column(String(50))
+    language: Mapped[Optional[str]] = mapped_column(String(50))
+    handled_by: Mapped[HandledBy] = mapped_column(Enum(HandledBy), default=HandledBy.agent)
+    status: Mapped[InteractionStatus] = mapped_column(
+        Enum(InteractionStatus), default=InteractionStatus.draft
+    )
+    approved_by: Mapped[Optional[str]] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    contact: Mapped["Contact"] = relationship(back_populates="interactions")
+
+
+class LeadScore(Base):
+    __tablename__ = "lead_scores"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    buyer_id: Mapped[int] = mapped_column(ForeignKey("buyers.id"), nullable=False)
+    score: Mapped[LeadScoreLabel] = mapped_column(Enum(LeadScoreLabel), nullable=False)
+    reasoning: Mapped[str] = mapped_column(Text, nullable=False)
+    score_factors: Mapped[Optional[dict]] = mapped_column(JSONB)
+    scored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    buyer: Mapped["Buyer"] = relationship(back_populates="lead_scores")
+
+
+class Quotation(Base):
+    __tablename__ = "quotations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    buyer_id: Mapped[int] = mapped_column(ForeignKey("buyers.id"), nullable=False)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    quantity: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    unit_price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    incoterms: Mapped[Optional[str]] = mapped_column(String(20))
+    validity_date: Mapped[Optional[date]] = mapped_column(Date)
+    status: Mapped[QuotationStatus] = mapped_column(Enum(QuotationStatus), default=QuotationStatus.draft)
+    pdf_path: Mapped[Optional[str]] = mapped_column(String(512))
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    buyer: Mapped["Buyer"] = relationship(back_populates="quotations")
+    product: Mapped["Product"] = relationship(back_populates="quotations")
+
+
+class ScheduledEvent(Base):
+    __tablename__ = "scheduled_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id"), nullable=False)
+    event_type: Mapped[EventType] = mapped_column(Enum(EventType), nullable=False)
+    trigger_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[ScheduledEventStatus] = mapped_column(
+        Enum(ScheduledEventStatus), default=ScheduledEventStatus.pending
+    )
+    message_draft: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    contact: Mapped["Contact"] = relationship(back_populates="scheduled_events")
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    entity_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    entity_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(String(100), nullable=False)
+    actor: Mapped[Optional[str]] = mapped_column(String(255))
+    details: Mapped[Optional[dict]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

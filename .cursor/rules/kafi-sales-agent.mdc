@@ -1,0 +1,185 @@
+---
+description: Kafi Commodities Sales Agent — project brief, prospecting pipeline, scoring, upsell/cross-sell
+alwaysApply: true
+---
+
+# Kafi Commodities — International Sales AI Agent
+
+## Client & purpose
+
+Build a **sales co-pilot** (not autopilot) for **Kafi Commodities (Pvt) Ltd** — Pakistani food exporter since 1982. Products include **rice** (Basmati/non-Basmati), **chutney, sauces, pickles**, **Himalayan pink salt** (Essence brand), spices, recipe mixes, honey, and related staples. Markets: Middle East, Europe, Africa, North America, Asia. Certifications: ISO, HACCP, Halal.
+
+**Ideal buyers:** importers, distributors, wholesale food traders, supermarket/retail chains, HORECA suppliers — and **individual traders/importers** (sole proprietors, brokers). Leads can be **companies or individuals**; filter by type, country, product fit, and score.
+
+**Core principle:** Every outbound message (email, WhatsApp, DM) is a **draft** until a human approves via the dashboard.
+
+---
+
+## Repo layout
+
+```
+Sales-Agent/
+├── backend/     # Python FastAPI — api/ → modules/ → integrations/ + db/
+├── frontend/    # React/Vite — src/api/client.ts is the only API layer
+└── run.py       # optional root launcher → backend/run.py
+```
+
+- Start backend: `cd backend && python run.py` (auto-migrates, Supabase session pooler)
+- Start frontend: `cd frontend && npm run dev`
+- DB: PostgreSQL on Supabase (`DATABASE_URL` in `backend/.env`)
+
+---
+
+## End-to-end lead intelligence pipeline
+
+This is how prospecting, analysis, classification, and recommendations work. Implement and extend modules to follow this flow.
+
+### Step 1 — Discover leads (companies + individuals)
+
+**Pluggable data sources** (no single scraper; swap sources without rearchitecting):
+
+| Source | Use for |
+|--------|---------|
+| Manual entry / CRM / business cards | Known contacts |
+| CSV import | Trade shows (Gulfood, etc.), directories |
+| Company website URL | Public research |
+| Trade/import databases (optional paid) | Who imports rice/sauces/salt by country |
+| Official social APIs | Public page posts only |
+| **NOT allowed** | LinkedIn profile scraping, mass unsolicited outreach |
+
+For **individuals**: store as `buyers` (trading name or person name) + `contacts` (person details). Use `buyer_type` when added: `company` | `individual`.
+
+### Step 2 — Research & analyze (Research module)
+
+For each lead, build a structured **BuyerProfile** from:
+
+**A) Website analysis** (`modules/research.py`)
+- Fetch public pages (homepage, products, about, import/export)
+- Respect `robots.txt` before scraping
+- Extract signals: product categories, regions served, certifications (Halal, ISO), import/export language, scale/MOQ hints
+- Output: `website_summary`, `signals[]`
+
+**B) Social media analysis** (public only, official APIs when integrated)
+- Company Facebook/Instagram/LinkedIn **page** activity (not personal profile scraping)
+- Signals: expansion posts, new markets, product launches, hiring in procurement
+- Output: `social_summary`, additional `signals[]`
+
+**C) Purchase / relationship history** (internal DB + optional external)
+- `export_history`: past orders with Kafi (product, qty, value, dates, incoterms)
+- `interactions`: emails/WhatsApp/DMs (recency, frequency, sentiment, buying intent in messages)
+- `quotations`: pending quotes, validity, conversion
+- Optional later: import data APIs for what they import from other countries
+
+**D) Company success / profitability signals** (for upsell priority)
+- Order frequency and lifetime value from `export_history`
+- Order size trends (growing vs declining)
+- Website scale signals (multi-country, large catalog, warehouse/distribution language)
+- Engagement quality (fast replies, senior contact involvement)
+- Use these to rank **which HOT leads deserve premium upsell attention** — not to scrape private financials
+
+### Step 3 — Product fit matching
+
+**Canonical catalog:** `backend/data/kafi_essence_catalog.json` (177 ESSENCE SKUs from order sheet). Loader: `modules/product_catalog.py`. Re-import: `python scripts/import_essence_catalog.py path/to/ESSENCE ORDER SHEET.xlsx`.
+
+**Categories in catalog:** pickles, chutneys, pastes, sauces, himalayan_salt, spices_masala, fried_onion, vermicelli_desserts, rusks, jams_jellies, honey, moringa_wellness, vinegar_water, juices, snacks_ingredients (+ rice when added to sheet).
+
+When researching a lead, match website/social/history text against catalog keywords → `matched_categories`, `matched_products`, `product_fit_score` on BuyerProfile. Use this for HOT/WARM/COLD and cross-sell.
+
+Match lead signals against Kafi **products** table (`spec_sheet`, `category`, `certifications`, `price_tiers`) and ESSENCE catalog JSON:
+
+| Kafi category | Buyer signals to match |
+|---------------|----------------------|
+| Rice | basmati, long grain, IRRI, staple grains, bulk rice |
+| Chutney/sauces/pickles | condiments, ethnic food, Asian/Middle Eastern grocery |
+| Himalayan salt | pink salt, spices, gourmet, Essence brand |
+| Spices/mixes/honey | specialty food, recipe mixes, retail chains |
+
+Output: fit score + which products likely match + gaps (products they don't buy yet → cross-sell).
+
+### Step 4 — Classify HOT / WARM / COLD (`modules/lead_scoring.py`)
+
+Combine **fit** + **engagement** + **history**. Always store **reasoning** and **score_factors** in `lead_scores`.
+
+| Label | Criteria (examples) |
+|-------|---------------------|
+| **HOT** | Strong product fit; active buying intent in messages; recent engagement; past orders; senior contact; operates in target region |
+| **WARM** | Some fit or engagement; no immediate buying signal; worth nurture |
+| **COLD** | Weak product fit; no engagement; wrong industry/region |
+
+Rule-based scoring now; LLM + `prompts/lead_scoring_prompt.md` when `llm_client` is enabled.
+
+### Step 5 — Upsell & cross-sell (`modules/commerce.py`)
+
+**Cross-sell:** Buyer bought product A → recommend complementary products B, C from catalog they haven't ordered. Use `export_history` + product categories. Example: rice buyer → chutney, sauces, salt.
+
+**Upsell:** Same buyer → higher tier packaging, bulk pricing tier, premium grade (e.g. Super Kernel Basmati), or larger MOQ with better unit price. Prioritize buyers with **high lifetime value, repeat orders, and strong company signals**.
+
+Output: `{ product_id, product_name, rationale }` per recommendation. Show in dashboard on buyer profile.
+
+### Step 6 — Communications & approval (`modules/comms_generator.py`)
+
+- Generate email/WhatsApp/DM **drafts** using context: profile, history, score, product fit, upsell/cross-sell suggestions
+- Never auto-send by default
+- Rep reviews in **Approval Queue** → approve/edit/reject → then send via integrations
+
+### Step 7 — Scheduler (`modules/scheduler.py`, `jobs/`)
+
+Daily jobs: birthdays, national days, follow-ups (quotation expiry, post-delivery check-in). All generate **drafts** only. Require `consent_status=granted` for personal outreach (birthdays).
+
+---
+
+## Orchestration (`modules/orchestrator.py`)
+
+| Event | Actions |
+|-------|---------|
+| New lead (company or individual) | Research → score → HOT: notify + suggest quotation; WARM: nurture; COLD: low-frequency check-in |
+| Inbound message | Comms draft → approval queue |
+| Scheduled job | Birthday/national day/follow-up drafts |
+| Manual quotation request | Commerce module → PDF → optional email draft |
+
+---
+
+## Compliance (non-negotiable)
+
+- **No LinkedIn scraping** — official API or CSV import only
+- **No inferring** DOB/nationality from scraped data; `consent_status` on contacts
+- **Official APIs** for WhatsApp/Meta when sending
+- Check `robots.txt` before website fetch
+- Restrict automated cold outreach; prefer warm/existing/opt-in contacts
+- Audit log for AI drafts, human edits, approvals, sends
+
+---
+
+## Architecture rules
+
+```
+api/  →  modules/  →  integrations/ + db/
+```
+
+- `api/` never imports `db.models` or runs queries directly
+- `frontend/src/api/client.ts` — only place that knows backend URLs
+- LLM: stub in `modules/llm_client.py`; prompts in `backend/prompts/`; enable later (Gemini/Claude)
+
+---
+
+## Implementation phases (current priority)
+
+1. **Leads & buyer profile** — score badges, profile page, create lead/contact, product-fit scoring
+2. **Quotations end-to-end** — create UI, PDF download, approval
+3. **Approval loop** — approve → send (Gmail first)
+4. **Scheduler** — follow-ups, consent on all automated outreach
+5. **Compliance** — robots.txt, audit viewer, consent UI
+6. **Integrations** — inbound webhooks, WhatsApp, Meta
+7. **LLM** — replace templates with prompts
+8. **Production** — auth, deploy Railway + Vercel
+
+---
+
+## Key API prefixes
+
+- `/api/leads` — buyers (companies/individuals), research, score, onboard, contacts
+- `/api/quotations` — quotations, products, upsell
+- `/api/interactions` — drafts, approve, reject
+- `/api/jobs` — scheduler triggers
+
+When implementing features, extend existing modules and maintain the pipeline above. Ask for Kafi product CSV and target countries when tuning fit matching and prompts.

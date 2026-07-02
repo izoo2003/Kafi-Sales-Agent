@@ -1,0 +1,89 @@
+import { useCallback, useState } from "react";
+import { AppHeader } from "./components/AppHeader";
+import { ApprovalQueue } from "./pages/ApprovalQueue";
+import { BuyerProfile } from "./pages/BuyerProfile";
+import { LeadsPage } from "./pages/LeadsPage";
+import { QuotationsPage } from "./pages/QuotationsPage";
+import { useDrafts } from "./hooks/useDrafts";
+import { useLeads } from "./hooks/useLeads";
+
+type Tab = "drafts" | "leads" | "quotations";
+
+export default function App() {
+  const [tab, setTab] = useState<Tab>("drafts");
+  const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const { drafts, refresh: refreshDrafts } = useDrafts();
+  const { leads, refresh: refreshLeads } = useLeads();
+
+  const refreshAll = useCallback(() => {
+    setError(null);
+    refreshDrafts();
+    refreshLeads();
+  }, [refreshDrafts, refreshLeads]);
+
+  function handleSelectLead(leadId: number) {
+    setError(null);
+    setSelectedLeadId(leadId);
+  }
+
+  function handleBackFromProfile() {
+    setSelectedLeadId(null);
+    refreshLeads();
+  }
+
+  const tabs: { id: Tab; label: string; count: number }[] = [
+    { id: "drafts", label: "Approval Queue", count: drafts.length },
+    { id: "leads", label: "Leads", count: leads.length },
+    { id: "quotations", label: "Product outreach", count: 0 },
+  ];
+
+  return (
+    <div className="min-h-screen">
+      <AppHeader onRefresh={refreshAll} />
+
+      <main className="max-w-6xl mx-auto px-6 py-8">
+        {error && (
+          <div className="mb-6 p-4 rounded-lg bg-red-500/10 border border-red-500/30 text-red-200 text-sm">
+            {error}
+            <p className="mt-1 text-red-300/70">Is the backend running? (python run.py)</p>
+          </div>
+        )}
+
+        <nav className="flex gap-2 mb-8">
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => {
+                setTab(t.id);
+                if (t.id !== "leads") setSelectedLeadId(null);
+              }}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
+                tab === t.id
+                  ? "bg-emerald-600 text-white"
+                  : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+              }`}
+            >
+              {t.label}
+              <span className="ml-2 opacity-70">({t.count})</span>
+            </button>
+          ))}
+        </nav>
+
+        {tab === "drafts" && <ApprovalQueue onError={setError} />}
+        {tab === "leads" && selectedLeadId !== null && (
+          <BuyerProfile
+            leadId={selectedLeadId}
+            onBack={handleBackFromProfile}
+            onError={setError}
+          />
+        )}
+        {tab === "leads" && selectedLeadId === null && (
+          <LeadsPage onError={setError} onSelectLead={handleSelectLead} />
+        )}
+        {tab === "quotations" && <QuotationsPage onError={setError} />}
+      </main>
+    </div>
+  );
+}
