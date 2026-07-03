@@ -72,6 +72,18 @@ class ConsentStatus(str, enum.Enum):
     denied = "denied"
 
 
+class MarketRole(str, enum.Enum):
+    consumer = "consumer"
+    producer = "producer"
+    hybrid = "hybrid"
+    unknown = "unknown"
+
+
+class ProducerTier(str, enum.Enum):
+    strong = "strong"
+    weak = "weak"
+
+
 class EventType(str, enum.Enum):
     birthday = "birthday"
     national_day = "national_day"
@@ -96,6 +108,14 @@ class Buyer(Base):
     industry: Mapped[Optional[str]] = mapped_column(String(255))
     linkedin_company_url: Mapped[Optional[str]] = mapped_column(String(512))
     source: Mapped[Optional[str]] = mapped_column(String(100))
+    market_role: Mapped[MarketRole] = mapped_column(
+        Enum(MarketRole), default=MarketRole.unknown, nullable=False
+    )
+    market_role_reasoning: Mapped[Optional[str]] = mapped_column(Text)
+    market_role_confidence: Mapped[Optional[float]] = mapped_column(Numeric(4, 2))
+    producer_tier: Mapped[Optional["ProducerTier"]] = mapped_column(Enum(ProducerTier))
+    producer_conversion_pct: Mapped[Optional[float]] = mapped_column(Numeric(5, 2))
+    producer_tier_reasoning: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

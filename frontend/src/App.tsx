@@ -3,11 +3,12 @@ import { AppHeader } from "./components/AppHeader";
 import { ApprovalQueue } from "./pages/ApprovalQueue";
 import { BuyerProfile } from "./pages/BuyerProfile";
 import { LeadsPage } from "./pages/LeadsPage";
+import { LeadsTablePage } from "./pages/LeadsTablePage";
 import { QuotationsPage } from "./pages/QuotationsPage";
 import { useDrafts } from "./hooks/useDrafts";
 import { useLeads } from "./hooks/useLeads";
 
-type Tab = "drafts" | "leads" | "quotations";
+type Tab = "drafts" | "leads" | "table" | "quotations";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("drafts");
@@ -35,6 +36,7 @@ export default function App() {
   const tabs: { id: Tab; label: string; count: number }[] = [
     { id: "drafts", label: "Approval Queue", count: drafts.length },
     { id: "leads", label: "Leads", count: leads.length },
+    { id: "table", label: "Leads table", count: leads.length },
     { id: "quotations", label: "Product outreach", count: 0 },
   ];
 
@@ -42,9 +44,9 @@ export default function App() {
     <div className="min-h-screen">
       <AppHeader onRefresh={refreshAll} />
 
-      <main className="max-w-6xl mx-auto px-6 py-8">
+      <main className="max-w-7xl mx-auto px-20 py-8">
         {error && (
-          <div className="mb-6 p-4 rounded-lg bg-red-500/10 border border-red-500/30 text-red-200 text-sm">
+          <div className="mb-7 p-4 rounded-lg bg-red-500/10 border border-red-500/30 text-red-200 text-sm">
             {error}
             <p className="mt-1 text-red-300/70">Is the backend running? (python run.py)</p>
           </div>
@@ -57,7 +59,7 @@ export default function App() {
               type="button"
               onClick={() => {
                 setTab(t.id);
-                if (t.id !== "leads") setSelectedLeadId(null);
+                if (t.id !== "leads" && t.id !== "table") setSelectedLeadId(null);
               }}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
                 tab === t.id
@@ -81,6 +83,16 @@ export default function App() {
         )}
         {tab === "leads" && selectedLeadId === null && (
           <LeadsPage onError={setError} onSelectLead={handleSelectLead} />
+        )}
+        {tab === "table" && selectedLeadId !== null && (
+          <BuyerProfile
+            leadId={selectedLeadId}
+            onBack={handleBackFromProfile}
+            onError={setError}
+          />
+        )}
+        {tab === "table" && selectedLeadId === null && (
+          <LeadsTablePage onError={setError} onSelectLead={handleSelectLead} />
         )}
         {tab === "quotations" && <QuotationsPage onError={setError} />}
       </main>

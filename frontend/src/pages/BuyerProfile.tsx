@@ -7,6 +7,8 @@ import {
   type LeadScore,
 } from "../api/client";
 import { ScoreBadge } from "../components/ScoreBadge";
+import { MarketRoleBadge } from "../components/MarketRoleBadge";
+import { ConversionBar, ProducerTierBadge } from "../components/ProducerTierBadge";
 import { DiscoverLeadsPanel } from "../components/DiscoverLeadsPanel";
 import { ProductInterestPanel } from "../components/ProductInterestPanel";
 
@@ -60,7 +62,9 @@ export function BuyerProfile({ leadId, onBack, onError }: BuyerProfileProps) {
   async function handleResearch() {
     setResearching(true);
     try {
-      setProfile(await client.researchLead(leadId));
+      const profileData = await client.researchLead(leadId);
+      setProfile(profileData);
+      setLead(await client.getLead(leadId));
     } catch (e) {
       onError(e instanceof Error ? e.message : "Research failed");
     } finally {
@@ -71,12 +75,14 @@ export function BuyerProfile({ leadId, onBack, onError }: BuyerProfileProps) {
   async function handleScore() {
     setScoring(true);
     try {
-      const [profileData, scoreData] = await Promise.all([
+      const [profileData, scoreData, leadData] = await Promise.all([
         client.researchLead(leadId),
         client.scoreLead(leadId),
+        client.getLead(leadId),
       ]);
       setProfile(profileData);
       setScore(scoreData);
+      setLead(leadData);
       const crossSellData = await client.getCrossSell(leadId).catch(
         () => [] as CrossSellRecommendation[],
       );
@@ -110,6 +116,13 @@ export function BuyerProfile({ leadId, onBack, onError }: BuyerProfileProps) {
           <div className="flex items-center gap-3 flex-wrap">
             <h2 className="text-xl font-semibold">{lead.company_name}</h2>
             {score && <ScoreBadge score={score.score} />}
+            <MarketRoleBadge role={profile?.market_role ?? lead.market_role ?? "unknown"} />
+            {(profile?.producer_tier ?? lead.producer_tier) && (
+              <ProducerTierBadge
+                tier={profile?.producer_tier ?? lead.producer_tier}
+                conversionPct={profile?.producer_conversion_pct ?? lead.producer_conversion_pct}
+              />
+            )}
           </div>
           <p className="text-sm text-slate-400 mt-1">
             {[lead.country, lead.industry].filter(Boolean).join(" · ") || "No location or industry"}
@@ -187,6 +200,45 @@ export function BuyerProfile({ leadId, onBack, onError }: BuyerProfileProps) {
 
       {profile && (
         <>
+          {(profile.market_role_reasoning || profile.market_role) && (
+            <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
+              <h3 className="text-sm font-medium text-slate-300 mb-2">Market role</h3>
+              <div className="flex items-center gap-2 mb-2 flex-wrap">
+                <MarketRoleBadge role={profile.market_role ?? "unknown"} />
+                {profile.producer_tier && (
+                  <ProducerTierBadge
+                    tier={profile.producer_tier}
+                    conversionPct={profile.producer_conversion_pct}
+                  />
+                )}
+                {profile.market_role_confidence != null && (
+                  <span className="text-xs text-slate-500">
+                    {Math.round(profile.market_role_confidence * 100)}% role confidence
+                  </span>
+                )}
+              </div>
+              {profile.producer_tier === "weak" && profile.producer_conversion_pct != null && (
+                <div className="mb-3 max-w-md">
+                  <ConversionBar pct={profile.producer_conversion_pct} />
+                  <p className="text-xs text-slate-500 mt-2">
+                    Chance this narrow producer will source additional Kafi ranges (pickles, rice,
+                    sauces, salt, etc.) for resale under their brand or distribution.
+                  </p>
+                </div>
+              )}
+              {profile.producer_tier_reasoning && (
+                <p className="text-sm text-slate-400 mb-2">{profile.producer_tier_reasoning}</p>
+              )}
+              {profile.market_role_reasoning && (
+                <p className="text-sm text-slate-400">{profile.market_role_reasoning}</p>
+              )}
+              <p className="text-xs text-slate-500 mt-2">
+                Strong producers have a catalog close to Kafi&apos;s — competitors. Weak producers
+                specialize in few lines and may buy other ranges from you.
+              </p>
+            </section>
+          )}
+
           {profile.website_summary && (
             <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
               <h3 className="text-sm font-medium text-slate-300 mb-2">Website summary</h3>

@@ -6,6 +6,7 @@ const colors: Record<string, string> = {
   HOT: "bg-red-500/20 text-red-300 border-red-500/40",
   WARM: "bg-amber-500/20 text-amber-300 border-amber-500/40",
   COLD: "bg-slate-500/20 text-slate-300 border-slate-500/40",
+  UNSCORED: "bg-slate-700/30 text-slate-400 border-slate-600/40",
   DRAFT: "bg-slate-500/20 text-slate-300 border-slate-500/40",
   APPROVED: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40",
 };

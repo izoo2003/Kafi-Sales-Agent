@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 from sqlalchemy.orm import Session
 
 from db.models import Buyer, Contact, ExportHistory, Interaction
-from modules.product_catalog import match_text_to_catalog
+from modules.market_role import MarketRoleResult, classify_market_role
 from modules.product_catalog import match_text_to_catalog
 
 
@@ -25,6 +25,12 @@ class BuyerProfile:
     matched_categories: list[str] = field(default_factory=list)
     matched_products: list[dict] = field(default_factory=list)
     product_fit_score: int = 0
+    market_role: str = "unknown"
+    market_role_reasoning: str | None = None
+    market_role_confidence: float | None = None
+    producer_tier: str | None = None
+    producer_conversion_pct: float | None = None
+    producer_tier_reasoning: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -130,7 +136,20 @@ class ResearchModule:
             )
         )
         product_fit = match_text_to_catalog(fit_text)
-        all_signals = web_signals + rel_signals + product_fit.signals
+        has_exports = any("export history" in s.lower() for s in rel_signals)
+        role_result = classify_market_role(
+            company_name=buyer.company_name,
+            industry=buyer.industry,
+            website_summary=website_summary,
+            website_text=website_text,
+            has_export_history=has_exports,
+            matched_kafi_categories=product_fit.matched_categories,
+            matched_products=product_fit.matched_products,
+        )
+        role_signals = _market_role_signals(role_result)
+        all_signals = web_signals + rel_signals + product_fit.signals + role_signals
+
+        self._persist_market_role(db, buyer, role_result)
 
         return BuyerProfile(
             buyer_id=buyer.id,
@@ -145,10 +164,57 @@ class ResearchModule:
             matched_categories=product_fit.matched_categories,
             matched_products=product_fit.matched_products,
             product_fit_score=product_fit.match_score,
+            market_role=role_result.role,
+            market_role_reasoning=role_result.reasoning,
+            market_role_confidence=role_result.confidence,
+            producer_tier=role_result.producer_tier,
+            producer_conversion_pct=role_result.producer_conversion_pct,
+            producer_tier_reasoning=role_result.producer_tier_reasoning,
             raw={
                 "website_fetched": bool(buyer.website_url),
                 "product_fit_score": product_fit.match_score,
                 "matched_categories": product_fit.matched_categories,
                 "matched_products": product_fit.matched_products,
+                "market_role": role_result.role,
+                "market_role_confidence": role_result.confidence,
+                "market_role_producer_signals": role_result.producer_signals,
+                "market_role_consumer_signals": role_result.consumer_signals,
+                "producer_tier": role_result.producer_tier,
+                "producer_conversion_pct": role_result.producer_conversion_pct,
+                "producer_tier_reasoning": role_result.producer_tier_reasoning,
             },
         )
+
+    def _persist_market_role(
+        self, db: Session, buyer: Buyer, result: MarketRoleResult
+    ) -> None:
+        from db.models import MarketRole, ProducerTier
+
+        buyer.market_role = MarketRole(result.role)
+        buyer.market_role_reasoning = result.reasoning
+        buyer.market_role_confidence = result.confidence
+        if result.producer_tier:
+            buyer.producer_tier = ProducerTier(result.producer_tier)
+            buyer.producer_conversion_pct = result.producer_conversion_pct
+            buyer.producer_tier_reasoning = result.producer_tier_reasoning
+        else:
+            buyer.producer_tier = None
+            buyer.producer_conversion_pct = None
+            buyer.producer_tier_reasoning = None
+        db.commit()
+        db.refresh(buyer)
+
+
+def _market_role_signals(result: MarketRoleResult) -> list[str]:
+    label = result.role.replace("_", " ").title()
+    signals = [f"Market role: {label}"]
+    if result.producer_tier:
+        tier_label = "Strong producer" if result.producer_tier == "strong" else "Weak producer"
+        signals.append(f"Producer tier: {tier_label}")
+        if result.producer_conversion_pct is not None:
+            signals.append(f"Producer conversion potential: {result.producer_conversion_pct:.0f}%")
+    if result.producer_signals:
+        signals.append(f"Producer signals: {', '.join(result.producer_signals[:3])}")
+    if result.consumer_signals:
+        signals.append(f"Buyer signals: {', '.join(result.consumer_signals[:3])}")
+    return signals

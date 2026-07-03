@@ -14,7 +14,14 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     const text = await res.text();
     throw new Error(text || res.statusText);
   }
-  return res.json();
+  if (res.status === 204) {
+    return undefined as T;
+  }
+  const text = await res.text();
+  if (!text) {
+    return undefined as T;
+  }
+  return JSON.parse(text) as T;
 }
 
 export interface Lead {
@@ -24,6 +31,12 @@ export interface Lead {
   country: string | null;
   industry: string | null;
   source: string | null;
+  market_role?: string;
+  market_role_reasoning?: string | null;
+  market_role_confidence?: number | null;
+  producer_tier?: string | null;
+  producer_conversion_pct?: number | null;
+  producer_tier_reasoning?: string | null;
   created_at: string;
 }
 
@@ -40,8 +53,15 @@ export interface BuyerProfile {
   matched_products: Array<{
     name: string;
     category: string;
+    type_key?: string;
     matched_keyword?: string;
   }>;
+  market_role?: string;
+  market_role_reasoning?: string | null;
+  market_role_confidence?: number | null;
+  producer_tier?: string | null;
+  producer_conversion_pct?: number | null;
+  producer_tier_reasoning?: string | null;
 }
 
 export interface LeadScore {
@@ -119,6 +139,8 @@ export interface QuotationBatchCreate {
 export interface QuotationEligibleLead extends Lead {
   latest_score: string;
   score_reasoning: string;
+  contact_email: string;
+  contact_name?: string | null;
 }
 
 export interface CatalogSyncResult {
@@ -164,6 +186,11 @@ export interface DiscoveryCandidate {
   candidate_id: string;
   company_name: string;
   website_url: string | null;
+  email: string;
+  phone: string;
+  facebook_url: string;
+  instagram_url: string;
+  linkedin_url: string;
   country: string | null;
   industry: string | null;
   source: string;
@@ -172,10 +199,23 @@ export interface DiscoveryCandidate {
   already_exists: boolean;
 }
 
+export interface DiscoveryRegion {
+  code: string;
+  label: string;
+  group: string;
+  gl_code: string;
+}
+
+export interface DiscoveryRegionsResponse {
+  max_regions: number;
+  regions: DiscoveryRegion[];
+}
+
 export interface DiscoverLeadsRequest {
   seed_lead_id?: number;
-  country?: string;
+  region_codes?: string[];
   industry?: string;
+  industries?: string[];
   categories?: string[];
   limit?: number;
   use_web_search?: boolean;
@@ -193,6 +233,11 @@ export interface DiscoverImportRequest {
   candidates: Array<{
     company_name: string;
     website_url?: string;
+    email?: string;
+    phone?: string;
+    facebook_url?: string;
+    instagram_url?: string;
+    linkedin_url?: string;
     country?: string;
     industry?: string;
     source?: string;
@@ -208,10 +253,91 @@ export interface DiscoverImportResponse {
   onboard_results: Array<Record<string, unknown>>;
 }
 
+export interface LeadTableRow {
+  id: number;
+  company_name: string;
+  country: string | null;
+  industry: string | null;
+  website_url: string | null;
+  linkedin_company_url: string | null;
+  source: string | null;
+  created_at: string;
+  latest_score: string | null;
+  score_reasoning: string | null;
+  scored_at: string | null;
+  contact_id: number | null;
+  contact_name: string | null;
+  contact_email: string | null;
+  contact_phone: string | null;
+  market_role: string | null;
+  market_role_reasoning: string | null;
+  producer_tier: string | null;
+  producer_conversion_pct: number | null;
+  producer_tier_reasoning: string | null;
+}
+
+export interface LeadTableRowUpdate {
+  company_name?: string;
+  country?: string;
+  industry?: string;
+  website_url?: string;
+  linkedin_company_url?: string;
+  contact_id?: number;
+  contact_name?: string;
+  contact_email?: string;
+  contact_phone?: string;
+}
+
+export interface LeadTableResponse {
+  total: number;
+  filtered_count: number;
+  rows: LeadTableRow[];
+}
+
+export interface LeadTableFilters {
+  countries: string[];
+  industries: string[];
+  sources: string[];
+  scores: string[];
+  market_roles: string[];
+}
+
+export interface LeadTableQuery {
+  score?: string;
+  country?: string;
+  industry?: string;
+  source?: string;
+  market_role?: string;
+  q?: string;
+  sort_by?: string;
+  sort_dir?: "asc" | "desc";
+}
+
 export const client = {
   health: () => request<{ status: string }>("/health"),
 
   listLeads: () => request<Lead[]>("/leads"),
+  listLeadTableFilters: () => request<LeadTableFilters>("/leads/table/filters"),
+  listLeadsTable: (params: LeadTableQuery = {}) => {
+    const search = new URLSearchParams();
+    if (params.score) search.set("score", params.score);
+    if (params.country) search.set("country", params.country);
+    if (params.industry) search.set("industry", params.industry);
+    if (params.source) search.set("source", params.source);
+    if (params.market_role) search.set("market_role", params.market_role);
+    if (params.q) search.set("q", params.q);
+    if (params.sort_by) search.set("sort_by", params.sort_by);
+    if (params.sort_dir) search.set("sort_dir", params.sort_dir);
+    const query = search.toString();
+    return request<LeadTableResponse>(`/leads/table${query ? `?${query}` : ""}`);
+  },
+  updateLeadTableRow: (leadId: number, data: LeadTableRowUpdate) =>
+    request<LeadTableRow>(`/leads/table/${leadId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  deleteLeadTableRow: (leadId: number) =>
+    request<void>(`/leads/table/${leadId}`, { method: "DELETE" }),
   createLead: (data: LeadCreate) =>
     request<Lead>("/leads", { method: "POST", body: JSON.stringify(data) }),
   getLead: (id: number) => request<Lead>(`/leads/${id}`),
@@ -237,6 +363,9 @@ export const client = {
 
   createContact: (data: ContactCreate) =>
     request<Contact>("/leads/contacts", { method: "POST", body: JSON.stringify(data) }),
+
+  listDiscoveryRegions: () =>
+    request<DiscoveryRegionsResponse>("/leads/discover/regions"),
 
   discoverLeads: (data: DiscoverLeadsRequest) =>
     request<DiscoverLeadsResponse>("/leads/discover", {

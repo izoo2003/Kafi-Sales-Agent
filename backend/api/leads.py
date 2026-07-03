@@ -13,8 +13,13 @@ from api.schemas import (
     DiscoverLeadsRequest,
     DiscoverLeadsResponse,
     DiscoveryCandidateRead,
+    DiscoveryRegionsResponse,
     InteractionRead,
     LeadScoreRead,
+    LeadTableFiltersRead,
+    LeadTableResponse,
+    LeadTableRowRead,
+    LeadTableRowUpdate,
     ProductInterestEmailRequest,
     QuotationEligibleLeadRead,
 )
@@ -24,6 +29,7 @@ from modules import buyers as buyers_module
 from modules import leads as leads_module
 from modules.audit import log_action
 from modules.lead_discovery import discover_from_csv, discover_leads, import_candidates
+from modules.discovery_regions import list_discovery_regions
 
 router = APIRouter(prefix="/leads", tags=["leads"])
 
@@ -74,6 +80,17 @@ def create_product_interest_email(
     if score.score not in (LeadScoreLabel.HOT, LeadScoreLabel.WARM):
         raise HTTPException(400, "Product interest emails are for HOT or WARM leads only")
 
+    from db.models import MarketRole, ProducerTier
+
+    if buyer.market_role == MarketRole.producer:
+        if buyer.producer_tier != ProducerTier.weak or (
+            buyer.producer_conversion_pct is None or float(buyer.producer_conversion_pct) < 40
+        ):
+            raise HTTPException(
+                400,
+                "Strong producers are competitors. Weak producers need ≥40% conversion potential for outreach.",
+            )
+
     contacts = buyers_module.list_contacts_for_buyer(db, lead_id)
     if not contacts:
         raise HTTPException(400, "Add a contact with an email address first")
@@ -112,13 +129,74 @@ def list_quotation_eligible_leads(db: Session = Depends(get_db)):
     return leads_module.list_quotation_eligible_leads(db)
 
 
+@router.get("/table/filters", response_model=LeadTableFiltersRead)
+def get_leads_table_filters(db: Session = Depends(get_db)):
+    return LeadTableFiltersRead(**leads_module.get_lead_table_filters(db))
+
+
+@router.get("/table", response_model=LeadTableResponse)
+def list_leads_table(
+    score: str | None = None,
+    country: str | None = None,
+    industry: str | None = None,
+    source: str | None = None,
+    market_role: str | None = None,
+    q: str | None = None,
+    sort_by: str = "created_at",
+    sort_dir: str = "desc",
+    db: Session = Depends(get_db),
+):
+    result = leads_module.list_leads_table(
+        db,
+        score=score,
+        country=country,
+        industry=industry,
+        source=source,
+        market_role=market_role,
+        q=q,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    return LeadTableResponse(**result)
+
+
+@router.patch("/table/{lead_id}", response_model=LeadTableRowRead)
+def update_lead_table_row(
+    lead_id: int,
+    payload: LeadTableRowUpdate,
+    db: Session = Depends(get_db),
+):
+    row = leads_module.update_lead_table_row(
+        db,
+        lead_id,
+        payload.model_dump(exclude_unset=True),
+    )
+    if not row:
+        raise HTTPException(404, "Lead not found")
+    return LeadTableRowRead(**row)
+
+
+@router.delete("/table/{lead_id}", status_code=204)
+def delete_lead_table_row(lead_id: int, db: Session = Depends(get_db)):
+    if not leads_module.delete_lead_table_row(db, lead_id):
+        raise HTTPException(404, "Lead not found")
+
+
+@router.get("/discover/regions", response_model=DiscoveryRegionsResponse)
+def get_discovery_regions():
+    data = list_discovery_regions()
+    return DiscoveryRegionsResponse(**data)
+
+
 @router.post("/discover", response_model=DiscoverLeadsResponse)
 def discover_similar_leads(payload: DiscoverLeadsRequest, db: Session = Depends(get_db)):
     result = discover_leads(
         db,
         seed_lead_id=payload.seed_lead_id,
+        region_codes=payload.region_codes,
         country=payload.country,
         industry=payload.industry,
+        industries=payload.industries,
         categories=payload.categories,
         limit=payload.limit,
         use_web_search=payload.use_web_search,
@@ -198,6 +276,12 @@ def research_lead(lead_id: int, db: Session = Depends(get_db)):
         signals=profile.signals,
         matched_categories=profile.matched_categories,
         matched_products=profile.matched_products,
+        market_role=profile.market_role,
+        market_role_reasoning=profile.market_role_reasoning,
+        market_role_confidence=profile.market_role_confidence,
+        producer_tier=profile.producer_tier,
+        producer_conversion_pct=profile.producer_conversion_pct,
+        producer_tier_reasoning=profile.producer_tier_reasoning,
     )
 
 

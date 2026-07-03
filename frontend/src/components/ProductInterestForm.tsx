@@ -15,6 +15,11 @@ export interface SuggestedProduct {
   name: string;
   category?: string;
   type_key?: string;
+  matched_keyword?: string;
+}
+
+function normalizeTypeKey(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 function matchSuggestedToTypeKeys(
@@ -22,22 +27,78 @@ function matchSuggestedToTypeKeys(
   productTypes: ProductType[],
 ): Set<string> {
   const keys = new Set<string>();
-  for (const s of suggested) {
-    if (s.type_key) {
-      keys.add(s.type_key);
+  if (productTypes.length === 0) return keys;
+
+  const byKey = new Map(
+    productTypes.map((t) => [normalizeTypeKey(t.type_key), t.type_key]),
+  );
+  const byName = new Map(productTypes.map((t) => [t.name.toLowerCase(), t.type_key]));
+  const byCategory = new Map<string, ProductType[]>();
+  for (const productType of productTypes) {
+    const list = byCategory.get(productType.category) ?? [];
+    list.push(productType);
+    byCategory.set(productType.category, list);
+  }
+
+  for (const item of suggested) {
+    if (item.type_key) {
+      const normalized = normalizeTypeKey(item.type_key);
+      if (byKey.has(normalized)) {
+        keys.add(byKey.get(normalized)!);
+        continue;
+      }
+    }
+
+    const nameLower = item.name.toLowerCase();
+    if (byName.has(nameLower)) {
+      keys.add(byName.get(nameLower)!);
       continue;
     }
-    const sl = s.name.toLowerCase();
-    const hit = productTypes.find(
+
+    const fuzzy = productTypes.find(
       (t) =>
-        t.name.toLowerCase() === sl ||
-        t.type_key === sl ||
-        sl.includes(t.type_key) ||
-        t.type_key.includes(sl),
+        nameLower === t.name.toLowerCase() ||
+        nameLower === normalizeTypeKey(t.type_key) ||
+        nameLower.includes(t.name.toLowerCase()) ||
+        t.name.toLowerCase().includes(nameLower) ||
+        nameLower.includes(normalizeTypeKey(t.type_key)) ||
+        normalizeTypeKey(t.type_key).includes(nameLower),
     );
-    if (hit) keys.add(hit.type_key);
+    if (fuzzy) {
+      keys.add(fuzzy.type_key);
+      continue;
+    }
+
+    if (item.category && byCategory.has(item.category)) {
+      const categoryTypes = byCategory.get(item.category)!;
+      const nameTokens = nameLower.split(/[^a-z0-9]+/).filter((t) => t.length >= 3);
+      const categoryHit = categoryTypes.find((t) => {
+        const typeTokens = `${t.name} ${t.type_key}`.toLowerCase().split(/[^a-z0-9]+/);
+        return nameTokens.some((token) => typeTokens.some((part) => part.includes(token) || token.includes(part)));
+      });
+      if (categoryHit) {
+        keys.add(categoryHit.type_key);
+      }
+    }
   }
+
   return keys;
+}
+
+function countUnmappedSuggested(
+  suggested: SuggestedProduct[],
+  productTypes: ProductType[],
+): number {
+  return suggested.filter(
+    (item) => matchSuggestedToTypeKeys([item], productTypes).size === 0,
+  ).length;
+}
+
+function isValidEmail(email: string | null | undefined): boolean {
+  if (!email) return false;
+  const value = email.trim();
+  if (!value || value.toLowerCase() === "not found") return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
 function dedupeSuggested(suggested: SuggestedProduct[]): SuggestedProduct[] {
@@ -88,8 +149,13 @@ export function ProductInterestForm({
     [suggested, productTypes],
   );
 
+  const unmappedSuggestedCount = useMemo(
+    () => countUnmappedSuggested(suggested, productTypes),
+    [suggested, productTypes],
+  );
+
   useEffect(() => {
-    const withEmail = contacts.filter((c) => c.email);
+    const withEmail = contacts.filter((c) => isValidEmail(c.email));
     if (withEmail.length > 0) {
       setContactId(String(withEmail[0].id));
     }
@@ -162,7 +228,7 @@ export function ProductInterestForm({
     }
   }
 
-  const contactsWithEmail = contacts.filter((c) => c.email);
+  const contactsWithEmail = contacts.filter((c) => isValidEmail(c.email));
 
   return (
     <section className="rounded-xl border border-emerald-500/20 bg-slate-900 p-5 space-y-4">
@@ -199,24 +265,44 @@ export function ProductInterestForm({
 
       {suggested.length > 0 && (
         <div className="rounded-lg bg-slate-950 border border-slate-800 p-3">
-          <p className="text-xs text-slate-400 mb-2">Suggested from research</p>
+          <p className="text-xs text-slate-400 mb-1">Suggested from website &amp; profile fit</p>
+          <p className="text-[11px] text-slate-500 mb-2">
+            Inferred from keywords on their site (product names, categories, industry) — not an
+            explicit order list from the buyer.
+          </p>
           <div className="flex flex-wrap gap-1.5">
-            {suggested.slice(0, 12).map((p) => (
+            {suggested.map((p) => (
               <span
                 key={p.type_key ?? p.name}
+                title={
+                  p.matched_keyword
+                    ? `Matched catalog keyword: ${p.matched_keyword}`
+                    : p.category
+                      ? `Category fit: ${formatCategory(p.category)}`
+                      : undefined
+                }
                 className="text-xs px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-300"
               >
                 {p.name}
+                {p.matched_keyword ? ` · ${p.matched_keyword}` : ""}
               </span>
             ))}
           </div>
-          <button
-            type="button"
-            onClick={selectSuggested}
-            className="mt-2 text-xs text-emerald-400 hover:text-emerald-300"
-          >
-            Select all suggested
-          </button>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={selectSuggested}
+              className="text-xs text-emerald-400 hover:text-emerald-300"
+            >
+              Select all suggested ({suggestedKeys.size})
+            </button>
+            {unmappedSuggestedCount > 0 && (
+              <span className="text-[11px] text-amber-400/90">
+                {unmappedSuggestedCount} suggestion
+                {unmappedSuggestedCount === 1 ? "" : "s"} could not be mapped to a product type
+              </span>
+            )}
+          </div>
         </div>
       )}
 
@@ -262,9 +348,20 @@ export function ProductInterestForm({
         type="button"
         onClick={handleDraftEmail}
         disabled={submitting || selected.size === 0 || contactsWithEmail.length === 0}
+        title={
+          contactsWithEmail.length === 0
+            ? "Add a contact with an email address for this lead first"
+            : selected.size === 0
+              ? "Select at least one product"
+              : undefined
+        }
         className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium disabled:opacity-50"
       >
-        {submitting ? "Drafting…" : `Draft email (${selected.size} products)`}
+        {submitting
+          ? "Drafting…"
+          : contactsWithEmail.length === 0
+            ? "Draft email — add contact email first"
+            : `Draft email (${selected.size} products)`}
       </button>
     </section>
   );
@@ -300,7 +397,16 @@ export function ProductInterestOutreach({
         client.researchLead(Number(buyerId)).catch(() => null),
       ]);
       setContacts(contactList);
-      setSuggested(profile?.matched_products ?? []);
+      setSuggested(
+        (profile?.matched_products ?? []).map((product) => ({
+          name: String(product.name ?? ""),
+          category: product.category ? String(product.category) : undefined,
+          type_key: product.type_key ? String(product.type_key) : undefined,
+          matched_keyword: product.matched_keyword
+            ? String(product.matched_keyword)
+            : undefined,
+        })),
+      );
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to load lead context");
     } finally {
@@ -316,7 +422,8 @@ export function ProductInterestOutreach({
     return (
       <section className="rounded-xl border border-dashed border-slate-700 bg-slate-900/50 p-5">
         <p className="text-sm text-slate-400">
-          No HOT or WARM leads yet. Score a lead first, then select products and draft an email.
+          No HOT or WARM leads with a contact email yet. Score a lead, ensure a valid email is on
+          file (from discovery or manual entry), then select products and draft an email.
         </p>
       </section>
     );
@@ -327,7 +434,7 @@ export function ProductInterestOutreach({
   return (
     <div className="space-y-4">
       <label className="block">
-        <span className="text-xs text-slate-400">Buyer (HOT / WARM only)</span>
+        <span className="text-xs text-slate-400">Buyer (HOT / WARM with email)</span>
         <select
           value={buyerId}
           onChange={(e) => setBuyerId(e.target.value)}
@@ -335,7 +442,7 @@ export function ProductInterestOutreach({
         >
           {leads.map((lead) => (
             <option key={lead.id} value={lead.id}>
-              {lead.company_name} — {lead.latest_score}
+              {lead.company_name} — {lead.latest_score} ({lead.contact_email})
             </option>
           ))}
         </select>

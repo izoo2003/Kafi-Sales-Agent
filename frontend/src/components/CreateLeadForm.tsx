@@ -1,4 +1,6 @@
 import { useState, type FormEvent } from "react";
+import { CountrySelect } from "../components/CountrySelect";
+import { IndustrySelect } from "../components/IndustrySelect";
 import { client } from "../api/client";
 
 interface CreateLeadFormProps {
@@ -91,27 +93,19 @@ export function CreateLeadForm({ onSuccess, onCancel, onError }: CreateLeadFormP
           />
         </label>
 
-        <label className="block">
-          <span className="text-sm text-slate-400">Country</span>
-          <input
-            type="text"
-            value={form.country}
-            onChange={(e) => updateField("country", e.target.value)}
-            placeholder="e.g. UAE"
-            className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600"
-          />
-        </label>
+        <CountrySelect
+          label="Country"
+          labelClassName="text-sm text-slate-400"
+          value={form.country}
+          onChange={(value) => updateField("country", value)}
+        />
 
-        <label className="block">
-          <span className="text-sm text-slate-400">Industry</span>
-          <input
-            type="text"
-            value={form.industry}
-            onChange={(e) => updateField("industry", e.target.value)}
-            placeholder="e.g. Food distribution"
-            className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600"
-          />
-        </label>
+        <IndustrySelect
+          label="Industry"
+          labelClassName="text-sm text-slate-400"
+          value={form.industry}
+          onChange={(value) => updateField("industry", value)}
+        />
 
         <label className="block sm:col-span-2">
           <span className="text-sm text-slate-400">Website URL</span>

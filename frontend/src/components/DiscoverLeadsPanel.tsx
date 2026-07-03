@@ -1,5 +1,12 @@
-import { useCallback, useMemo, useState } from "react";
-import { client, type DiscoveryCandidate, type Lead } from "../api/client";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  client,
+  type DiscoveryCandidate,
+  type DiscoveryRegion,
+  type Lead,
+} from "../api/client";
+import { findIndustry, MAX_DISCOVERY_INDUSTRIES } from "../data/industries";
+import { IndustryMultiSelect } from "./IndustryMultiSelect";
 
 interface DiscoverLeadsPanelProps {
   seedLead?: Lead | null;
@@ -22,6 +29,46 @@ function sourceLabel(source: string): string {
   }
 }
 
+function isFound(value: string | null | undefined): value is string {
+  return Boolean(value && value !== "Not found");
+}
+
+function matchSeedRegion(
+  seedCountry: string | null | undefined,
+  regions: DiscoveryRegion[],
+): string | null {
+  if (!seedCountry) return null;
+  const key = seedCountry.trim().toLowerCase();
+  const exact = regions.find(
+    (region) =>
+      region.code === key || region.label.toLowerCase() === key,
+  );
+  if (exact) return exact.code;
+  const partial = regions.find(
+    (region) =>
+      key.length >= 4 &&
+      (key.includes(region.label.toLowerCase()) ||
+        region.label.toLowerCase().includes(key)),
+  );
+  return partial?.code ?? null;
+}
+
+function initialSeedIndustries(seedIndustry: string | null | undefined): Set<string> {
+  if (!seedIndustry?.trim()) return new Set();
+  const matched = findIndustry(seedIndustry);
+  if (matched) return new Set([matched.name]);
+  return new Set([seedIndustry.trim()]);
+}
+
+function groupRegions(regions: DiscoveryRegion[]): [string, DiscoveryRegion[]][] {
+  const map = new Map<string, DiscoveryRegion[]>();
+  for (const region of regions) {
+    if (!map.has(region.group)) map.set(region.group, []);
+    map.get(region.group)!.push(region);
+  }
+  return [...map.entries()];
+}
+
 export function DiscoverLeadsPanel({
   seedLead,
   seedCategories = [],
@@ -29,8 +76,13 @@ export function DiscoverLeadsPanel({
   onError,
   onCancel,
 }: DiscoverLeadsPanelProps) {
-  const [country, setCountry] = useState(seedLead?.country ?? "");
-  const [industry, setIndustry] = useState(seedLead?.industry ?? "");
+  const [selectedRegions, setSelectedRegions] = useState<Set<string>>(new Set());
+  const [regionOptions, setRegionOptions] = useState<DiscoveryRegion[]>([]);
+  const [maxRegions, setMaxRegions] = useState(3);
+  const [regionsLoading, setRegionsLoading] = useState(true);
+  const [selectedIndustries, setSelectedIndustries] = useState<Set<string>>(() =>
+    initialSeedIndustries(seedLead?.industry),
+  );
   const [limit, setLimit] = useState(15);
   const [useWebSearch, setUseWebSearch] = useState(true);
   const [useWebsiteLinks, setUseWebsiteLinks] = useState(true);
@@ -48,14 +100,81 @@ export function DiscoverLeadsPanel({
     [candidates],
   );
 
+  const groupedRegions = useMemo(
+    () => groupRegions(regionOptions),
+    [regionOptions],
+  );
+
+  const selectedRegionLabels = useMemo(
+    () =>
+      regionOptions
+        .filter((region) => selectedRegions.has(region.code))
+        .map((region) => region.label),
+    [regionOptions, selectedRegions],
+  );
+
+  useEffect(() => {
+    setRegionsLoading(true);
+    client
+      .listDiscoveryRegions()
+      .then((data) => {
+        setRegionOptions(data.regions);
+        setMaxRegions(data.max_regions);
+        const seedCode = matchSeedRegion(seedLead?.country, data.regions);
+        if (seedCode) {
+          setSelectedRegions(new Set([seedCode]));
+        }
+      })
+      .catch(() => onError("Failed to load target regions"))
+      .finally(() => setRegionsLoading(false));
+  }, [onError, seedLead?.country]);
+
+  useEffect(() => {
+    setSelectedIndustries(initialSeedIndustries(seedLead?.industry));
+  }, [seedLead?.industry]);
+
+  function toggleRegion(code: string) {
+    setSelectedRegions((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) {
+        next.delete(code);
+        return next;
+      }
+      if (next.size >= maxRegions) {
+        return prev;
+      }
+      next.add(code);
+      return next;
+    });
+  }
+
+  function toggleIndustry(name: string) {
+    setSelectedIndustries((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) {
+        next.delete(name);
+        return next;
+      }
+      if (next.size >= MAX_DISCOVERY_INDUSTRIES) {
+        return prev;
+      }
+      next.add(name);
+      return next;
+    });
+  }
+
   const handleDiscover = useCallback(async () => {
+    if (selectedRegions.size === 0) {
+      onError(`Select at least one target region (max ${maxRegions}).`);
+      return;
+    }
     setDiscovering(true);
     setMessages([]);
     try {
       const result = await client.discoverLeads({
         seed_lead_id: seedLead?.id,
-        country: country.trim() || undefined,
-        industry: industry.trim() || undefined,
+        region_codes: [...selectedRegions],
+        industries: [...selectedIndustries],
         categories: seedCategories,
         limit,
         use_web_search: useWebSearch,
@@ -74,12 +193,13 @@ export function DiscoverLeadsPanel({
       setDiscovering(false);
     }
   }, [
-    country,
-    industry,
     limit,
+    maxRegions,
     onError,
     seedCategories,
     seedLead?.id,
+    selectedIndustries,
+    selectedRegions,
     useWebSearch,
     useWebsiteLinks,
   ]);
@@ -90,7 +210,7 @@ export function DiscoverLeadsPanel({
     try {
       const result = await client.discoverLeadsFromCsv(
         file,
-        country.trim() || undefined,
+        selectedRegionLabels[0],
       );
       setCandidates(result.candidates);
       setMessages(result.messages);
@@ -118,6 +238,11 @@ export function DiscoverLeadsPanel({
         candidates: toImport.map((c) => ({
           company_name: c.company_name,
           website_url: c.website_url ?? undefined,
+          email: isFound(c.email) ? c.email : undefined,
+          phone: isFound(c.phone) ? c.phone : undefined,
+          facebook_url: isFound(c.facebook_url) ? c.facebook_url : undefined,
+          instagram_url: isFound(c.instagram_url) ? c.instagram_url : undefined,
+          linkedin_url: isFound(c.linkedin_url) ? c.linkedin_url : undefined,
           country: c.country ?? undefined,
           industry: c.industry ?? undefined,
           source: c.source,
@@ -191,24 +316,76 @@ export function DiscoverLeadsPanel({
       )}
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <label className="block text-xs text-slate-400">
-          Country / market
-          <input
-            value={country}
-            onChange={(e) => setCountry(e.target.value)}
-            placeholder="e.g. UAE, UK, Saudi Arabia"
-            className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
-          />
-        </label>
-        <label className="block text-xs text-slate-400">
-          Industry
-          <input
-            value={industry}
-            onChange={(e) => setIndustry(e.target.value)}
-            placeholder="e.g. Food importer, Wholesale"
-            className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
-          />
-        </label>
+        <div className="sm:col-span-2">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs text-slate-400">
+              Target regions{" "}
+              <span className="text-slate-500">
+                (select up to {maxRegions})
+              </span>
+            </p>
+            <span className="text-xs text-slate-500">
+              {selectedRegions.size}/{maxRegions} selected
+            </span>
+          </div>
+          {regionsLoading ? (
+            <p className="mt-2 text-sm text-slate-500">Loading regions…</p>
+          ) : (
+            <div className="mt-2 max-h-48 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-3 space-y-3">
+              {groupedRegions.map(([group, regions]) => (
+                <div key={group}>
+                  <p className="text-[11px] font-medium text-slate-500 mb-1.5">{group}</p>
+                  <div className="flex flex-wrap gap-2">
+                    {regions.map((region) => {
+                      const checked = selectedRegions.has(region.code);
+                      const atMax = selectedRegions.size >= maxRegions;
+                      return (
+                        <label
+                          key={region.code}
+                          className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs cursor-pointer transition ${
+                            checked
+                              ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300"
+                              : atMax
+                                ? "border-slate-800 text-slate-600 cursor-not-allowed"
+                                : "border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-200"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={!checked && atMax}
+                            onChange={() => toggleRegion(region.code)}
+                            className="sr-only"
+                          />
+                          {region.label}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="sm:col-span-2">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs text-slate-400">
+              Target industries{" "}
+              <span className="text-slate-500">
+                (select up to {MAX_DISCOVERY_INDUSTRIES}, optional)
+              </span>
+            </p>
+            <span className="text-xs text-slate-500">
+              {selectedIndustries.size}/{MAX_DISCOVERY_INDUSTRIES} selected
+            </span>
+          </div>
+          <div className="mt-2 max-h-48 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-3">
+            <IndustryMultiSelect
+              selected={selectedIndustries}
+              onToggle={toggleIndustry}
+            />
+          </div>
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-4 text-sm text-slate-400">
@@ -246,7 +423,7 @@ export function DiscoverLeadsPanel({
         <button
           type="button"
           onClick={handleDiscover}
-          disabled={discovering}
+          disabled={discovering || regionsLoading || selectedRegions.size === 0}
           className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium disabled:opacity-50"
         >
           {discovering ? "Searching…" : "Find similar leads"}
@@ -298,6 +475,9 @@ export function DiscoverLeadsPanel({
                   </th>
                   <th className="py-2 pr-4">Company</th>
                   <th className="py-2 pr-4">Website</th>
+                  <th className="py-2 pr-4">Email</th>
+                  <th className="py-2 pr-4">Phone</th>
+                  <th className="py-2 pr-4">Socials</th>
                   <th className="py-2 pr-4">Market</th>
                   <th className="py-2 pr-4">Source</th>
                   <th className="py-2">Status</th>
@@ -329,6 +509,65 @@ export function DiscoverLeadsPanel({
                       ) : (
                         "—"
                       )}
+                    </td>
+                    <td className="py-2 pr-4 text-slate-400 max-w-[180px] truncate">
+                      {isFound(candidate.email) ? (
+                        <a
+                          href={`mailto:${candidate.email}`}
+                          className="text-emerald-400 hover:text-emerald-300"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {candidate.email}
+                        </a>
+                      ) : (
+                        "Not found"
+                      )}
+                    </td>
+                    <td className="py-2 pr-4 text-slate-400 whitespace-nowrap">
+                      {isFound(candidate.phone) ? candidate.phone : "Not found"}
+                    </td>
+                    <td className="py-2 pr-4 text-xs">
+                      <div className="flex flex-wrap gap-1.5">
+                        {isFound(candidate.facebook_url) ? (
+                          <a
+                            href={candidate.facebook_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-emerald-400 hover:text-emerald-300"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            Facebook
+                          </a>
+                        ) : (
+                          <span className="text-slate-600">Facebook: Not found</span>
+                        )}
+                        {isFound(candidate.instagram_url) ? (
+                          <a
+                            href={candidate.instagram_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-emerald-400 hover:text-emerald-300"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            Instagram
+                          </a>
+                        ) : (
+                          <span className="text-slate-600">Instagram: Not found</span>
+                        )}
+                        {isFound(candidate.linkedin_url) ? (
+                          <a
+                            href={candidate.linkedin_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-emerald-400 hover:text-emerald-300"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            LinkedIn
+                          </a>
+                        ) : (
+                          <span className="text-slate-600">LinkedIn: Not found</span>
+                        )}
+                      </div>
                     </td>
                     <td className="py-2 pr-4 text-slate-400">
                       {[candidate.country, candidate.industry].filter(Boolean).join(" · ") || "—"}

@@ -62,4 +62,10 @@ app.include_router(scheduler.router, prefix="/api")
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "service": "kafi-sales-agent"}
+    from integrations.email_client import email_client
+
+    return {
+        "status": "ok",
+        "service": "kafi-sales-agent",
+        "gmail_configured": email_client.is_configured,
+    }

@@ -22,12 +22,20 @@ class BuyerRead(BaseModel):
     country: Optional[str]
     industry: Optional[str]
     source: Optional[str]
+    market_role: str = "unknown"
+    market_role_reasoning: Optional[str] = None
+    market_role_confidence: Optional[float] = None
+    producer_tier: Optional[str] = None
+    producer_conversion_pct: Optional[float] = None
+    producer_tier_reasoning: Optional[str] = None
     created_at: datetime
 
 
 class QuotationEligibleLeadRead(BuyerRead):
     latest_score: str
     score_reasoning: str
+    contact_email: str
+    contact_name: Optional[str] = None
 
 
 class ContactCreate(BaseModel):
@@ -144,6 +152,57 @@ class ProductInterestEmailRequest(BaseModel):
     products: list[ProductInterestItem] = Field(min_length=1)
 
 
+class LeadTableRowRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    company_name: str
+    country: Optional[str] = None
+    industry: Optional[str] = None
+    website_url: Optional[str] = None
+    linkedin_company_url: Optional[str] = None
+    source: Optional[str] = None
+    created_at: datetime
+    latest_score: Optional[str] = None
+    score_reasoning: Optional[str] = None
+    scored_at: Optional[datetime] = None
+    contact_id: Optional[int] = None
+    contact_name: Optional[str] = None
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+    market_role: Optional[str] = "unknown"
+    market_role_reasoning: Optional[str] = None
+    producer_tier: Optional[str] = None
+    producer_conversion_pct: Optional[float] = None
+    producer_tier_reasoning: Optional[str] = None
+
+
+class LeadTableRowUpdate(BaseModel):
+    company_name: Optional[str] = None
+    country: Optional[str] = None
+    industry: Optional[str] = None
+    website_url: Optional[str] = None
+    linkedin_company_url: Optional[str] = None
+    contact_id: Optional[int] = None
+    contact_name: Optional[str] = None
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+
+
+class LeadTableResponse(BaseModel):
+    total: int
+    filtered_count: int
+    rows: list[LeadTableRowRead]
+
+
+class LeadTableFiltersRead(BaseModel):
+    countries: list[str]
+    industries: list[str]
+    sources: list[str]
+    scores: list[str]
+    market_roles: list[str]
+
+
 class LeadScoreRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -165,12 +224,32 @@ class BuyerProfileRead(BaseModel):
     signals: list[str]
     matched_categories: list[str] = []
     matched_products: list[dict[str, Any]] = []
+    market_role: str = "unknown"
+    market_role_reasoning: Optional[str] = None
+    market_role_confidence: Optional[float] = None
+    producer_tier: Optional[str] = None
+    producer_conversion_pct: Optional[float] = None
+    producer_tier_reasoning: Optional[str] = None
+
+
+class DiscoveryRegionRead(BaseModel):
+    code: str
+    label: str
+    group: str
+    gl_code: str
+
+
+class DiscoveryRegionsResponse(BaseModel):
+    max_regions: int
+    regions: list[DiscoveryRegionRead]
 
 
 class DiscoverLeadsRequest(BaseModel):
     seed_lead_id: Optional[int] = None
+    region_codes: list[str] = Field(default_factory=list, max_length=3)
     country: Optional[str] = None
     industry: Optional[str] = None
+    industries: list[str] = Field(default_factory=list, max_length=3)
     categories: list[str] = Field(default_factory=list)
     limit: int = Field(default=15, ge=1, le=30)
     use_web_search: bool = True
@@ -181,6 +260,11 @@ class DiscoveryCandidateRead(BaseModel):
     candidate_id: str
     company_name: str
     website_url: Optional[str] = None
+    email: str = "Not found"
+    phone: str = "Not found"
+    facebook_url: str = "Not found"
+    instagram_url: str = "Not found"
+    linkedin_url: str = "Not found"
     country: Optional[str] = None
     industry: Optional[str] = None
     source: str
@@ -199,6 +283,11 @@ class DiscoverLeadsResponse(BaseModel):
 class DiscoverImportCandidate(BaseModel):
     company_name: str
     website_url: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    facebook_url: Optional[str] = None
+    instagram_url: Optional[str] = None
+    linkedin_url: Optional[str] = None
     country: Optional[str] = None
     industry: Optional[str] = None
     source: Optional[str] = "discovery"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import html
 import io
 import re
 import uuid
@@ -15,7 +16,19 @@ from bs4 import BeautifulSoup
 from sqlalchemy.orm import Session
 
 from config import settings
+from modules.discovery_regions import (
+    MAX_DISCOVERY_REGIONS,
+    DiscoveryRegion,
+    match_region_code,
+    resolve_region_codes,
+)
 from modules import buyers as buyers_module
+from modules.countries import (
+    country_from_domain,
+    country_from_phone,
+    detect_countries_in_text,
+    resolve_country_name,
+)
 from modules.product_catalog import load_catalog
 from modules.research import ResearchModule
 from modules.robots import USER_AGENT, can_fetch
@@ -44,11 +57,123 @@ _SKIP_DOMAINS = (
     "amazon.com",
     "ebay.com",
 )
+# Trade-data / customs-intelligence platforms — not product importers we can sell to.
+_SKIP_TRADE_DATA_DOMAINS = (
+    "volza.com",
+    "exportgenius.in",
+    "exportgenius.com",
+    "seair.co.in",
+    "seair.com",
+    "go4worldbusiness.com",
+    "indonesiatradedata.com",
+    "importgenius.com",
+    "panjiva.com",
+    "importyeti.com",
+    "datamyne.com",
+    "tradekey.com",
+    "alibaba.com",
+    "globalsources.com",
+    "made-in-china.com",
+    "ec21.com",
+    "trademap.org",
+    "eximpedia.com",
+    "52wmb.com",
+    "tradedata.pro",
+    "customsinfo.com",
+    "tradesns.com",
+    "exportimportdata.com",
+    "importexportdata.com",
+    "tradeindia.com",
+    "exportersindia.com",
+    "kompass.com",
+    "dnb.com",
+    "bloomberg.com",
+    "tradingeconomics.com",
+    "zauba.com",
+    "cybex.in",
+    "export.gov",
+)
+_TRADE_DATA_DOMAIN_KEYWORDS = (
+    "tradedata",
+    "exportdata",
+    "importdata",
+    "customsdata",
+    "shipmentdata",
+    "billoflading",
+    "tradeintel",
+    "eximpedia",
+    "importexportdata",
+    "exportimportdata",
+)
+_TRADE_DATA_TEXT_KEYWORDS = (
+    "import export data",
+    "import-export data",
+    "customs data",
+    "trade data",
+    "shipment records",
+    "bill of lading",
+    "import database",
+    "export database",
+    "trade intelligence",
+    "cargo data",
+    "customs shipment",
+    "import statistics",
+    "export statistics",
+    "hs code database",
+    "hs code search",
+    "global trade data",
+    "import export database",
+    "shipment database",
+    "trade data provider",
+    "customs import data",
+    "export import data provider",
+)
+_SEARCH_QUERY_EXCLUSIONS = (
+    "-volza",
+    "-exportgenius",
+    "-seair",
+    "-go4worldbusiness",
+    "-panjiva",
+    "-importyeti",
+    "-alibaba",
+    '-"import export data"',
+    '-"trade data"',
+    "-indonesiatradedata",
+)
 _SKIP_URL_PARTS = ("/login", "/signup", "/cart", "/privacy", "/terms", "/cookie")
 _COMPANY_SUFFIXES = re.compile(
     r"\b(llc|l\.l\.c|ltd|limited|inc|corp|gmbh|pte|pvt|trading|foods|food|group|international)\b",
     re.I,
 )
+_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
+_EMAIL_ATTR_RE = re.compile(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$", re.I)
+# Phone patterns — separators allowed, but not decimal dots (coordinates/versions).
+_PHONE_INLINE_RE = re.compile(
+    r"(?:\+|00)\d{1,3}[\s()-]*\d{2,4}[\s()-]*\d{2,4}[\s()-]*\d{2,8}"
+    r"|\(\d{2,5}\)[\s-]*\d{3,4}[\s-]*\d{3,4}"
+    r"|\b\d{2,4}[\s-]\d{3,4}[\s-]\d{3,4}\b"
+)
+_DATE_LIKE_RE = re.compile(
+    r"^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$|^\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}$"
+)
+_VERSION_LIKE_RE = re.compile(r"^\d+\.\d+")
+_PHONE_LABEL_RE = re.compile(r"\b(phone|tel|telephone|mobile|fax|call us|contact|whatsapp)\b", re.I)
+_CONTACT_PATHS = (
+    "",
+    "/contact",
+    "/contact-us",
+    "/contactus",
+    "/contact.html",
+    "/get-in-touch",
+    "/reach-us",
+    "/about",
+    "/about-us",
+    "/aboutus",
+    "/en/contact",
+    "/en/contact-us",
+)
+_NOT_FOUND = "Not found"
+MAX_DISCOVERY_INDUSTRIES = 3
 
 
 @dataclass
@@ -56,6 +181,11 @@ class DiscoveryCandidate:
     candidate_id: str
     company_name: str
     website_url: str | None = None
+    email: str = _NOT_FOUND
+    phone: str = _NOT_FOUND
+    facebook_url: str = _NOT_FOUND
+    instagram_url: str = _NOT_FOUND
+    linkedin_url: str = _NOT_FOUND
     country: str | None = None
     industry: str | None = None
     source: str = "manual"
@@ -68,6 +198,11 @@ class DiscoveryCandidate:
             "candidate_id": self.candidate_id,
             "company_name": self.company_name,
             "website_url": self.website_url,
+            "email": self.email,
+            "phone": self.phone,
+            "facebook_url": self.facebook_url,
+            "instagram_url": self.instagram_url,
+            "linkedin_url": self.linkedin_url,
             "country": self.country,
             "industry": self.industry,
             "source": self.source,
@@ -106,6 +241,28 @@ def _domain(url: str | None) -> str | None:
         return host[4:] if host.startswith("www.") else host
     except ValueError:
         return None
+
+
+def _homepage_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url if "://" in url else f"https://{url}")
+        if not parsed.netloc:
+            return None
+        return f"{parsed.scheme or 'https'}://{parsed.netloc}"
+    except ValueError:
+        return None
+
+
+def _clean_found(value: str | None) -> str:
+    return value.strip() if value and value.strip() else _NOT_FOUND
+
+
+def _value_or_none(value: str | None) -> str | None:
+    if not value or value == _NOT_FOUND:
+        return None
+    return value
 
 
 def _existing_buyer_keys(db: Session) -> tuple[set[str], set[str]]:
@@ -163,10 +320,364 @@ def _looks_like_company_name(text: str) -> bool:
     return text[0].isupper() and len(words) == 1 and len(text) >= 4
 
 
+def _domain_matches_blocklist(domain: str | None, blocklist: tuple[str, ...]) -> bool:
+    if not domain:
+        return False
+    host = domain.lower()
+    return any(host == blocked or host.endswith(f".{blocked}") for blocked in blocklist)
+
+
+def _text_has_trade_data_signals(*texts: str | None) -> bool:
+    combined = " ".join(t for t in texts if t).lower()
+    if not combined:
+        return False
+    return any(keyword in combined for keyword in _TRADE_DATA_TEXT_KEYWORDS)
+
+
+def _is_trade_data_platform(
+    domain: str | None,
+    *texts: str | None,
+) -> bool:
+    """True when the result is a trade/cargo data site, not a product importer."""
+    if _domain_matches_blocklist(domain, _SKIP_TRADE_DATA_DOMAINS):
+        return True
+    if domain and any(keyword in domain.lower() for keyword in _TRADE_DATA_DOMAIN_KEYWORDS):
+        return True
+    return _text_has_trade_data_signals(*texts)
+
+
 def _clean_company_name(title: str) -> str:
     name = re.split(r"[-|–—:]", title)[0].strip()
     name = re.sub(r"\s+(home|homepage|official site)$", "", name, flags=re.I)
     return name[:120]
+
+
+def _clean_social_url(url: str) -> str:
+    parsed = urlparse(url)
+    return parsed._replace(query="", fragment="").geturl().rstrip("/")
+
+
+def _social_key(url: str) -> str | None:
+    domain = _domain(url)
+    if not domain:
+        return None
+    if "facebook.com" in domain:
+        return "facebook_url"
+    if "instagram.com" in domain:
+        return "instagram_url"
+    if "linkedin.com" in domain:
+        return "linkedin_url"
+    return None
+
+
+def _best_email(emails: set[str], company_domain: str | None) -> str | None:
+    blocked_prefixes = ("noreply@", "no-reply@", "donotreply@", "example@", "test@")
+    blocked_domains = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".css", ".js")
+    filtered = sorted(
+        e.lower()
+        for e in emails
+        if _EMAIL_ATTR_RE.match(e)
+        and not e.lower().startswith(blocked_prefixes)
+        and not e.lower().endswith(blocked_domains)
+        and "@" in e
+        and "." in e.split("@", 1)[1]
+    )
+    if not filtered:
+        return None
+    if company_domain:
+        for email in filtered:
+            if email.split("@", 1)[1].endswith(company_domain):
+                return email
+        for email in filtered:
+            domain = email.split("@", 1)[1]
+            if company_domain.endswith(domain) or domain.endswith(company_domain):
+                return email
+    return filtered[0]
+
+
+def _deobfuscate_emails(text: str) -> str:
+    """Normalize common email obfuscation before regex extraction."""
+    value = html.unescape(text)
+    value = re.sub(r"\s*\[at\]\s*|\s*\(at\)\s*|\s*\{at\}\s*|\s+at\s+", "@", value, flags=re.I)
+    value = re.sub(r"\s*\[dot\]\s*|\s*\(dot\)\s*|\s*\{dot\}\s*|\s+dot\s+", ".", value, flags=re.I)
+    value = value.replace("&#64;", "@").replace("&commat;", "@")
+    return value
+
+
+def _extract_emails(soup: BeautifulSoup, raw_text: str) -> set[str]:
+    emails: set[str] = set()
+
+    for anchor in soup.find_all("a", href=True):
+        href = anchor["href"].strip()
+        if href.lower().startswith("mailto:"):
+            address = href[7:].split("?")[0].strip()
+            if address:
+                emails.add(address)
+
+    for element in soup.find_all(attrs={"itemprop": re.compile(r"email", re.I)}):
+        text = element.get_text(" ", strip=True)
+        if text:
+            emails.update(_EMAIL_RE.findall(_deobfuscate_emails(text)))
+
+    for element in soup.find_all(attrs={"data-email": True}):
+        value = str(element.get("data-email", "")).strip()
+        if value:
+            emails.add(value)
+
+    for element in soup.find_all(class_=re.compile(r"email|e-mail|mail", re.I)):
+        text = element.get_text(" ", strip=True)
+        if text:
+            emails.update(_EMAIL_RE.findall(_deobfuscate_emails(text)))
+
+    cleaned = _deobfuscate_emails(raw_text)
+    emails.update(_EMAIL_RE.findall(cleaned))
+    return emails
+
+
+def _normalize_phone_raw(raw: str) -> str:
+    value = raw.strip()
+    value = re.sub(r"^tel:", "", value, flags=re.I)
+    value = value.split("?")[0].split(";")[0].strip()
+    return re.sub(r"\s+", " ", value)
+
+
+def _is_valid_phone_candidate(raw: str) -> bool:
+    value = _normalize_phone_raw(raw)
+    if not value:
+        return False
+
+    if _DATE_LIKE_RE.match(value):
+        return False
+
+    if _VERSION_LIKE_RE.match(value):
+        return False
+
+    # Decimal numbers are usually coordinates, versions, or IDs — not phone numbers.
+    if re.search(r"\d\.\d", value):
+        return False
+
+    if not re.match(r"^\+?[\d\s().-]+$", value):
+        return False
+
+    digits = re.sub(r"\D", "", value)
+    if len(digits) < 8 or len(digits) > 15:
+        return False
+
+    if len(set(digits)) <= 2:
+        return False
+
+    # Reject compact YYYYMMDD date strings.
+    if len(digits) == 8 and digits[:2] in ("19", "20"):
+        year, month, day = int(digits[:4]), int(digits[4:6]), int(digits[6:8])
+        if 1900 <= year <= 2099 and 1 <= month <= 12 and 1 <= day <= 31:
+            return False
+
+    # Reject dashed groups that look like calendar dates (e.g. 2024-01-15).
+    parts = re.split(r"[\s./-]+", value)
+    if len(parts) == 3 and all(part.isdigit() for part in parts):
+        a, b, c = (int(part) for part in parts)
+        if a > 31 and 1 <= b <= 12 and 1 <= c <= 31:
+            return False
+        if 1 <= a <= 31 and 1 <= b <= 12 and c >= 1900:
+            return False
+
+    has_separator = bool(re.search(r"[\s().-]", value))
+    starts_intl = value.startswith("+") or value.startswith("00")
+
+    # Long digit-only strings without + are usually IDs, not phone numbers.
+    if not starts_intl and not has_separator and len(digits) > 11:
+        return False
+
+    # Require international prefix or human-readable grouping for regex matches.
+    if not starts_intl and not has_separator:
+        return False
+
+    return True
+
+
+def _phone_score(value: str) -> int:
+    digits = re.sub(r"\D", "", value)
+    score = 0
+    if value.startswith("+") or value.startswith("00"):
+        score += 40
+    if re.search(r"[\s().-]", value):
+        score += 25
+    if 10 <= len(digits) <= 14:
+        score += 30
+    elif 8 <= len(digits) <= 15:
+        score += 10
+    if len(set(digits)) >= 5:
+        score += 10
+    return score
+
+
+def _best_phone(phones: set[str]) -> str | None:
+    valid: list[str] = []
+    for phone in phones:
+        normalized = _normalize_phone_raw(phone)
+        if _is_valid_phone_candidate(normalized):
+            valid.append(normalized)
+    if not valid:
+        return None
+    return max(valid, key=_phone_score)
+
+
+def _extract_phones(soup: BeautifulSoup) -> set[str]:
+    phones: set[str] = set()
+
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+
+    for anchor in soup.find_all("a", href=True):
+        href = anchor["href"].strip()
+        if href.lower().startswith("tel:"):
+            phones.add(href[4:])
+
+    for element in soup.find_all(attrs={"itemprop": re.compile(r"telephone", re.I)}):
+        text = element.get_text(" ", strip=True)
+        if text:
+            phones.add(text)
+
+    for element in soup.find_all(class_=re.compile(r"phone|tel|telephone|mobile|contact", re.I)):
+        text = element.get_text(" ", strip=True)
+        if not text or len(text) > 120:
+            continue
+        for match in _PHONE_INLINE_RE.finditer(text):
+            phones.add(match.group(0))
+
+    for element in soup.find_all(["p", "span", "div", "li", "td", "dd", "address"]):
+        text = element.get_text(" ", strip=True)
+        if not text or len(text) > 100:
+            continue
+        if _PHONE_LABEL_RE.search(text):
+            for match in _PHONE_INLINE_RE.finditer(text):
+                phones.add(match.group(0))
+
+    return phones
+
+
+def _infer_country_from_pages(
+    *,
+    page_texts: list[str],
+    phones: set[str],
+    company_domain: str | None,
+    fallback: str | None,
+    address_countries: list[str] | None = None,
+) -> str | None:
+    scores: dict[str, int] = {}
+
+    for text in page_texts:
+        for name, score in detect_countries_in_text(text).items():
+            scores[name] = scores.get(name, 0) + score
+
+    for raw_country in address_countries or []:
+        resolved = resolve_country_name(raw_country)
+        if resolved:
+            scores[resolved] = scores.get(resolved, 0) + 30
+
+    for phone in phones:
+        inferred = country_from_phone(phone)
+        if inferred:
+            scores[inferred] = scores.get(inferred, 0) + 35
+
+    domain_country = country_from_domain(company_domain)
+    if domain_country:
+        scores[domain_country] = scores.get(domain_country, 0) + 15
+
+    if not scores:
+        return resolve_country_name(fallback) or fallback
+
+    best_name, best_score = max(scores.items(), key=lambda item: item[1])
+    fallback_resolved = resolve_country_name(fallback)
+
+    if fallback_resolved and fallback_resolved == best_name:
+        return best_name
+
+    # Strong website evidence overrides the search region assignment.
+    if best_score >= 25:
+        return best_name
+
+    return fallback_resolved or best_name
+
+
+def _enrich_candidate_contact(candidate: DiscoveryCandidate) -> bool:
+    homepage = _homepage_url(candidate.website_url)
+    if not homepage:
+        return not _is_trade_data_platform(_domain(candidate.website_url), candidate.company_name)
+
+    candidate.website_url = homepage
+    emails: set[str] = set()
+    phones: set[str] = set()
+    socials: dict[str, str] = {}
+    page_texts: list[str] = []
+    address_countries: list[str] = []
+    company_domain = _domain(homepage)
+    fallback_country = candidate.country
+
+    with httpx.Client(
+        timeout=10,
+        follow_redirects=True,
+        headers={"User-Agent": USER_AGENT},
+    ) as client:
+        for path in _CONTACT_PATHS:
+            page_url = urljoin(homepage.rstrip("/") + "/", path.lstrip("/"))
+            if not can_fetch(page_url):
+                continue
+            try:
+                response = client.get(page_url)
+                response.raise_for_status()
+            except httpx.HTTPError:
+                continue
+
+            text = response.text
+            page_texts.append(text)
+            soup = BeautifulSoup(text, "html.parser")
+            emails.update(_extract_emails(soup, text))
+            phones.update(_extract_phones(soup))
+
+            for element in soup.find_all(attrs={"itemprop": re.compile(r"addressCountry", re.I)}):
+                value = element.get("content") or element.get_text(" ", strip=True)
+                if value:
+                    address_countries.append(value.strip())
+
+            for anchor in soup.find_all("a", href=True):
+                href = anchor["href"].strip()
+                if not href:
+                    continue
+
+                full_url = urljoin(page_url, href)
+                key = _social_key(full_url)
+                if key and key not in socials:
+                    socials[key] = _clean_social_url(full_url)
+
+            if emails and phones:
+                break
+
+    candidate.email = _clean_found(_best_email(emails, company_domain))
+    candidate.phone = _clean_found(_best_phone(phones))
+    candidate.facebook_url = _clean_found(socials.get("facebook_url"))
+    candidate.instagram_url = _clean_found(socials.get("instagram_url"))
+    candidate.linkedin_url = _clean_found(socials.get("linkedin_url"))
+    candidate.country = _infer_country_from_pages(
+        page_texts=page_texts,
+        phones=phones,
+        company_domain=company_domain,
+        fallback=fallback_country,
+        address_countries=address_countries,
+    )
+
+    page_preview = " ".join(page_texts)[:8000] if page_texts else ""
+    if _is_trade_data_platform(company_domain, candidate.company_name, page_preview, candidate.match_reason):
+        return False
+    return True
+
+
+def _enrich_candidates(candidates: list[DiscoveryCandidate]) -> None:
+    kept: list[DiscoveryCandidate] = []
+    for candidate in candidates:
+        if _enrich_candidate_contact(candidate):
+            kept.append(candidate)
+    candidates[:] = kept
 
 
 def _category_search_terms(categories: list[str], limit: int = 4) -> list[str]:
@@ -182,24 +693,92 @@ def _category_search_terms(categories: list[str], limit: int = 4) -> list[str]:
     return terms
 
 
+_COUNTRY_GL_CODES = {
+    "us": "us",
+    "usa": "us",
+    "united states": "us",
+    "uk": "gb",
+    "united kingdom": "gb",
+    "britain": "gb",
+    "australia": "au",
+    "au": "au",
+    "canada": "ca",
+    "ca": "ca",
+    "mexico": "mx",
+    "mx": "mx",
+    "uae": "ae",
+    "saudi arabia": "sa",
+    "pakistan": "pk",
+    "india": "in",
+}
+
+
+def _parse_list_field(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [part.strip() for part in re.split(r"[,;]", value) if part.strip()]
+
+
+def _country_gl_code(country: str | None) -> str | None:
+    if not country:
+        return None
+    key = country.strip().lower()
+    if key in _COUNTRY_GL_CODES:
+        return _COUNTRY_GL_CODES[key]
+    if len(key) == 2:
+        return key
+    return None
+
+
+def _normalize_industries(
+    industries: list[str] | None,
+    industry: str | None,
+) -> list[str]:
+    resolved: list[str] = []
+    for value in industries or []:
+        trimmed = value.strip()
+        if trimmed and trimmed not in resolved:
+            resolved.append(trimmed)
+    if not resolved and industry:
+        for value in _parse_list_field(industry):
+            if value not in resolved:
+                resolved.append(value)
+    return resolved[:MAX_DISCOVERY_INDUSTRIES]
+
+
+def _industry_label(industries: list[str]) -> str | None:
+    if not industries:
+        return None
+    return ", ".join(industries)
+
+
 def _build_search_query(
     country: str | None,
-    industry: str | None,
+    industries: list[str],
     categories: list[str],
 ) -> str:
-    parts: list[str] = ["food importer distributor wholesale"]
+    # Target businesses that sell/import food products — not trade-data platforms.
+    parts: list[str] = ["food wholesaler distributor spices condiments grocery"]
+    parts.extend(_category_search_terms(categories, limit=3))
     if country:
         parts.append(country)
-    if industry:
+    for industry in industries[:MAX_DISCOVERY_INDUSTRIES]:
         parts.append(industry)
-    parts.extend(_category_search_terms(categories))
+    parts.extend(_SEARCH_QUERY_EXCLUSIONS)
     return " ".join(parts)
 
 
-def _discover_via_serpapi(query: str, limit: int, country: str | None) -> list[DiscoveryCandidate]:
+def _discover_via_serpapi(
+    query: str,
+    limit: int,
+    country: str | None,
+    *,
+    gl_code: str | None = None,
+    industry_label: str | None = None,
+) -> tuple[list[DiscoveryCandidate], list[str]]:
     api_key = settings.serpapi_api_key
     if not api_key:
-        return []
+        return [], []
 
     params: dict[str, str | int] = {
         "engine": "google",
@@ -207,38 +786,56 @@ def _discover_via_serpapi(query: str, limit: int, country: str | None) -> list[D
         "api_key": api_key,
         "num": min(limit * 2, 20),
     }
-    if country:
-        params["gl"] = country[:2].lower() if len(country) >= 2 else country
+    gl = gl_code or _country_gl_code(country)
+    if gl:
+        params["gl"] = gl
 
+    messages: list[str] = []
     try:
         response = httpx.get("https://serpapi.com/search.json", params=params, timeout=20)
         response.raise_for_status()
         data = response.json()
-    except httpx.HTTPError:
-        return []
+    except httpx.HTTPError as exc:
+        messages.append(f"Web search request failed for {country or 'global'}: {exc}")
+        return [], messages
 
+    if api_error := data.get("error"):
+        messages.append(f"Web search error for {country or 'global'}: {api_error}")
+        return [], messages
+
+    organic_results = data.get("organic_results", [])
     candidates: list[DiscoveryCandidate] = []
-    for item in data.get("organic_results", []):
+    filtered_out = 0
+    trade_data_skipped = 0
+    for item in organic_results:
         link = item.get("link") or ""
         title = item.get("title") or ""
         snippet = item.get("snippet") or ""
 
         domain = _domain(link)
         if not domain or any(skip in domain for skip in _SKIP_DOMAINS):
+            filtered_out += 1
             continue
         if any(part in link.lower() for part in _SKIP_URL_PARTS):
+            filtered_out += 1
             continue
 
         company_name = _clean_company_name(title)
         if not _looks_like_company_name(company_name):
+            filtered_out += 1
+            continue
+
+        if _is_trade_data_platform(domain, company_name, title, snippet):
+            trade_data_skipped += 1
             continue
 
         candidates.append(
             DiscoveryCandidate(
                 candidate_id=str(uuid.uuid4()),
                 company_name=company_name,
-                website_url=link,
+                website_url=_homepage_url(link) or link,
                 country=country,
+                industry=industry_label,
                 source="web_search",
                 source_detail="SerpAPI Google search",
                 match_reason=snippet[:200] if snippet else f"Matched query: {query}",
@@ -246,7 +843,67 @@ def _discover_via_serpapi(query: str, limit: int, country: str | None) -> list[D
         )
         if len(candidates) >= limit:
             break
-    return candidates
+
+    if not candidates:
+        if organic_results:
+            detail = (
+                f" ({trade_data_skipped} trade-data site(s) excluded)"
+                if trade_data_skipped
+                else ""
+            )
+            messages.append(
+                f"Google returned {len(organic_results)} result(s) for {country or 'global'}, "
+                f"but none looked like food importer/distributor websites after filtering{detail}."
+            )
+        else:
+            messages.append(f"Google returned no organic results for {country or 'global'}.")
+    elif filtered_out or trade_data_skipped:
+        extras: list[str] = []
+        if trade_data_skipped:
+            extras.append(f"{trade_data_skipped} trade-data site(s) excluded")
+        messages.append(
+            f"{country or 'Global'}: kept {len(candidates)} compan{'y' if len(candidates) == 1 else 'ies'} "
+            f"from {len(organic_results)} Google result(s)"
+            + (f" ({'; '.join(extras)})" if extras else "")
+            + "."
+        )
+
+    return candidates, messages
+
+
+def _discover_via_serpapi_for_markets(
+    regions: list[DiscoveryRegion],
+    industries: list[str],
+    categories: list[str],
+    limit: int,
+) -> tuple[list[DiscoveryCandidate], list[str], list[str]]:
+    industry_label = _industry_label(industries)
+    if not regions:
+        query = _build_search_query(None, industries, categories)
+        found, messages = _discover_via_serpapi(
+            query, limit, None, industry_label=industry_label
+        )
+        return found, messages, [query]
+
+    per_market_limit = max(3, limit // len(regions))
+    all_candidates: list[DiscoveryCandidate] = []
+    messages: list[str] = []
+    queries: list[str] = []
+
+    for region in regions:
+        query = _build_search_query(region["label"], industries, categories)
+        queries.append(query)
+        found, market_messages = _discover_via_serpapi(
+            query,
+            per_market_limit,
+            region["label"],
+            gl_code=region["gl_code"],
+            industry_label=industry_label,
+        )
+        all_candidates.extend(found)
+        messages.extend(market_messages)
+
+    return _dedupe_candidates(all_candidates)[:limit], messages, queries
 
 
 def _discover_via_website_links(
@@ -305,7 +962,7 @@ def _discover_via_website_links(
                     DiscoveryCandidate(
                         candidate_id=str(uuid.uuid4()),
                         company_name=company_name[:120],
-                        website_url=full_url if full_url.startswith("http") else f"https://{full_url}",
+                        website_url=_homepage_url(full_url) or full_url,
                         country=country,
                         industry=industry,
                         source="website_links",
@@ -324,29 +981,30 @@ def _discover_via_website_links(
 def _resolve_seed_context(
     db: Session,
     seed_lead_id: int | None,
-    country: str | None,
-    industry: str | None,
+    industries: list[str],
     categories: list[str],
-) -> tuple[str | None, str | None, list[str], str | None]:
+) -> tuple[list[str], list[str], str | None]:
     website_url: str | None = None
     if seed_lead_id:
         buyer = buyers_module.get_buyer(db, seed_lead_id)
         if buyer:
-            country = country or buyer.country
-            industry = industry or buyer.industry
+            if not industries and buyer.industry:
+                industries = _normalize_industries(None, buyer.industry)
             website_url = buyer.website_url
             if not categories:
                 profile = ResearchModule().research_buyer(db, seed_lead_id)
                 categories = profile.matched_categories
-    return country, industry, categories, website_url
+    return industries, categories, website_url
 
 
 def discover_leads(
     db: Session,
     *,
     seed_lead_id: int | None = None,
+    region_codes: list[str] | None = None,
     country: str | None = None,
     industry: str | None = None,
+    industries: list[str] | None = None,
     categories: list[str] | None = None,
     limit: int = 15,
     use_web_search: bool = True,
@@ -356,27 +1014,64 @@ def discover_leads(
     limit = max(1, min(limit, 30))
     result = DiscoveryResult()
 
-    country, industry, categories, seed_url = _resolve_seed_context(
-        db, seed_lead_id, country, industry, categories
+    normalized_industries = _normalize_industries(industries, industry)
+    normalized_industries, categories, seed_url = _resolve_seed_context(
+        db, seed_lead_id, normalized_industries, categories
     )
 
-    if not country and not industry and not categories and not seed_url:
+    regions, region_messages = resolve_region_codes(region_codes)
+    result.messages.extend(region_messages)
+
+    if not regions and country:
+        matched = match_region_code(country)
+        if matched:
+            regions, legacy_messages = resolve_region_codes([matched])
+            result.messages.extend(legacy_messages)
+
+    if not regions and not normalized_industries and not categories and not seed_url:
         result.messages.append(
-            "Provide a seed lead, country, industry, or product categories to discover prospects."
+            f"Select up to {MAX_DISCOVERY_REGIONS} target regions, or provide industry / a seed lead."
         )
         return result
 
     all_candidates: list[DiscoveryCandidate] = []
-    query = _build_search_query(country, industry, categories)
+    region_labels = [region["label"] for region in regions]
+    industry_label = _industry_label(normalized_industries)
+    query = _build_search_query(
+        region_labels[0] if region_labels else None,
+        normalized_industries,
+        categories,
+    )
     result.search_query = query
+    if len(regions) > 1:
+        result.search_query = (
+            f"{len(regions)} regions searched separately: {', '.join(region_labels)}. "
+            f"Example query: {query}"
+        )
+    if industry_label and len(normalized_industries) > 1:
+        result.search_query = (
+            f"{result.search_query} · Industries: {industry_label}"
+            if result.search_query
+            else f"Industries: {industry_label}"
+        )
 
     if use_web_search:
         if settings.serpapi_api_key:
-            found = _discover_via_serpapi(query, limit, country)
+            found, search_messages, queries = _discover_via_serpapi_for_markets(
+                regions,
+                normalized_industries,
+                categories,
+                limit,
+            )
+            if len(regions) <= 1 and queries:
+                result.search_query = queries[0]
+                if industry_label and len(normalized_industries) > 1:
+                    result.search_query = f"{queries[0]} · Industries: {industry_label}"
+            result.messages.extend(search_messages)
             if found:
                 result.sources_used.append("web_search")
                 all_candidates.extend(found)
-            else:
+            elif not search_messages:
                 result.messages.append("Web search returned no results for this query.")
         else:
             result.messages.append(
@@ -384,7 +1079,12 @@ def discover_leads(
             )
 
     if use_website_links and seed_url:
-        found = _discover_via_website_links(seed_url, country, industry, limit)
+        found = _discover_via_website_links(
+            seed_url,
+            region_labels[0] if region_labels else None,
+            industry_label,
+            limit,
+        )
         if found:
             result.sources_used.append("website_links")
             all_candidates.extend(found)
@@ -392,6 +1092,7 @@ def discover_leads(
             result.messages.append("No partner/distributor links found on the seed website.")
 
     all_candidates = _dedupe_candidates(all_candidates)[:limit]
+    _enrich_candidates(all_candidates)
     existing_names, existing_domains = _existing_buyer_keys(db)
     _mark_existing(all_candidates, existing_names, existing_domains)
     result.candidates = all_candidates
@@ -434,7 +1135,7 @@ def parse_csv_candidates(content: str, default_country: str | None = None) -> li
             DiscoveryCandidate(
                 candidate_id=str(uuid.uuid4()),
                 company_name=name,
-                website_url=website or None,
+                website_url=_homepage_url(website) or website or None,
                 country=country or default_country,
                 industry=industry or None,
                 source="csv",
@@ -462,6 +1163,7 @@ def discover_from_csv(
         return result
 
     existing_names, existing_domains = _existing_buyer_keys(db)
+    _enrich_candidates(candidates)
     _mark_existing(candidates, existing_names, existing_domains)
     result.candidates = candidates
     return result
@@ -500,6 +1202,7 @@ def import_candidates(
                 "website_url": raw.get("website_url") or None,
                 "country": raw.get("country") or None,
                 "industry": raw.get("industry") or None,
+                "linkedin_company_url": _value_or_none(raw.get("linkedin_url")),
                 "source": raw.get("source") or "discovery",
             },
         )
@@ -512,8 +1215,31 @@ def import_candidates(
             entity_type="buyer",
             entity_id=buyer.id,
             action="discovered_import",
-            details={"source": raw.get("source")},
+            details={
+                "source": raw.get("source"),
+                "email": _value_or_none(raw.get("email")),
+                "phone": _value_or_none(raw.get("phone")),
+                "facebook_url": _value_or_none(raw.get("facebook_url")),
+                "instagram_url": _value_or_none(raw.get("instagram_url")),
+                "linkedin_url": _value_or_none(raw.get("linkedin_url")),
+            },
         )
+
+        email = _value_or_none(raw.get("email"))
+        phone = _value_or_none(raw.get("phone"))
+        if email or phone:
+            buyers_module.create_contact(
+                db,
+                {
+                    "buyer_id": buyer.id,
+                    "full_name": "General contact",
+                    "email": email,
+                    "phone": phone,
+                    "linkedin_profile_url": _value_or_none(raw.get("linkedin_url")),
+                    "data_source": "discovery",
+                    "consent_status": "unknown",
+                },
+            )
 
         if auto_onboard:
             try:

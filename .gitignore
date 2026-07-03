@@ -14,6 +14,7 @@ env/
 # Environment
 backend/.env
 backend/.env.local
+backend/credentials.json
 .env
 .env.local
 

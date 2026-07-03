@@ -10,15 +10,13 @@ from config import settings
 
 
 class EmailClient:
-    def __init__(self) -> None:
-        self.client_id = settings.gmail_client_id
-        self.client_secret = settings.gmail_client_secret
-        self.refresh_token = settings.gmail_refresh_token
-        self.sender_email = settings.gmail_sender_email
-
     @property
     def is_configured(self) -> bool:
-        return bool(self.client_id and self.client_secret and self.refresh_token)
+        return bool(
+            settings.gmail_client_id
+            and settings.gmail_client_secret
+            and settings.gmail_refresh_token
+        )
 
     def create_draft(self, *, to: str, subject: str, body: str) -> dict[str, Any]:
         return {
@@ -52,17 +50,17 @@ class EmailClient:
 
         creds = Credentials(
             token=None,
-            refresh_token=self.refresh_token,
+            refresh_token=settings.gmail_refresh_token,
             token_uri="https://oauth2.googleapis.com/token",
-            client_id=self.client_id,
-            client_secret=self.client_secret,
+            client_id=settings.gmail_client_id,
+            client_secret=settings.gmail_client_secret,
         )
 
         message = MIMEText(body, "plain", "utf-8")
         message["to"] = to
         message["subject"] = subject
-        if self.sender_email:
-            message["from"] = self.sender_email
+        if settings.gmail_sender_email:
+            message["from"] = settings.gmail_sender_email
 
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
 
