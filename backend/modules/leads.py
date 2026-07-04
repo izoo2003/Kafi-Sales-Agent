@@ -26,6 +26,34 @@ def research_buyer(db: Session, buyer_id: int) -> BuyerProfile:
     return _research.research_buyer(db, buyer_id)
 
 
+def get_saved_buyer_profile(db: Session, buyer_id: int) -> BuyerProfile | None:
+    return _research.get_saved_profile(db, buyer_id)
+
+
+def profile_to_read_dict(profile: BuyerProfile) -> dict:
+    return {
+        "buyer_id": profile.buyer_id,
+        "company_name": profile.company_name,
+        "website_url": profile.website_url,
+        "country": profile.country,
+        "industry": profile.industry,
+        "website_summary": profile.website_summary,
+        "social_summary": profile.social_summary,
+        "relationship_context": profile.relationship_context,
+        "signals": profile.signals,
+        "matched_categories": profile.matched_categories,
+        "matched_products": profile.matched_products,
+        "product_fit_score": profile.product_fit_score,
+        "market_role": profile.market_role,
+        "market_role_reasoning": profile.market_role_reasoning,
+        "market_role_confidence": profile.market_role_confidence,
+        "producer_tier": profile.producer_tier,
+        "producer_conversion_pct": profile.producer_conversion_pct,
+        "producer_tier_reasoning": profile.producer_tier_reasoning,
+        "researched_at": profile.researched_at,
+    }
+
+
 def score_buyer(db: Session, buyer_id: int) -> LeadScore:
     profile = _research.research_buyer(db, buyer_id)
     return _orchestrator.scoring.score(db, profile)

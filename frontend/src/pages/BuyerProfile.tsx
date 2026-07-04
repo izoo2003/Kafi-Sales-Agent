@@ -9,6 +9,7 @@ import {
 import { ScoreBadge } from "../components/ScoreBadge";
 import { MarketRoleBadge } from "../components/MarketRoleBadge";
 import { ConversionBar, ProducerTierBadge } from "../components/ProducerTierBadge";
+import { ContactsPanel } from "../components/ContactsPanel";
 import { DiscoverLeadsPanel } from "../components/DiscoverLeadsPanel";
 import { ProductInterestPanel } from "../components/ProductInterestPanel";
 
@@ -32,6 +33,7 @@ export function BuyerProfile({ leadId, onBack, onError }: BuyerProfileProps) {
   const [scoring, setScoring] = useState(false);
   const [draftNotice, setDraftNotice] = useState<string | null>(null);
   const [showDiscover, setShowDiscover] = useState(false);
+  const [contactsVersion, setContactsVersion] = useState(0);
 
   const loadProfile = useCallback(async () => {
     setLoading(true);
@@ -47,6 +49,12 @@ export function BuyerProfile({ leadId, onBack, onError }: BuyerProfileProps) {
         setScore(await client.getLatestScore(leadId));
       } catch {
         setScore(null);
+      }
+
+      try {
+        setProfile(await client.getLeadProfile(leadId));
+      } catch {
+        setProfile(null);
       }
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to load buyer");
@@ -75,17 +83,15 @@ export function BuyerProfile({ leadId, onBack, onError }: BuyerProfileProps) {
   async function handleScore() {
     setScoring(true);
     try {
-      const [profileData, scoreData, leadData] = await Promise.all([
-        client.researchLead(leadId),
-        client.scoreLead(leadId),
+      const scoreData = await client.scoreLead(leadId);
+      const [profileData, leadData, crossSellData] = await Promise.all([
+        client.getLeadProfile(leadId),
         client.getLead(leadId),
+        client.getCrossSell(leadId).catch(() => [] as CrossSellRecommendation[]),
       ]);
       setProfile(profileData);
       setScore(scoreData);
       setLead(leadData);
-      const crossSellData = await client.getCrossSell(leadId).catch(
-        () => [] as CrossSellRecommendation[],
-      );
       setCrossSell(crossSellData);
     } catch (e) {
       onError(e instanceof Error ? e.message : "Scoring failed");
@@ -177,6 +183,12 @@ export function BuyerProfile({ leadId, onBack, onError }: BuyerProfileProps) {
         />
       )}
 
+      <ContactsPanel
+        leadId={leadId}
+        onError={onError}
+        onContactsChange={() => setContactsVersion((v) => v + 1)}
+      />
+
       {score && (
         <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
           <h3 className="text-sm font-medium text-slate-300 mb-2">Lead score</h3>
@@ -196,6 +208,15 @@ export function BuyerProfile({ leadId, onBack, onError }: BuyerProfileProps) {
             WARM / COLD.
           </p>
         </section>
+      )}
+
+      {profile?.researched_at && (
+        <p className="text-xs text-slate-500">
+          Last researched {new Date(profile.researched_at).toLocaleString()}
+          {profile.product_fit_score != null && profile.product_fit_score > 0 && (
+            <> · Product fit score {profile.product_fit_score}</>
+          )}
+        </p>
       )}
 
       {profile && (
@@ -347,6 +368,7 @@ export function BuyerProfile({ leadId, onBack, onError }: BuyerProfileProps) {
         leadName={lead.company_name}
         score={score}
         suggestedProducts={profile?.matched_products ?? []}
+        contactsVersion={contactsVersion}
         onError={onError}
         onDraftCreated={(msg) => {
           setDraftNotice(msg);

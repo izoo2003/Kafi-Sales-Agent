@@ -41,6 +41,11 @@ def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower()).strip()
 
 
+def normalize_product_name(name: str) -> str:
+    """Collapse whitespace/case for exact-name deduplication."""
+    return re.sub(r"\s+", " ", name.strip()).lower()
+
+
 _SIZE_SUFFIX_PATTERNS = [
     re.compile(r"\s+\d+\s*to\s*\d+\s*mm\b.*$", re.I),
     re.compile(r'\s+\d+"\s*length\b.*$', re.I),
@@ -57,6 +62,15 @@ def product_type_key(name: str) -> str:
     for pattern in _SIZE_SUFFIX_PATTERNS:
         n = pattern.sub("", n)
     return re.sub(r"\s+", " ", n).strip().lower()
+
+
+def product_dedupe_key(name: str) -> str:
+    """One key per distinct product — type first, then exact normalized name."""
+    type_key = product_type_key(name)
+    if type_key:
+        return f"type:{type_key}"
+    normalized = normalize_product_name(name)
+    return f"name:{normalized}" if normalized else ""
 
 
 def _display_name_for_type(type_key: str, variant_names: list[str]) -> str:

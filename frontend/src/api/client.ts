@@ -56,12 +56,14 @@ export interface BuyerProfile {
     type_key?: string;
     matched_keyword?: string;
   }>;
+  product_fit_score?: number;
   market_role?: string;
   market_role_reasoning?: string | null;
   market_role_confidence?: number | null;
   producer_tier?: string | null;
   producer_conversion_pct?: number | null;
   producer_tier_reasoning?: string | null;
+  researched_at?: string | null;
 }
 
 export interface LeadScore {
@@ -95,16 +97,61 @@ export interface ApproveDraftResult {
   send_message: string | null;
 }
 
+export interface QuotationLine {
+  product_id: number;
+  product_name?: string | null;
+  quantity: number;
+  unit_price: number;
+  price_unit?: string | null;
+  line_total: number;
+}
+
 export interface Quotation {
   id: number;
   buyer_id: number;
-  product_id: number;
-  quantity: number;
-  unit_price: number;
+  product_id: number | null;
+  quantity: number | null;
+  unit_price: number | null;
   incoterms: string | null;
   validity_date: string | null;
   status: string;
   pdf_path: string | null;
+  buyer_name?: string | null;
+  product_name?: string | null;
+  price_unit?: string | null;
+  line_total?: number | null;
+  lines?: QuotationLine[];
+  grand_total?: number | null;
+}
+
+export interface CategoryPricing {
+  category: string;
+  unit: string;
+  price_tiers: Record<string, number>;
+}
+
+export interface ConsentSummary {
+  total: number;
+  unknown: number;
+  granted: number;
+  denied: number;
+  with_birthday: number;
+}
+
+export interface ComplianceContact {
+  id: number;
+  buyer_id: number;
+  company_name: string;
+  country: string | null;
+  full_name: string;
+  designation: string | null;
+  email: string | null;
+  phone: string | null;
+  date_of_birth: string | null;
+  nationality: string | null;
+  consent_status: string;
+  preferred_language: string | null;
+  birthday_outreach_ok: boolean;
 }
 
 export interface ProductType {
@@ -121,13 +168,17 @@ export interface Product {
   moq: string | null;
 }
 
-export interface QuotationCreate {
-  buyer_id: number;
+export interface QuotationLineCreate {
   product_id: number;
   quantity: number;
+  price_tier?: string;
+}
+
+export interface QuotationCreate {
+  buyer_id: number;
+  lines: QuotationLineCreate[];
   incoterms?: string;
   validity_days?: number;
-  price_tier?: string;
 }
 
 export interface QuotationBatchCreate {
@@ -168,9 +219,11 @@ export interface Contact {
   id: number;
   buyer_id: number;
   full_name: string;
+  designation: string | null;
   email: string | null;
   phone: string | null;
   preferred_language: string | null;
+  consent_status: string;
 }
 
 export interface ContactCreate {
@@ -180,6 +233,16 @@ export interface ContactCreate {
   email?: string;
   phone?: string;
   preferred_language?: string;
+  consent_status?: string;
+}
+
+export interface ContactUpdate {
+  full_name?: string;
+  designation?: string;
+  email?: string;
+  phone?: string;
+  preferred_language?: string;
+  consent_status?: string;
 }
 
 export interface DiscoveryCandidate {
@@ -341,6 +404,7 @@ export const client = {
   createLead: (data: LeadCreate) =>
     request<Lead>("/leads", { method: "POST", body: JSON.stringify(data) }),
   getLead: (id: number) => request<Lead>(`/leads/${id}`),
+  getLeadProfile: (id: number) => request<BuyerProfile>(`/leads/${id}/profile`),
   researchLead: (id: number) =>
     request<BuyerProfile>(`/leads/${id}/research`, { method: "POST" }),
   getLatestScore: (id: number) => request<LeadScore>(`/leads/${id}/score`),
@@ -363,6 +427,13 @@ export const client = {
 
   createContact: (data: ContactCreate) =>
     request<Contact>("/leads/contacts", { method: "POST", body: JSON.stringify(data) }),
+  updateContact: (contactId: number, data: ContactUpdate) =>
+    request<Contact>(`/leads/contacts/${contactId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  deleteContact: (contactId: number) =>
+    request<void>(`/leads/contacts/${contactId}`, { method: "DELETE" }),
 
   listDiscoveryRegions: () =>
     request<DiscoveryRegionsResponse>("/leads/discover/regions"),
@@ -427,4 +498,36 @@ export const client = {
     }),
   quotationFileUrl: (quotationId: number) =>
     `${API_BASE}/quotations/${quotationId}/file`,
+  approveQuotation: (quotationId: number) =>
+    request<Quotation>(`/quotations/${quotationId}/approve`, { method: "POST" }),
+  createQuotationEmailDraft: (quotationId: number) =>
+    request<DraftInteraction>(`/quotations/${quotationId}/email-draft`, { method: "POST" }),
+  listCategoryPricing: () =>
+    request<{ categories: CategoryPricing[] }>("/quotations/pricing"),
+
+  getConsentSummary: () => request<ConsentSummary>("/compliance/summary"),
+  listComplianceContacts: (params: { consent?: string; q?: string } = {}) => {
+    const search = new URLSearchParams();
+    if (params.consent) search.set("consent", params.consent);
+    if (params.q) search.set("q", params.q);
+    const query = search.toString();
+    return request<ComplianceContact[]>(`/compliance/contacts${query ? `?${query}` : ""}`);
+  },
+  bulkUpdateConsent: (contactIds: number[], consentStatus: string) =>
+    request<{ updated_count: number }>("/compliance/contacts/bulk", {
+      method: "PATCH",
+      body: JSON.stringify({ contact_ids: contactIds, consent_status: consentStatus }),
+    }),
+  updateComplianceContact: (
+    contactId: number,
+    data: {
+      consent_status?: string;
+      date_of_birth?: string;
+      nationality?: string;
+    },
+  ) =>
+    request<ComplianceContact>(`/compliance/contacts/${contactId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
 };

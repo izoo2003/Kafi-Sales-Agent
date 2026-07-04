@@ -4,6 +4,7 @@ import re
 
 from db.models import (
     Buyer,
+    BuyerResearchProfile,
     ConsentStatus,
     Contact,
     ExportHistory,
@@ -65,6 +66,10 @@ def list_contacts_for_buyer(db: Session, buyer_id: int) -> list[Contact]:
     )
 
 
+def get_contact(db: Session, contact_id: int) -> Contact | None:
+    return db.get(Contact, contact_id)
+
+
 def create_contact(db: Session, data: dict) -> Contact:
     consent = data.pop("consent_status", "unknown")
     data["consent_status"] = ConsentStatus(consent)
@@ -91,12 +96,38 @@ def update_contact(db: Session, contact_id: int, data: dict) -> Contact | None:
     contact = db.get(Contact, contact_id)
     if not contact:
         return None
+    if "consent_status" in data and data["consent_status"] is not None:
+        contact.consent_status = ConsentStatus(data["consent_status"])
+        data = {k: v for k, v in data.items() if k != "consent_status"}
     for key, value in data.items():
-        if key in {"full_name", "email", "phone", "designation"}:
+        if key in {
+            "full_name",
+            "email",
+            "phone",
+            "designation",
+            "preferred_language",
+            "date_of_birth",
+            "nationality",
+        }:
             setattr(contact, key, value)
     db.commit()
     db.refresh(contact)
     return contact
+
+
+def delete_contact(db: Session, contact_id: int) -> bool:
+    contact = db.get(Contact, contact_id)
+    if not contact:
+        return False
+    db.query(Interaction).filter(Interaction.contact_id == contact_id).delete(
+        synchronize_session=False
+    )
+    db.query(ScheduledEvent).filter(ScheduledEvent.contact_id == contact_id).delete(
+        synchronize_session=False
+    )
+    db.delete(contact)
+    db.commit()
+    return True
 
 
 def upsert_primary_contact(
@@ -157,6 +188,9 @@ def delete_buyer(db: Session, buyer_id: int) -> bool:
     db.query(LeadScore).filter(LeadScore.buyer_id == buyer_id).delete(synchronize_session=False)
     db.query(Quotation).filter(Quotation.buyer_id == buyer_id).delete(synchronize_session=False)
     db.query(ExportHistory).filter(ExportHistory.buyer_id == buyer_id).delete(
+        synchronize_session=False
+    )
+    db.query(BuyerResearchProfile).filter(BuyerResearchProfile.buyer_id == buyer_id).delete(
         synchronize_session=False
     )
     db.delete(buyer)

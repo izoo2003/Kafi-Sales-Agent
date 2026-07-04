@@ -394,7 +394,7 @@ export function ProductInterestOutreach({
     try {
       const [contactList, profile] = await Promise.all([
         client.listLeadContacts(Number(buyerId)),
-        client.researchLead(Number(buyerId)).catch(() => null),
+        client.getLeadProfile(Number(buyerId)).catch(() => null),
       ]);
       setContacts(contactList);
       setSuggested(

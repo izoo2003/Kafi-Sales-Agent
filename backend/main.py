@@ -4,7 +4,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api import interactions, leads, quotations, scheduler
+from api import compliance, interactions, leads, quotations, scheduler
 from config import settings
 from db.session import SessionLocal
 from db.seed import seed_sample_data
@@ -55,6 +55,7 @@ app.add_middleware(
 )
 
 app.include_router(leads.router, prefix="/api")
+app.include_router(compliance.router, prefix="/api")
 app.include_router(quotations.router, prefix="/api")
 app.include_router(interactions.router, prefix="/api")
 app.include_router(scheduler.router, prefix="/api")

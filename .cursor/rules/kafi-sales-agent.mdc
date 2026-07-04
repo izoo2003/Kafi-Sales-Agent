@@ -81,6 +81,10 @@ For each lead, build a structured **BuyerProfile** from:
 
 **Canonical catalog:** `backend/data/kafi_essence_catalog.json` (177 ESSENCE SKUs from order sheet). Loader: `modules/product_catalog.py`. Re-import: `python scripts/import_essence_catalog.py path/to/ESSENCE ORDER SHEET.xlsx`.
 
+**Category pricing:** `backend/data/category_price_tiers.json`. Loader: `modules/pricing.py`.
+
+**Carton dimensions & FCL capacity:** `backend/data/kafi_carton_dimensions.json` (from `CARTONS SIZE LIST.xlsx` — L×W×H cm, CBM, cartons per 20'/40'/40'HC). Loader: `modules/carton_dimensions.py`. Re-import: `python scripts/import_carton_dimensions.py path/to/CARTONS SIZE LIST.xlsx`. API: `GET /api/quotations/carton-dimensions`. Used on quotation PDFs for shipping specs.
+
 **Categories in catalog:** pickles, chutneys, pastes, sauces, himalayan_salt, spices_masala, fried_onion, vermicelli_desserts, rusks, jams_jellies, honey, moringa_wellness, vinegar_water, juices, snacks_ingredients (+ rice when added to sheet).
 
 When researching a lead, match website/social/history text against catalog keywords → `matched_categories`, `matched_products`, `product_fit_score` on BuyerProfile. Use this for HOT/WARM/COLD and cross-sell.

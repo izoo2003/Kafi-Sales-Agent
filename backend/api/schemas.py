@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class BuyerCreate(BaseModel):
@@ -50,15 +50,57 @@ class ContactCreate(BaseModel):
     consent_status: str = "unknown"
 
 
+class ContactUpdate(BaseModel):
+    full_name: Optional[str] = None
+    designation: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    preferred_language: Optional[str] = None
+    consent_status: Optional[str] = None
+    date_of_birth: Optional[date] = None
+    nationality: Optional[str] = None
+
+
+class ConsentSummaryRead(BaseModel):
+    total: int
+    unknown: int
+    granted: int
+    denied: int
+    with_birthday: int
+
+
+class ComplianceContactRead(BaseModel):
+    id: int
+    buyer_id: int
+    company_name: str
+    country: Optional[str] = None
+    full_name: str
+    designation: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    date_of_birth: Optional[date] = None
+    nationality: Optional[str] = None
+    consent_status: str
+    preferred_language: Optional[str] = None
+    birthday_outreach_ok: bool = False
+
+
+class BulkConsentUpdate(BaseModel):
+    contact_ids: list[int] = Field(min_length=1)
+    consent_status: str
+
+
 class ContactRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     buyer_id: int
     full_name: str
+    designation: Optional[str] = None
     email: Optional[str]
     phone: Optional[str]
     preferred_language: Optional[str]
+    consent_status: str = "unknown"
 
 
 class ProductCreate(BaseModel):
@@ -81,19 +123,50 @@ class ProductRead(BaseModel):
     moq: Optional[str]
 
 
-class QuotationCreate(BaseModel):
-    buyer_id: int
+class QuotationLineCreate(BaseModel):
     product_id: int
     quantity: float = Field(gt=0)
+    price_tier: str = "standard"
+
+
+class QuotationCreate(BaseModel):
+    buyer_id: int
+    lines: list[QuotationLineCreate] | None = None
+    product_id: int | None = None
+    quantity: float = Field(default=20, gt=0)
+    price_tier: str = "standard"
     incoterms: str = "FOB"
     validity_days: int = 14
-    price_tier: str = "standard"
+
+    @model_validator(mode="after")
+    def normalize_lines(self) -> "QuotationCreate":
+        if self.lines:
+            return self
+        if self.product_id is not None:
+            self.lines = [
+                QuotationLineCreate(
+                    product_id=self.product_id,
+                    quantity=self.quantity,
+                    price_tier=self.price_tier,
+                )
+            ]
+            return self
+        raise ValueError("Provide lines or product_id")
 
 
 class QuotationBatchCreate(BaseModel):
     quantity: float = Field(default=20, gt=0)
     incoterms: str = "FOB"
-    max_quotes: int = Field(default=3, ge=1, le=5)
+    max_quotes: int = Field(default=3, ge=1, le=10)
+
+
+class QuotationLineRead(BaseModel):
+    product_id: int
+    product_name: Optional[str] = None
+    quantity: float
+    unit_price: float
+    price_unit: Optional[str] = None
+    line_total: float
 
 
 class QuotationRead(BaseModel):
@@ -101,13 +174,19 @@ class QuotationRead(BaseModel):
 
     id: int
     buyer_id: int
-    product_id: int
-    quantity: float
-    unit_price: float
+    product_id: Optional[int] = None
+    quantity: Optional[float] = None
+    unit_price: Optional[float] = None
     incoterms: Optional[str]
     validity_date: Optional[date]
     status: str
     pdf_path: Optional[str]
+    buyer_name: Optional[str] = None
+    product_name: Optional[str] = None
+    price_unit: Optional[str] = None
+    line_total: Optional[float] = None
+    lines: list[QuotationLineRead] = Field(default_factory=list)
+    grand_total: Optional[float] = None
 
 
 class InteractionRead(BaseModel):
@@ -220,16 +299,19 @@ class BuyerProfileRead(BaseModel):
     country: Optional[str]
     industry: Optional[str]
     website_summary: Optional[str]
+    social_summary: Optional[str] = None
     relationship_context: Optional[str]
     signals: list[str]
     matched_categories: list[str] = []
     matched_products: list[dict[str, Any]] = []
+    product_fit_score: int = 0
     market_role: str = "unknown"
     market_role_reasoning: Optional[str] = None
     market_role_confidence: Optional[float] = None
     producer_tier: Optional[str] = None
     producer_conversion_pct: Optional[float] = None
     producer_tier_reasoning: Optional[str] = None
+    researched_at: Optional[datetime] = None
 
 
 class DiscoveryRegionRead(BaseModel):

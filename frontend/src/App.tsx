@@ -1,14 +1,17 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { client } from "./api/client";
 import { AppHeader } from "./components/AppHeader";
 import { ApprovalQueue } from "./pages/ApprovalQueue";
 import { BuyerProfile } from "./pages/BuyerProfile";
+import { ConsentPage } from "./pages/ConsentPage";
+import { FormalQuotationsPage } from "./pages/FormalQuotationsPage";
 import { LeadsPage } from "./pages/LeadsPage";
 import { LeadsTablePage } from "./pages/LeadsTablePage";
 import { QuotationsPage } from "./pages/QuotationsPage";
 import { useDrafts } from "./hooks/useDrafts";
 import { useLeads } from "./hooks/useLeads";
 
-type Tab = "drafts" | "leads" | "table" | "quotations";
+type Tab = "drafts" | "leads" | "table" | "quotations" | "formal" | "compliance";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("drafts");
@@ -17,11 +20,18 @@ export default function App() {
   const { drafts, refresh: refreshDrafts } = useDrafts();
   const { leads, refresh: refreshLeads } = useLeads();
 
+  const [consentSummary, setConsentSummary] = useState<{ unknown: number } | null>(null);
+
   const refreshAll = useCallback(() => {
     setError(null);
     refreshDrafts();
     refreshLeads();
+    client.getConsentSummary().then(setConsentSummary).catch(() => setConsentSummary(null));
   }, [refreshDrafts, refreshLeads]);
+
+  useEffect(() => {
+    client.getConsentSummary().then(setConsentSummary).catch(() => setConsentSummary(null));
+  }, []);
 
   function handleSelectLead(leadId: number) {
     setError(null);
@@ -38,6 +48,12 @@ export default function App() {
     { id: "leads", label: "Leads", count: leads.length },
     { id: "table", label: "Leads table", count: leads.length },
     { id: "quotations", label: "Product outreach", count: 0 },
+    { id: "formal", label: "Quotations", count: 0 },
+    {
+      id: "compliance",
+      label: "Consent",
+      count: consentSummary?.unknown ?? 0,
+    },
   ];
 
   return (
@@ -95,6 +111,17 @@ export default function App() {
           <LeadsTablePage onError={setError} onSelectLead={handleSelectLead} />
         )}
         {tab === "quotations" && <QuotationsPage onError={setError} />}
+        {tab === "formal" && <FormalQuotationsPage onError={setError} />}
+        {tab === "compliance" && selectedLeadId !== null && (
+          <BuyerProfile
+            leadId={selectedLeadId}
+            onBack={handleBackFromProfile}
+            onError={setError}
+          />
+        )}
+        {tab === "compliance" && selectedLeadId === null && (
+          <ConsentPage onError={setError} onSelectLead={handleSelectLead} />
+        )}
       </main>
     </div>
   );

@@ -7,6 +7,7 @@ interface ProductInterestPanelProps {
   leadName: string;
   score: LeadScore | null;
   suggestedProducts?: SuggestedProduct[];
+  contactsVersion?: number;
   onError: (message: string) => void;
   onDraftCreated?: (message: string) => void;
 }
@@ -16,6 +17,7 @@ export function ProductInterestPanel({
   leadName,
   score,
   suggestedProducts = [],
+  contactsVersion = 0,
   onError,
   onDraftCreated,
 }: ProductInterestPanelProps) {
@@ -41,7 +43,7 @@ export function ProductInterestPanel({
 
   useEffect(() => {
     loadData();
-  }, [loadData]);
+  }, [loadData, contactsVersion]);
 
   if (!score) {
     return (

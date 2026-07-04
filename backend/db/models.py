@@ -125,6 +125,40 @@ class Buyer(Base):
     export_history: Mapped[list["ExportHistory"]] = relationship(back_populates="buyer")
     lead_scores: Mapped[list["LeadScore"]] = relationship(back_populates="buyer")
     quotations: Mapped[list["Quotation"]] = relationship(back_populates="buyer")
+    research_profile: Mapped[Optional["BuyerResearchProfile"]] = relationship(
+        back_populates="buyer",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class BuyerResearchProfile(Base):
+    __tablename__ = "buyer_research_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    buyer_id: Mapped[int] = mapped_column(
+        ForeignKey("buyers.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    website_summary: Mapped[Optional[str]] = mapped_column(Text)
+    social_summary: Mapped[Optional[str]] = mapped_column(Text)
+    relationship_context: Mapped[Optional[str]] = mapped_column(Text)
+    signals: Mapped[list] = mapped_column(JSONB, default=list)
+    matched_categories: Mapped[list] = mapped_column(JSONB, default=list)
+    matched_products: Mapped[list] = mapped_column(JSONB, default=list)
+    product_fit_score: Mapped[int] = mapped_column(Integer, default=0)
+    raw: Mapped[Optional[dict]] = mapped_column(JSONB)
+    researched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    buyer: Mapped["Buyer"] = relationship(back_populates="research_profile")
 
 
 class Contact(Base):
@@ -165,6 +199,9 @@ class Product(Base):
 
     export_history: Mapped[list["ExportHistory"]] = relationship(back_populates="product")
     quotations: Mapped[list["Quotation"]] = relationship(back_populates="product")
+    quotation_line_items: Mapped[list["QuotationLineItem"]] = relationship(
+        back_populates="product"
+    )
 
 
 class ExportHistory(Base):
@@ -223,9 +260,9 @@ class Quotation(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     buyer_id: Mapped[int] = mapped_column(ForeignKey("buyers.id"), nullable=False)
-    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
-    quantity: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
-    unit_price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    product_id: Mapped[Optional[int]] = mapped_column(ForeignKey("products.id"), nullable=True)
+    quantity: Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
+    unit_price: Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
     incoterms: Mapped[Optional[str]] = mapped_column(String(20))
     validity_date: Mapped[Optional[date]] = mapped_column(Date)
     status: Mapped[QuotationStatus] = mapped_column(Enum(QuotationStatus), default=QuotationStatus.draft)
@@ -234,7 +271,26 @@ class Quotation(Base):
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     buyer: Mapped["Buyer"] = relationship(back_populates="quotations")
-    product: Mapped["Product"] = relationship(back_populates="quotations")
+    product: Mapped[Optional["Product"]] = relationship(back_populates="quotations")
+    line_items: Mapped[list["QuotationLineItem"]] = relationship(
+        back_populates="quotation",
+        cascade="all, delete-orphan",
+        order_by="QuotationLineItem.sort_order",
+    )
+
+
+class QuotationLineItem(Base):
+    __tablename__ = "quotation_line_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    quotation_id: Mapped[int] = mapped_column(ForeignKey("quotations.id", ondelete="CASCADE"), nullable=False)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    quantity: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    unit_price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    quotation: Mapped["Quotation"] = relationship(back_populates="line_items")
+    product: Mapped["Product"] = relationship(back_populates="quotation_line_items")
 
 
 class ScheduledEvent(Base):

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from api.deps import get_db
 from api.schemas import (
+    InteractionRead,
     ProductCreate,
     ProductRead,
     QuotationBatchCreate,
@@ -27,7 +28,15 @@ def list_quotations(
     buyer_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
-    return commerce.list_quotations(db, buyer_id=buyer_id)
+    rows = commerce.list_quotations(db, buyer_id=buyer_id)
+    return [QuotationRead(**commerce.quotation_to_dict(db, row)) for row in rows]
+
+
+@router.get("/pricing")
+def list_category_pricing():
+    from modules.pricing import list_all_category_pricing
+
+    return {"categories": list_all_category_pricing()}
 
 
 @router.post("", response_model=QuotationRead, status_code=201)
@@ -38,11 +47,17 @@ def create_quotation(payload: QuotationCreate, db: Session = Depends(get_db)):
     if score.score not in (LeadScoreLabel.HOT, LeadScoreLabel.WARM):
         raise HTTPException(400, "Quotations can only be created for HOT or WARM leads")
     try:
-        quotation = commerce.create_quotation(db, **payload.model_dump())
+        quotation = commerce.create_quotation(
+            db,
+            buyer_id=payload.buyer_id,
+            lines=[line.model_dump() for line in (payload.lines or [])],
+            incoterms=payload.incoterms,
+            validity_days=payload.validity_days,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     log_action(db, entity_type="quotation", entity_id=quotation.id, action="created")
-    return quotation
+    return QuotationRead(**commerce.quotation_to_dict(db, quotation))
 
 
 @router.post("/for-lead/{lead_id}", response_model=list[QuotationRead], status_code=201)
@@ -64,7 +79,7 @@ def create_quotations_for_lead(
         raise HTTPException(400, str(exc)) from exc
     for quotation in quotations:
         log_action(db, entity_type="quotation", entity_id=quotation.id, action="auto_created")
-    return quotations
+    return [QuotationRead(**commerce.quotation_to_dict(db, q)) for q in quotations]
 
 
 @router.get("/products", response_model=list[ProductRead])
@@ -102,6 +117,21 @@ def list_product_types():
     return {"count": len(types), "product_types": types}
 
 
+@router.get("/carton-dimensions")
+def get_carton_dimensions(
+    brand: str | None = Query(default=None),
+    q: str | None = Query(default=None),
+):
+    from modules.carton_dimensions import list_entries, load_dimensions
+
+    catalog = load_dimensions()
+    return {
+        "entry_count": catalog.get("entry_count", 0),
+        "essence_count": catalog.get("essence_count", 0),
+        "entries": list_entries(brand=brand, q=q),
+    }
+
+
 @router.get("/catalog")
 def get_product_catalog():
     from modules.product_catalog import list_categories, load_catalog
@@ -112,6 +142,32 @@ def get_product_catalog():
         "product_count": catalog.get("product_count", 0),
         "categories": list_categories(),
     }
+
+
+@router.post("/{quotation_id}/approve", response_model=QuotationRead)
+def approve_quotation(quotation_id: int, db: Session = Depends(get_db)):
+    try:
+        quotation = commerce.approve_quotation(db, quotation_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    log_action(db, entity_type="quotation", entity_id=quotation_id, action="approved")
+    return QuotationRead(**commerce.quotation_to_dict(db, quotation))
+
+
+@router.post("/{quotation_id}/email-draft", response_model=InteractionRead)
+def create_quotation_email_draft(quotation_id: int, db: Session = Depends(get_db)):
+    try:
+        draft = commerce.create_quotation_email_draft(db, quotation_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    log_action(
+        db,
+        entity_type="quotation",
+        entity_id=quotation_id,
+        action="email_draft_created",
+        details={"interaction_id": draft.id},
+    )
+    return draft
 
 
 @router.get("/{quotation_id}/file")

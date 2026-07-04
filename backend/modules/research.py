@@ -1,14 +1,15 @@
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 from bs4 import BeautifulSoup
 from sqlalchemy.orm import Session
 
-from db.models import Buyer, Contact, ExportHistory, Interaction
+from db.models import Buyer, BuyerResearchProfile, Contact, ExportHistory, Interaction
 from modules.market_role import MarketRoleResult, classify_market_role
 from modules.product_catalog import match_text_to_catalog
+from modules.robots import USER_AGENT, can_fetch
 
 
 @dataclass
@@ -31,6 +32,7 @@ class BuyerProfile:
     producer_tier: str | None = None
     producer_conversion_pct: float | None = None
     producer_tier_reasoning: str | None = None
+    researched_at: datetime | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -47,8 +49,16 @@ class ResearchModule:
             return None, [], ""
 
         signals: list[str] = []
+        if not can_fetch(url, USER_AGENT):
+            return "Website fetch blocked by robots.txt", signals, ""
+
         try:
-            response = httpx.get(url, timeout=self.timeout, follow_redirects=True)
+            response = httpx.get(
+                url,
+                timeout=self.timeout,
+                follow_redirects=True,
+                headers={"User-Agent": USER_AGENT},
+            )
             response.raise_for_status()
         except httpx.HTTPError as exc:
             return f"Could not fetch website: {exc}", signals, ""
@@ -151,7 +161,7 @@ class ResearchModule:
 
         self._persist_market_role(db, buyer, role_result)
 
-        return BuyerProfile(
+        profile = BuyerProfile(
             buyer_id=buyer.id,
             company_name=buyer.company_name,
             website_url=buyer.website_url,
@@ -184,6 +194,60 @@ class ResearchModule:
                 "producer_tier_reasoning": role_result.producer_tier_reasoning,
             },
         )
+        self._persist_profile(db, profile)
+        return profile
+
+    def get_saved_profile(self, db: Session, buyer_id: int) -> BuyerProfile | None:
+        buyer = db.get(Buyer, buyer_id)
+        if not buyer:
+            raise ValueError(f"Buyer {buyer_id} not found")
+
+        record = (
+            db.query(BuyerResearchProfile)
+            .filter(BuyerResearchProfile.buyer_id == buyer_id)
+            .first()
+        )
+        if not record:
+            return None
+
+        return _profile_from_record(buyer, record)
+
+    def _persist_profile(self, db: Session, profile: BuyerProfile) -> BuyerResearchProfile:
+        now = datetime.now(timezone.utc)
+        record = (
+            db.query(BuyerResearchProfile)
+            .filter(BuyerResearchProfile.buyer_id == profile.buyer_id)
+            .first()
+        )
+        if record:
+            record.website_summary = profile.website_summary
+            record.social_summary = profile.social_summary
+            record.relationship_context = profile.relationship_context
+            record.signals = profile.signals
+            record.matched_categories = profile.matched_categories
+            record.matched_products = profile.matched_products
+            record.product_fit_score = profile.product_fit_score
+            record.raw = profile.raw or None
+            record.researched_at = now
+        else:
+            record = BuyerResearchProfile(
+                buyer_id=profile.buyer_id,
+                website_summary=profile.website_summary,
+                social_summary=profile.social_summary,
+                relationship_context=profile.relationship_context,
+                signals=profile.signals,
+                matched_categories=profile.matched_categories,
+                matched_products=profile.matched_products,
+                product_fit_score=profile.product_fit_score,
+                raw=profile.raw or None,
+                researched_at=now,
+            )
+            db.add(record)
+
+        db.commit()
+        db.refresh(record)
+        profile.researched_at = record.researched_at
+        return record
 
     def _persist_market_role(
         self, db: Session, buyer: Buyer, result: MarketRoleResult
@@ -203,6 +267,42 @@ class ResearchModule:
             buyer.producer_tier_reasoning = None
         db.commit()
         db.refresh(buyer)
+
+
+def _profile_from_record(buyer: Buyer, record: BuyerResearchProfile) -> BuyerProfile:
+    market_role = buyer.market_role.value if buyer.market_role else "unknown"
+    producer_tier = buyer.producer_tier.value if buyer.producer_tier else None
+    conversion_pct = (
+        float(buyer.producer_conversion_pct)
+        if buyer.producer_conversion_pct is not None
+        else None
+    )
+    return BuyerProfile(
+        buyer_id=buyer.id,
+        company_name=buyer.company_name,
+        website_url=buyer.website_url,
+        country=buyer.country,
+        industry=buyer.industry,
+        website_summary=record.website_summary,
+        social_summary=record.social_summary,
+        relationship_context=record.relationship_context,
+        signals=list(record.signals or []),
+        matched_categories=list(record.matched_categories or []),
+        matched_products=list(record.matched_products or []),
+        product_fit_score=record.product_fit_score or 0,
+        market_role=market_role,
+        market_role_reasoning=buyer.market_role_reasoning,
+        market_role_confidence=(
+            float(buyer.market_role_confidence)
+            if buyer.market_role_confidence is not None
+            else None
+        ),
+        producer_tier=producer_tier,
+        producer_conversion_pct=conversion_pct,
+        producer_tier_reasoning=buyer.producer_tier_reasoning,
+        researched_at=record.researched_at,
+        raw=dict(record.raw or {}),
+    )
 
 
 def _market_role_signals(result: MarketRoleResult) -> list[str]:

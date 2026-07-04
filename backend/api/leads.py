@@ -8,6 +8,7 @@ from api.schemas import (
     BuyerRead,
     ContactCreate,
     ContactRead,
+    ContactUpdate,
     DiscoverImportRequest,
     DiscoverImportResponse,
     DiscoverLeadsRequest,
@@ -53,7 +54,49 @@ def list_contacts(db: Session = Depends(get_db)):
 
 @router.post("/contacts", response_model=ContactRead, status_code=201)
 def create_contact(payload: ContactCreate, db: Session = Depends(get_db)):
-    return buyers_module.create_contact(db, payload.model_dump())
+    contact = buyers_module.create_contact(db, payload.model_dump())
+    log_action(
+        db,
+        entity_type="contact",
+        entity_id=contact.id,
+        action="created",
+        details={"buyer_id": contact.buyer_id},
+    )
+    return contact
+
+
+@router.patch("/contacts/{contact_id}", response_model=ContactRead)
+def update_contact(contact_id: int, payload: ContactUpdate, db: Session = Depends(get_db)):
+    contact = buyers_module.update_contact(
+        db, contact_id, payload.model_dump(exclude_unset=True)
+    )
+    if not contact:
+        raise HTTPException(404, "Contact not found")
+    log_action(
+        db,
+        entity_type="contact",
+        entity_id=contact.id,
+        action="updated",
+        details={"buyer_id": contact.buyer_id},
+    )
+    return contact
+
+
+@router.delete("/contacts/{contact_id}", status_code=204)
+def delete_contact(contact_id: int, db: Session = Depends(get_db)):
+    contact = buyers_module.get_contact(db, contact_id)
+    if not contact:
+        raise HTTPException(404, "Contact not found")
+    buyer_id = contact.buyer_id
+    if not buyers_module.delete_contact(db, contact_id):
+        raise HTTPException(404, "Contact not found")
+    log_action(
+        db,
+        entity_type="contact",
+        entity_id=contact_id,
+        action="deleted",
+        details={"buyer_id": buyer_id},
+    )
 
 
 @router.get("/{lead_id}/contacts", response_model=list[ContactRead])
@@ -265,24 +308,28 @@ def research_lead(lead_id: int, db: Session = Depends(get_db)):
         profile = leads_module.research_buyer(db, lead_id)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
-    return BuyerProfileRead(
-        buyer_id=profile.buyer_id,
-        company_name=profile.company_name,
-        website_url=profile.website_url,
-        country=profile.country,
-        industry=profile.industry,
-        website_summary=profile.website_summary,
-        relationship_context=profile.relationship_context,
-        signals=profile.signals,
-        matched_categories=profile.matched_categories,
-        matched_products=profile.matched_products,
-        market_role=profile.market_role,
-        market_role_reasoning=profile.market_role_reasoning,
-        market_role_confidence=profile.market_role_confidence,
-        producer_tier=profile.producer_tier,
-        producer_conversion_pct=profile.producer_conversion_pct,
-        producer_tier_reasoning=profile.producer_tier_reasoning,
+    log_action(
+        db,
+        entity_type="buyer",
+        entity_id=lead_id,
+        action="research_completed",
+        details={"researched_at": profile.researched_at.isoformat() if profile.researched_at else None},
     )
+    return BuyerProfileRead(**leads_module.profile_to_read_dict(profile))
+
+
+@router.get("/{lead_id}/profile", response_model=BuyerProfileRead)
+def get_lead_profile(lead_id: int, db: Session = Depends(get_db)):
+    buyer = buyers_module.get_buyer(db, lead_id)
+    if not buyer:
+        raise HTTPException(404, "Lead not found")
+    try:
+        profile = leads_module.get_saved_buyer_profile(db, lead_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    if not profile:
+        raise HTTPException(404, "No research profile on record for this lead")
+    return BuyerProfileRead(**leads_module.profile_to_read_dict(profile))
 
 
 @router.get("/{lead_id}/score", response_model=LeadScoreRead)

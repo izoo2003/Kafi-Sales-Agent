@@ -26,6 +26,18 @@ type SortField =
 const EDIT_INPUT =
   "w-full min-w-[120px] rounded-md bg-slate-950 border border-slate-700 px-2 py-1 text-sm text-slate-200";
 
+const MAX_BULK_ONBOARD = 25;
+const BULK_ONBOARD_DELAY_MS = 1000;
+
+interface BulkOnboardRowResult {
+  id: number;
+  company_name: string;
+  status: "success" | "failed";
+  score?: string;
+  reasoning?: string;
+  error?: string;
+}
+
 function scoreLabel(score: string | null): string {
   return score ?? "Unscored";
 }
@@ -70,6 +82,13 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deletingSelected, setDeletingSelected] = useState(false);
+  const [bulkOnboarding, setBulkOnboarding] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{
+    current: number;
+    total: number;
+    name: string;
+  } | null>(null);
+  const [bulkResults, setBulkResults] = useState<BulkOnboardRowResult[] | null>(null);
 
   const [score, setScore] = useState("");
   const [marketRole, setMarketRole] = useState("");
@@ -173,6 +192,69 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
       return;
     }
     setSelected(new Set(rows.map((row) => row.id)));
+  }
+
+  async function bulkResearchAndScore() {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+
+    if (ids.length > MAX_BULK_ONBOARD) {
+      onError(`Select at most ${MAX_BULK_ONBOARD} leads per batch`);
+      return;
+    }
+
+    const withoutWebsite = rows.filter((row) => ids.includes(row.id) && !row.website_url?.trim());
+    const estimateSec = ids.length * 6;
+    const confirmed = window.confirm(
+      `Research & score ${ids.length} lead${ids.length === 1 ? "" : "s"}?\n\n` +
+        `• Same pipeline as single-lead research — quality does not drop.\n` +
+        `• Runs one at a time (~${estimateSec}s estimated).\n` +
+        (withoutWebsite.length > 0
+          ? `• ${withoutWebsite.length} selected lead${withoutWebsite.length === 1 ? " has" : "s have"} no website — fit signals will be weaker.\n`
+          : "") +
+        `\nContinue?`,
+    );
+    if (!confirmed) return;
+
+    setBulkOnboarding(true);
+    setBulkResults(null);
+    setSaveNotice(null);
+
+    const results: BulkOnboardRowResult[] = [];
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      const row = rows.find((r) => r.id === id);
+      const companyName = row?.company_name ?? `Lead #${id}`;
+      setBulkProgress({ current: i + 1, total: ids.length, name: companyName });
+
+      try {
+        const result = await client.onboardLead(id);
+        results.push({
+          id,
+          company_name: companyName,
+          status: "success",
+          score: result.score,
+          reasoning: result.reasoning,
+        });
+      } catch (e) {
+        results.push({
+          id,
+          company_name: companyName,
+          status: "failed",
+          error: e instanceof Error ? e.message : "Research & score failed",
+        });
+      }
+
+      if (i < ids.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, BULK_ONBOARD_DELAY_MS));
+      }
+    }
+
+    setBulkProgress(null);
+    setBulkOnboarding(false);
+    setBulkResults(results);
+    setSelected(new Set());
+    await loadTable();
   }
 
   async function deleteRows(rowIds: number[]) {
@@ -316,6 +398,24 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
           </p>
           <button
             type="button"
+            onClick={() => void bulkResearchAndScore()}
+            disabled={
+              selected.size === 0 ||
+              bulkOnboarding ||
+              deletingSelected ||
+              deletingId !== null ||
+              editMode
+            }
+            className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 border border-emerald-600/50 text-sm font-medium disabled:opacity-50"
+          >
+            {bulkOnboarding
+              ? bulkProgress
+                ? `Researching ${bulkProgress.current}/${bulkProgress.total}…`
+                : "Starting…"
+              : `Research & score (${selected.size})`}
+          </button>
+          <button
+            type="button"
             onClick={() => void deleteRows([...selected])}
             disabled={selected.size === 0 || deletingSelected || deletingId !== null}
             className="px-3 py-1.5 rounded-lg bg-red-900/60 hover:bg-red-800 border border-red-800/60 text-sm text-red-200 disabled:opacity-50"
@@ -328,7 +428,7 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
             disabled={rows.length === 0}
             className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm disabled:opacity-50"
           >
-            Export CSV
+            Export Excel
           </button>
           <button
             type="button"
@@ -362,6 +462,66 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
         <p className="text-xs text-emerald-300 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2">
           {saveNotice}
         </p>
+      )}
+
+      {bulkProgress && (
+        <p className="text-xs text-slate-300 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">
+          Researching &amp; scoring {bulkProgress.current} of {bulkProgress.total}:{" "}
+          <strong className="text-slate-200">{bulkProgress.name}</strong>
+          <span className="text-slate-500 ml-2">(one lead at a time — same quality as manual)</span>
+        </p>
+      )}
+
+      {bulkResults && bulkResults.length > 0 && (
+        <div className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 space-y-2">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <p className="text-sm text-slate-200">
+              Bulk research complete —{" "}
+              {bulkResults.filter((r) => r.status === "success").length} succeeded,{" "}
+              {bulkResults.filter((r) => r.status === "failed").length} failed
+              {(() => {
+                const hot = bulkResults.filter((r) => r.score === "HOT").length;
+                const warm = bulkResults.filter((r) => r.score === "WARM").length;
+                const cold = bulkResults.filter((r) => r.score === "COLD").length;
+                if (hot + warm + cold === 0) return null;
+                return (
+                  <span className="text-slate-400">
+                    {" "}
+                    · {hot} HOT, {warm} WARM, {cold} COLD
+                  </span>
+                );
+              })()}
+            </p>
+            <button
+              type="button"
+              onClick={() => setBulkResults(null)}
+              className="text-xs text-slate-400 hover:text-slate-200"
+            >
+              Dismiss
+            </button>
+          </div>
+          <ul className="max-h-40 overflow-y-auto space-y-1 text-xs">
+            {bulkResults.map((result) => (
+              <li key={result.id} className="flex items-center gap-2 text-slate-400">
+                {result.status === "success" && result.score ? (
+                  <ScoreBadge score={result.score} />
+                ) : (
+                  <span className="px-2 py-0.5 rounded text-xs border border-red-500/30 text-red-300">
+                    Failed
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => onSelectLead(result.id)}
+                  className="text-slate-300 hover:text-emerald-300 truncate text-left"
+                >
+                  {result.company_name}
+                </button>
+                {result.error && <span className="text-red-400 truncate">{result.error}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3">

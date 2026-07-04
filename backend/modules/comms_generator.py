@@ -111,6 +111,74 @@ class CommsGenerator:
         db.refresh(draft)
         return draft
 
+    def generate_quotation_email(
+        self,
+        db: Session,
+        *,
+        contact_id: int,
+        buyer_name: str,
+        product_name: str,
+        quantity: float,
+        unit_price: float,
+        unit_label: str,
+        line_total: float,
+        incoterms: str | None,
+        validity_date,
+        lines: list[dict] | None = None,
+    ) -> Interaction:
+        contact = db.get(Contact, contact_id)
+        if not contact:
+            raise ValueError("Contact not found")
+        if not contact.email:
+            raise ValueError("Contact has no email address")
+
+        if lines and len(lines) > 1:
+            subject = f"Kafi Commodities — Quotation for {buyer_name}"
+            product_lines = "\n".join(
+                f"- {row['product_name']}: {row['quantity']} @ {row['unit_price']} "
+                f"({row.get('price_unit') or unit_label}) = USD {row['line_total']:,.2f}"
+                for row in lines
+            )
+            body = (
+                f"Dear {contact.full_name},\n\n"
+                f"Please find below our quotation for {buyer_name}.\n\n"
+                f"{product_lines}\n\n"
+                f"Grand total: USD {line_total:,.2f}\n"
+                f"Incoterms: {incoterms or 'FOB'}\n"
+                f"Validity: {validity_date}\n\n"
+                f"We can share specification sheets and arrange samples on request.\n\n"
+                f"Best regards,\nKafi Commodities Export Team"
+            )
+        else:
+            subject = f"Kafi Commodities — Quotation for {product_name}"
+            body = (
+                f"Dear {contact.full_name},\n\n"
+                f"Please find below our quotation for {product_name} "
+                f"for {buyer_name}.\n\n"
+                f"Product: {product_name}\n"
+                f"Quantity: {quantity}\n"
+                f"Unit price: {unit_price} ({unit_label})\n"
+                f"Incoterms: {incoterms or 'FOB'}\n"
+                f"Line total: USD {line_total:,.2f}\n"
+                f"Validity: {validity_date}\n\n"
+                f"We can share the full specification sheet and arrange samples on request.\n\n"
+                f"Best regards,\nKafi Commodities Export Team"
+            )
+        draft = Interaction(
+            contact_id=contact_id,
+            channel=Channel.email,
+            direction=Direction.outbound,
+            subject=subject,
+            content=body,
+            language=contact.preferred_language or "en",
+            handled_by=HandledBy.agent,
+            status=InteractionStatus.draft,
+        )
+        db.add(draft)
+        db.commit()
+        db.refresh(draft)
+        return draft
+
     def generate_whatsapp_reply(
         self,
         db: Session,
