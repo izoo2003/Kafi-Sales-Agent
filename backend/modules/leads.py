@@ -1,3 +1,4 @@
+from sqlalchemy import func as sa_func
 from sqlalchemy.orm import Session
 
 from db.models import Buyer, Contact, LeadScore
@@ -22,8 +23,69 @@ _SORT_FIELDS = {
 }
 
 
-def research_buyer(db: Session, buyer_id: int) -> BuyerProfile:
-    return _research.research_buyer(db, buyer_id)
+def research_buyer(db: Session, buyer_id: int, *, force_refresh: bool = False) -> BuyerProfile:
+    return _research.research_buyer(db, buyer_id, force_refresh=force_refresh)
+
+
+def list_buyers_with_scores(db: Session) -> list[dict]:
+    """Return all buyers enriched with their latest HOT/WARM/COLD score."""
+    buyers = buyers_module.list_buyers(db)
+    if not buyers:
+        return []
+
+    buyer_ids = [b.id for b in buyers]
+
+    latest_sub = (
+        db.query(
+            LeadScore.buyer_id,
+            sa_func.max(LeadScore.scored_at).label("max_scored_at"),
+        )
+        .filter(LeadScore.buyer_id.in_(buyer_ids))
+        .group_by(LeadScore.buyer_id)
+        .subquery()
+    )
+    score_rows = (
+        db.query(LeadScore)
+        .join(
+            latest_sub,
+            (LeadScore.buyer_id == latest_sub.c.buyer_id)
+            & (LeadScore.scored_at == latest_sub.c.max_scored_at),
+        )
+        .all()
+    )
+    score_map = {s.buyer_id: s for s in score_rows}
+
+    results: list[dict] = []
+    for buyer in buyers:
+        score = score_map.get(buyer.id)
+        results.append(
+            {
+                "id": buyer.id,
+                "company_name": buyer.company_name,
+                "website_url": buyer.website_url,
+                "country": buyer.country,
+                "industry": buyer.industry,
+                "source": buyer.source,
+                "market_role": buyer.market_role.value if buyer.market_role else "unknown",
+                "market_role_reasoning": buyer.market_role_reasoning,
+                "market_role_confidence": (
+                    float(buyer.market_role_confidence)
+                    if buyer.market_role_confidence is not None
+                    else None
+                ),
+                "producer_tier": buyer.producer_tier.value if buyer.producer_tier else None,
+                "producer_conversion_pct": (
+                    float(buyer.producer_conversion_pct)
+                    if buyer.producer_conversion_pct is not None
+                    else None
+                ),
+                "producer_tier_reasoning": buyer.producer_tier_reasoning,
+                "created_at": buyer.created_at,
+                "latest_score": score.score.value if score else None,
+                "score_reasoning": score.reasoning if score else None,
+            }
+        )
+    return results
 
 
 def get_saved_buyer_profile(db: Session, buyer_id: int) -> BuyerProfile | None:
@@ -179,6 +241,8 @@ def list_leads_table(
                 "industry": buyer.industry,
                 "website_url": buyer.website_url,
                 "linkedin_company_url": buyer.linkedin_company_url,
+                "facebook_company_url": buyer.facebook_company_url,
+                "instagram_company_url": buyer.instagram_company_url,
                 "source": buyer.source,
                 "created_at": buyer.created_at,
                 "latest_score": latest_score,
@@ -270,6 +334,8 @@ def get_lead_table_row(db: Session, buyer_id: int) -> dict[str, object] | None:
         "industry": buyer.industry,
         "website_url": buyer.website_url,
         "linkedin_company_url": buyer.linkedin_company_url,
+        "facebook_company_url": buyer.facebook_company_url,
+        "instagram_company_url": buyer.instagram_company_url,
         "source": buyer.source,
         "created_at": buyer.created_at,
         "latest_score": latest.score.value if latest else None,
@@ -296,7 +362,15 @@ def update_lead_table_row(db: Session, buyer_id: int, data: dict) -> dict[str, o
 
     buyer_fields = {
         key: data[key]
-        for key in ("company_name", "country", "industry", "website_url", "linkedin_company_url")
+        for key in (
+            "company_name",
+            "country",
+            "industry",
+            "website_url",
+            "linkedin_company_url",
+            "facebook_company_url",
+            "instagram_company_url",
+        )
         if key in data
     }
     if buyer_fields:
@@ -324,6 +398,122 @@ def update_lead_table_row(db: Session, buyer_id: int, data: dict) -> dict[str, o
             details={key: data.get(key) for key in data if data.get(key) is not None},
         )
     return row
+
+
+def dedupe_leads_table(db: Session) -> dict[str, object]:
+    """Remove duplicate leads, keeping the richest record in each cluster."""
+    from collections import defaultdict
+
+    from modules.audit import log_action
+    from modules.lead_discovery import _domain, _normalize_name
+
+    buyers = buyers_module.list_buyers(db)
+    if len(buyers) < 2:
+        return {"removed_count": 0, "kept_count": len(buyers), "groups": []}
+
+    parent = {buyer.id: buyer.id for buyer in buyers}
+
+    def find_root(buyer_id: int) -> int:
+        while parent[buyer_id] != buyer_id:
+            parent[buyer_id] = parent[parent[buyer_id]]
+            buyer_id = parent[buyer_id]
+        return buyer_id
+
+    def union(a_id: int, b_id: int) -> None:
+        root_a = find_root(a_id)
+        root_b = find_root(b_id)
+        if root_a != root_b:
+            parent[root_b] = root_a
+
+    by_name: dict[str, list[int]] = defaultdict(list)
+    by_domain: dict[str, list[int]] = defaultdict(list)
+    for buyer in buyers:
+        by_name[_normalize_name(buyer.company_name)].append(buyer.id)
+        domain = _domain(buyer.website_url)
+        if domain:
+            by_domain[domain].append(buyer.id)
+
+    for ids in by_name.values():
+        for other_id in ids[1:]:
+            union(ids[0], other_id)
+    for ids in by_domain.values():
+        for other_id in ids[1:]:
+            union(ids[0], other_id)
+
+    clusters: dict[int, list[Buyer]] = defaultdict(list)
+    for buyer in buyers:
+        clusters[find_root(buyer.id)].append(buyer)
+
+    removed_count = 0
+    groups: list[dict[str, object]] = []
+
+    for cluster in clusters.values():
+        if len(cluster) < 2:
+            continue
+
+        keeper = max(
+            cluster,
+            key=lambda buyer: (
+                buyers_module.buyer_data_score(db, buyer),
+                buyer.created_at.timestamp() if buyer.created_at else 0,
+            ),
+        )
+        removed = [buyer for buyer in cluster if buyer.id != keeper.id]
+        for buyer in removed:
+            if delete_lead_table_row(db, buyer.id):
+                removed_count += 1
+
+        groups.append(
+            {
+                "company_name": keeper.company_name,
+                "kept_id": keeper.id,
+                "removed_ids": [buyer.id for buyer in removed],
+                "removed_names": [buyer.company_name for buyer in removed],
+            }
+        )
+
+    log_action(
+        db,
+        entity_type="buyer",
+        entity_id=0,
+        action="table_deduped",
+        details={"removed_count": removed_count, "groups": len(groups)},
+    )
+
+    return {
+        "removed_count": removed_count,
+        "kept_count": len(buyers) - removed_count,
+        "groups": groups,
+    }
+
+
+def cleanup_sparse_csv_leads(db: Session) -> dict[str, object]:
+    """Remove CSV-imported leads that have almost no scraped details."""
+    from modules.audit import log_action
+
+    removed: list[dict[str, object]] = []
+    for buyer in buyers_module.list_buyers(db):
+        if (buyer.source or "").lower() != "csv":
+            continue
+        if not buyers_module.is_sparse_buyer(db, buyer):
+            continue
+        company_name = buyer.company_name
+        buyer_id = buyer.id
+        if delete_lead_table_row(db, buyer_id):
+            removed.append({"id": buyer_id, "company_name": company_name})
+
+    log_action(
+        db,
+        entity_type="buyer",
+        entity_id=0,
+        action="sparse_csv_cleanup",
+        details={"removed_count": len(removed)},
+    )
+
+    return {
+        "removed_count": len(removed),
+        "removed": removed,
+    }
 
 
 def delete_lead_table_row(db: Session, buyer_id: int) -> bool:

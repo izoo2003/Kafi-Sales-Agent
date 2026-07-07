@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
@@ -10,6 +11,7 @@ from db.models import Buyer, BuyerResearchProfile, Contact, ExportHistory, Inter
 from modules.market_role import MarketRoleResult, classify_market_role
 from modules.product_catalog import match_text_to_catalog
 from modules.robots import USER_AGENT, can_fetch
+from modules.social_links import scrape_social_links
 
 
 @dataclass
@@ -48,23 +50,60 @@ class ResearchModule:
         if not url:
             return None, [], ""
 
+        homepage = url.strip()
+        if not homepage.startswith(("http://", "https://")):
+            homepage = f"https://{homepage}"
+
         signals: list[str] = []
-        if not can_fetch(url, USER_AGENT):
-            return "Website fetch blocked by robots.txt", signals, ""
+        text_chunks: list[str] = []
+        title = ""
+        paths = ("", "about", "about-us", "products", "our-products", "contact", "contact-us")
 
-        try:
-            response = httpx.get(
-                url,
-                timeout=self.timeout,
-                follow_redirects=True,
-                headers={"User-Agent": USER_AGENT},
-            )
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            return f"Could not fetch website: {exc}", signals, ""
+        for path in paths:
+            page_url = urljoin(homepage.rstrip("/") + "/", path.lstrip("/"))
+            if not can_fetch(page_url, USER_AGENT):
+                continue
+            try:
+                response = httpx.get(
+                    page_url,
+                    timeout=self.timeout,
+                    follow_redirects=True,
+                    headers={"User-Agent": USER_AGENT},
+                )
+                response.raise_for_status()
+            except httpx.HTTPError:
+                continue
 
-        soup = BeautifulSoup(response.text, "html.parser")
-        title = soup.title.string.strip() if soup.title and soup.title.string else ""
+            page_text = response.text
+            text_chunks.append(page_text[:8000])
+            lowered = page_text.lower()
+
+            if not title:
+                soup = BeautifulSoup(page_text, "html.parser")
+                title = soup.title.string.strip() if soup.title and soup.title.string else ""
+            if "certif" in lowered and "Certifications mentioned on website" not in signals:
+                signals.append("Certifications mentioned on website")
+            if any(k in lowered for k in ("export", "international", "global")):
+                if "International/export language on website" not in signals:
+                    signals.append("International/export language on website")
+
+        if not text_chunks:
+            if not can_fetch(homepage, USER_AGENT):
+                return "Website fetch blocked by robots.txt", signals, ""
+            try:
+                response = httpx.get(
+                    homepage,
+                    timeout=self.timeout,
+                    follow_redirects=True,
+                    headers={"User-Agent": USER_AGENT},
+                )
+                response.raise_for_status()
+                text_chunks.append(response.text[:12000])
+            except httpx.HTTPError as exc:
+                return f"Could not fetch website: {exc}", signals, ""
+
+        combined_html = "\n".join(text_chunks)[:20000]
+        soup = BeautifulSoup(text_chunks[0], "html.parser")
         paragraphs = [
             p.get_text(strip=True)
             for p in soup.find_all("p")
@@ -73,14 +112,20 @@ class ResearchModule:
         text_preview = " ".join(paragraphs)[:800]
 
         if title:
-            signals.append(f"Page title: {title}")
-        if "certif" in response.text.lower():
-            signals.append("Certifications mentioned on website")
-        if any(k in response.text.lower() for k in ("export", "international", "global")):
-            signals.append("International/export language on website")
+            signals.insert(0, f"Page title: {title}")
 
         summary = f"{title}. {text_preview}".strip() if title or text_preview else "No summary extracted."
-        return summary, signals, response.text[:12000]
+        return summary, signals, combined_html
+
+    def _enhance_summary_with_llm(
+        self, company_name: str, website_text: str, current_summary: str
+    ) -> str:
+        from modules.llm_client import llm_client
+        return llm_client.enhance_website_summary(
+            company_name=company_name,
+            website_text=website_text,
+            current_summary=current_summary,
+        )
 
     def build_relationship_context(
         self, db: Session, buyer_id: int
@@ -125,12 +170,36 @@ class ResearchModule:
 
         return " ".join(parts), signals
 
-    def research_buyer(self, db: Session, buyer_id: int) -> BuyerProfile:
+    def research_buyer(
+        self,
+        db: Session,
+        buyer_id: int,
+        *,
+        force_refresh: bool = False,
+        cache_ttl_hours: float = 24.0,
+    ) -> BuyerProfile:
+        """Research a buyer. Uses a cached profile if it's fresher than cache_ttl_hours.
+
+        Pass force_refresh=True to always re-fetch the website.
+        """
         buyer = db.get(Buyer, buyer_id)
         if not buyer:
             raise ValueError(f"Buyer {buyer_id} not found")
 
+        if not force_refresh:
+            saved = self.get_saved_profile(db, buyer_id)
+            if saved and saved.researched_at:
+                age_hours = (
+                    datetime.now(saved.researched_at.tzinfo) - saved.researched_at
+                ).total_seconds() / 3600
+                if age_hours < cache_ttl_hours:
+                    return saved
+
         website_summary, web_signals, website_text = self.fetch_website_summary(buyer.website_url)
+        if website_text and website_summary and website_summary != "No summary extracted.":
+            website_summary = self._enhance_summary_with_llm(
+                buyer.company_name, website_text, website_summary
+            )
         relationship_context, rel_signals = self.build_relationship_context(db, buyer_id)
 
         fit_text = " ".join(
@@ -157,9 +226,24 @@ class ResearchModule:
             matched_products=product_fit.matched_products,
         )
         role_signals = _market_role_signals(role_result)
-        all_signals = web_signals + rel_signals + product_fit.signals + role_signals
 
         self._persist_market_role(db, buyer, role_result)
+
+        socials = scrape_social_links(buyer.website_url, website_text)
+        self._persist_social_links(db, buyer, socials, force_refresh=force_refresh)
+        social_parts = [
+            label
+            for label, url in (
+                ("Facebook", socials.facebook_url),
+                ("Instagram", socials.instagram_url),
+                ("LinkedIn", socials.linkedin_url or buyer.linkedin_company_url),
+            )
+            if url
+        ]
+        social_summary = f"Social pages found: {', '.join(social_parts)}" if social_parts else None
+        all_signals = web_signals + rel_signals + product_fit.signals + role_signals
+        if social_parts:
+            all_signals.append(f"Social presence: {', '.join(social_parts)}")
 
         profile = BuyerProfile(
             buyer_id=buyer.id,
@@ -168,7 +252,7 @@ class ResearchModule:
             country=buyer.country,
             industry=buyer.industry,
             website_summary=website_summary,
-            social_summary=None,
+            social_summary=social_summary,
             relationship_context=relationship_context,
             signals=all_signals,
             matched_categories=product_fit.matched_categories,
@@ -267,6 +351,28 @@ class ResearchModule:
             buyer.producer_tier_reasoning = None
         db.commit()
         db.refresh(buyer)
+
+    def _persist_social_links(
+        self,
+        db: Session,
+        buyer: Buyer,
+        socials,
+        *,
+        force_refresh: bool = False,
+    ) -> None:
+        updated = False
+        if socials.facebook_url and (force_refresh or not buyer.facebook_company_url):
+            buyer.facebook_company_url = socials.facebook_url
+            updated = True
+        if socials.instagram_url and (force_refresh or not buyer.instagram_company_url):
+            buyer.instagram_company_url = socials.instagram_url
+            updated = True
+        if socials.linkedin_url and (force_refresh or not buyer.linkedin_company_url):
+            buyer.linkedin_company_url = socials.linkedin_url
+            updated = True
+        if updated:
+            db.commit()
+            db.refresh(buyer)
 
 
 def _profile_from_record(buyer: Buyer, record: BuyerResearchProfile) -> BuyerProfile:

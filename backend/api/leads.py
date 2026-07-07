@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from pathlib import Path
 from sqlalchemy.orm import Session
 
 from api.deps import get_db
@@ -17,6 +18,8 @@ from api.schemas import (
     DiscoveryRegionsResponse,
     InteractionRead,
     LeadScoreRead,
+    LeadTableCleanupResponse,
+    LeadTableDedupeResponse,
     LeadTableFiltersRead,
     LeadTableResponse,
     LeadTableRowRead,
@@ -30,6 +33,7 @@ from modules import buyers as buyers_module
 from modules import leads as leads_module
 from modules.audit import log_action
 from modules.lead_discovery import discover_from_csv, discover_leads, import_candidates
+from modules.file_to_csv import SUPPORTED_UPLOAD_EXTENSIONS, convert_upload_to_csv
 from modules.discovery_regions import list_discovery_regions
 
 router = APIRouter(prefix="/leads", tags=["leads"])
@@ -37,7 +41,7 @@ router = APIRouter(prefix="/leads", tags=["leads"])
 
 @router.get("", response_model=list[BuyerRead])
 def list_leads(db: Session = Depends(get_db)):
-    return buyers_module.list_buyers(db)
+    return leads_module.list_buyers_with_scores(db)
 
 
 @router.post("", response_model=BuyerRead, status_code=201)
@@ -172,6 +176,14 @@ def list_quotation_eligible_leads(db: Session = Depends(get_db)):
     return leads_module.list_quotation_eligible_leads(db)
 
 
+@router.get("/product-types")
+def list_product_types():
+    from modules.product_catalog import list_unique_product_types
+
+    types = list_unique_product_types()
+    return {"count": len(types), "product_types": types}
+
+
 @router.get("/table/filters", response_model=LeadTableFiltersRead)
 def get_leads_table_filters(db: Session = Depends(get_db)):
     return LeadTableFiltersRead(**leads_module.get_lead_table_filters(db))
@@ -225,6 +237,18 @@ def delete_lead_table_row(lead_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "Lead not found")
 
 
+@router.post("/table/dedupe", response_model=LeadTableDedupeResponse)
+def dedupe_leads_table(db: Session = Depends(get_db)):
+    result = leads_module.dedupe_leads_table(db)
+    return LeadTableDedupeResponse(**result)
+
+
+@router.post("/table/cleanup-sparse", response_model=LeadTableCleanupResponse)
+def cleanup_sparse_csv_leads(db: Session = Depends(get_db)):
+    result = leads_module.cleanup_sparse_csv_leads(db)
+    return LeadTableCleanupResponse(**result)
+
+
 @router.get("/discover/regions", response_model=DiscoveryRegionsResponse)
 def get_discovery_regions():
     data = list_discovery_regions()
@@ -257,19 +281,35 @@ def discover_similar_leads(payload: DiscoverLeadsRequest, db: Session = Depends(
 async def discover_leads_from_csv(
     file: UploadFile = File(...),
     default_country: str | None = None,
+    for_leads_table: bool = False,
     db: Session = Depends(get_db),
 ):
-    if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(400, "Upload a .csv file")
     raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "The uploaded file is empty.")
+    ext = Path((file.filename or "").strip()).suffix.lower()
+    if ext and ext not in SUPPORTED_UPLOAD_EXTENSIONS:
+        supported = ", ".join(sorted(SUPPORTED_UPLOAD_EXTENSIONS))
+        raise HTTPException(400, f"Upload a supported file ({supported})")
     try:
-        content = raw.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise HTTPException(400, "CSV must be UTF-8 encoded") from exc
+        content, convert_messages = convert_upload_to_csv(file.filename, raw)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
-    result = discover_from_csv(db, content, default_country=default_country)
-    if result.messages and not result.candidates:
-        raise HTTPException(400, result.messages[0])
+    result = discover_from_csv(
+        db,
+        content,
+        default_country=default_country,
+        for_leads_table=for_leads_table,
+    )
+    result.messages = convert_messages + result.messages
+    if not result.candidates:
+        detail = (
+            "; ".join(result.messages)
+            if result.messages
+            else "No importable rows found in this file."
+        )
+        raise HTTPException(400, detail)
     return DiscoverLeadsResponse(
         candidates=[DiscoveryCandidateRead(**c.to_dict()) for c in result.candidates],
         sources_used=result.sources_used,
@@ -284,14 +324,24 @@ def import_discovered_leads(payload: DiscoverImportRequest, db: Session = Depend
         db,
         [c.model_dump() for c in payload.candidates],
         auto_onboard=payload.auto_onboard,
+        replace_duplicates=payload.replace_duplicates,
     )
     return DiscoverImportResponse(
         created_count=result["created_count"],
         skipped_count=result["skipped_count"],
+        replaced_count=result.get("replaced_count", 0),
         created=result["created"],
         skipped=result["skipped"],
+        replaced=result.get("replaced", []),
         onboard_results=result["onboard_results"],
     )
+
+
+@router.get("/{lead_id}/cross-sell")
+def cross_sell_recommendations(lead_id: int, db: Session = Depends(get_db)):
+    from modules.commerce import get_commerce
+
+    return get_commerce().recommend_cross_sell_from_catalog(db, lead_id)
 
 
 @router.get("/{lead_id}", response_model=BuyerRead)
@@ -303,9 +353,13 @@ def get_lead(lead_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{lead_id}/research", response_model=BuyerProfileRead)
-def research_lead(lead_id: int, db: Session = Depends(get_db)):
+def research_lead(
+    lead_id: int,
+    force: bool = False,
+    db: Session = Depends(get_db),
+):
     try:
-        profile = leads_module.research_buyer(db, lead_id)
+        profile = leads_module.research_buyer(db, lead_id, force_refresh=force)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
     log_action(
@@ -357,6 +411,8 @@ def onboard_lead(lead_id: int, db: Session = Depends(get_db)):
         result = leads_module.onboard_buyer(db, lead_id)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, f"Research failed: {exc}") from exc
     return {
         "buyer_id": result["buyer_id"],
         "score": result["score"],

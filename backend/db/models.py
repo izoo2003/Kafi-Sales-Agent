@@ -107,6 +107,8 @@ class Buyer(Base):
     country: Mapped[Optional[str]] = mapped_column(String(100))
     industry: Mapped[Optional[str]] = mapped_column(String(255))
     linkedin_company_url: Mapped[Optional[str]] = mapped_column(String(512))
+    facebook_company_url: Mapped[Optional[str]] = mapped_column(String(512))
+    instagram_company_url: Mapped[Optional[str]] = mapped_column(String(512))
     source: Mapped[Optional[str]] = mapped_column(String(100))
     market_role: Mapped[MarketRole] = mapped_column(
         Enum(MarketRole), default=MarketRole.unknown, nullable=False
@@ -307,6 +309,19 @@ class ScheduledEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     contact: Mapped["Contact"] = relationship(back_populates="scheduled_events")
+
+
+class EmailTemplate(Base):
+    __tablename__ = "email_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    subject: Mapped[str] = mapped_column(String(500), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class AuditLog(Base):

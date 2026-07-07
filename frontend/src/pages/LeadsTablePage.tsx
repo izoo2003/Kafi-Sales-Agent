@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CountrySelect } from "../components/CountrySelect";
 import {
   client,
@@ -10,6 +10,9 @@ import { formatCountryLabel } from "../data/countries";
 import { ScoreBadge } from "../components/ScoreBadge";
 import { MarketRoleBadge } from "../components/MarketRoleBadge";
 import { ProducerTierBadge } from "../components/ProducerTierBadge";
+import { BulkEmailModal } from "../components/BulkEmailModal";
+import { LeadsTableCsvImport } from "../components/LeadsTableCsvImport";
+import { SocialLinksCell } from "../components/SocialLinksCell";
 import { exportLeadsTableCsv } from "../utils/exportCsv";
 
 interface LeadsTablePageProps {
@@ -51,7 +54,17 @@ function rowDraftKey(row: LeadTableRow): string {
     contact_name: row.contact_name,
     contact_email: row.contact_email,
     contact_phone: row.contact_phone,
+    linkedin_company_url: row.linkedin_company_url,
+    facebook_company_url: row.facebook_company_url,
+    instagram_company_url: row.instagram_company_url,
   });
+}
+
+function normalizeSocialUrl(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
 }
 
 function buildUpdatePayload(draft: LeadTableRow): LeadTableRowUpdate {
@@ -60,6 +73,9 @@ function buildUpdatePayload(draft: LeadTableRow): LeadTableRowUpdate {
     country: draft.country ?? undefined,
     industry: draft.industry ?? undefined,
     website_url: draft.website_url ?? undefined,
+    linkedin_company_url: normalizeSocialUrl(draft.linkedin_company_url),
+    facebook_company_url: normalizeSocialUrl(draft.facebook_company_url),
+    instagram_company_url: normalizeSocialUrl(draft.instagram_company_url),
     contact_id: draft.contact_id ?? undefined,
     contact_name: draft.contact_name ?? undefined,
     contact_email: draft.contact_email ?? undefined,
@@ -75,6 +91,8 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
   const [loading, setLoading] = useState(true);
   const [editMode, setEditMode] = useState(false);
   const [drafts, setDrafts] = useState<Record<number, LeadTableRow>>({});
+  const draftsRef = useRef(drafts);
+  draftsRef.current = drafts;
   const [originalKeys, setOriginalKeys] = useState<Record<number, string>>({});
   const [savingId, setSavingId] = useState<number | null>(null);
   const [savingAll, setSavingAll] = useState(false);
@@ -89,6 +107,10 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
     name: string;
   } | null>(null);
   const [bulkResults, setBulkResults] = useState<BulkOnboardRowResult[] | null>(null);
+  const [showBulkEmail, setShowBulkEmail] = useState(false);
+  const [showCsvImport, setShowCsvImport] = useState(false);
+  const [bulkEmailNotice, setBulkEmailNotice] = useState<string | null>(null);
+  const [deduping, setDeduping] = useState(false);
 
   const [score, setScore] = useState("");
   const [marketRole, setMarketRole] = useState("");
@@ -159,7 +181,7 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
   );
 
   async function saveRow(rowId: number) {
-    const draft = drafts[rowId];
+    const draft = draftsRef.current[rowId];
     if (!draft) return;
 
     setSavingId(rowId);
@@ -257,6 +279,59 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
     await loadTable();
   }
 
+  async function removeEmptyImports() {
+    const confirmed = window.confirm(
+      "Remove empty CSV imports?\n\n" +
+        "• Deletes CSV leads with no website, email, or score (failed scrapes).\n" +
+        "• Use this before re-importing the same file with fresh scraped data.\n\n" +
+        "Continue?",
+    );
+    if (!confirmed) return;
+
+    setDeduping(true);
+    setSaveNotice(null);
+    try {
+      const result = await client.cleanupSparseCsvLeads();
+      await loadTable();
+      setSaveNotice(
+        result.removed_count > 0
+          ? `Removed ${result.removed_count} empty CSV import${result.removed_count === 1 ? "" : "s"}`
+          : "No empty CSV imports found",
+      );
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to remove empty imports");
+    } finally {
+      setDeduping(false);
+    }
+  }
+
+  async function removeDuplicates() {
+    const confirmed = window.confirm(
+      "Remove duplicate leads from the table?\n\n" +
+        "• Duplicates are matched by company name or website domain.\n" +
+        "• The record with the most details (website, email, score) is kept.\n" +
+        "• Empty/sparse duplicates from failed imports are removed first.\n\n" +
+        "Continue?",
+    );
+    if (!confirmed) return;
+
+    setDeduping(true);
+    setSaveNotice(null);
+    try {
+      const result = await client.dedupeLeadsTable();
+      await loadTable();
+      setSaveNotice(
+        result.removed_count > 0
+          ? `Removed ${result.removed_count} duplicate lead${result.removed_count === 1 ? "" : "s"} (${result.groups.length} group${result.groups.length === 1 ? "" : "s"})`
+          : "No duplicate leads found",
+      );
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to remove duplicates");
+    } finally {
+      setDeduping(false);
+    }
+  }
+
   async function deleteRows(rowIds: number[]) {
     if (rowIds.length === 0) return;
 
@@ -317,10 +392,10 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
   }
 
   async function finishEditing() {
-    const dirtyIds = Object.keys(drafts)
+    const dirtyIds = Object.keys(draftsRef.current)
       .map(Number)
       .filter((id) => {
-        const draft = drafts[id];
+        const draft = draftsRef.current[id];
         if (!draft) return false;
         return rowDraftKey(draft) !== originalKeys[id];
       });
@@ -338,7 +413,7 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
     try {
       const updatedById = new Map<number, LeadTableRow>();
       for (const rowId of dirtyIds) {
-        const draft = drafts[rowId];
+        const draft = draftsRef.current[rowId];
         if (!draft) continue;
         const updated = await client.updateLeadTableRow(rowId, buildUpdatePayload(draft));
         updatedById.set(rowId, updated);
@@ -389,13 +464,36 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
         <div>
           <h2 className="text-lg font-medium text-slate-100">Leads table</h2>
           <p className="text-sm text-slate-500 mt-1">
-            Browse, filter, edit, delete, and export leads. Visit a company website, update fields, then save the row.
+            Browse, filter, edit, delete, and export leads. Social icons link to Facebook, Instagram,
+            and LinkedIn — filled automatically when you research a lead (scraped from their website).
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <p className="text-sm text-slate-400 mr-2">
             Showing {filteredCount} of {total}
           </p>
+          <button
+            type="button"
+            onClick={() => setShowCsvImport(true)}
+            disabled={bulkOnboarding || deletingSelected || deletingId !== null || editMode}
+            className="px-3 py-1.5 rounded-lg bg-violet-700 hover:bg-violet-600 border border-violet-600/50 text-sm font-medium disabled:opacity-50"
+          >
+            Import CSV
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowBulkEmail(true)}
+            disabled={
+              selected.size === 0 ||
+              bulkOnboarding ||
+              deletingSelected ||
+              deletingId !== null ||
+              editMode
+            }
+            className="px-3 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-600 border border-sky-600/50 text-sm font-medium disabled:opacity-50"
+          >
+            Create email drafts ({selected.size})
+          </button>
           <button
             type="button"
             onClick={() => void bulkResearchAndScore()}
@@ -421,6 +519,22 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
             className="px-3 py-1.5 rounded-lg bg-red-900/60 hover:bg-red-800 border border-red-800/60 text-sm text-red-200 disabled:opacity-50"
           >
             {deletingSelected ? "Deleting…" : `Delete selected (${selected.size})`}
+          </button>
+          <button
+            type="button"
+            onClick={() => void removeEmptyImports()}
+            disabled={deduping || rows.length === 0 || loading}
+            className="px-3 py-1.5 rounded-lg bg-amber-900/60 hover:bg-amber-800 border border-amber-800/60 text-sm text-amber-100 disabled:opacity-50"
+          >
+            {deduping ? "Cleaning…" : "Remove empty imports"}
+          </button>
+          <button
+            type="button"
+            onClick={() => void removeDuplicates()}
+            disabled={deduping || rows.length === 0 || loading}
+            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm disabled:opacity-50"
+          >
+            Remove duplicates
           </button>
           <button
             type="button"
@@ -454,6 +568,7 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
       {editMode && (
         <p className="text-xs text-amber-300/90 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2">
           Edit mode is on. Update fields after visiting a company website, then click Done editing to save all changes (or Save on a single row).
+          Social URLs can be edited in the Socials column.
           {dirtyCount > 0 ? ` ${dirtyCount} unsaved row${dirtyCount === 1 ? "" : "s"}.` : ""}
         </p>
       )}
@@ -461,6 +576,12 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
       {saveNotice && (
         <p className="text-xs text-emerald-300 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2">
           {saveNotice}
+        </p>
+      )}
+
+      {bulkEmailNotice && (
+        <p className="text-xs text-emerald-300 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2">
+          {bulkEmailNotice}
         </p>
       )}
 
@@ -631,7 +752,8 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
                 <th className="py-3 pr-3 w-[11%]">Contact</th>
                 <th className="py-3 pr-3 w-[15%]">Email</th>
                 <th className="py-3 pr-3 w-[9%]">Phone</th>
-                <th className="py-3 pr-3 w-[13%]">Website</th>
+                <th className="py-3 pr-3 w-[11%]">Website</th>
+                <th className="py-3 pr-3 w-[10%]">Socials</th>
                 {editMode && <th className="py-3 pr-3 w-[8%]">Edit</th>}
                 <th className="py-3 pr-3 w-[7%]">Actions</th>
               </tr>
@@ -777,6 +899,16 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
                         "—"
                       )}
                     </td>
+                    <td className="py-3 pr-3">
+                      <SocialLinksCell
+                        companyName={draft.company_name}
+                        facebookUrl={draft.facebook_company_url}
+                        instagramUrl={draft.instagram_company_url}
+                        linkedinUrl={draft.linkedin_company_url}
+                        editMode={editMode}
+                        onFieldChange={(field, value) => updateDraft(row.id, field, value)}
+                      />
+                    </td>
                     {editMode && (
                       <td className="py-3 pr-3 whitespace-nowrap">
                         <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
@@ -816,6 +948,33 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
             </tbody>
           </table>
         </div>
+      )}
+
+      {showCsvImport && (
+        <LeadsTableCsvImport
+          onClose={() => setShowCsvImport(false)}
+          onImported={() => void loadTable()}
+          onError={onError}
+        />
+      )}
+
+      {showBulkEmail && (
+        <BulkEmailModal
+          buyerIds={[...selected]}
+          sampleBuyerId={[...selected][0] ?? null}
+          onClose={() => setShowBulkEmail(false)}
+          onError={onError}
+          onCreated={(result) => {
+            setBulkEmailNotice(
+              `Created ${result.created_count} draft(s). ` +
+                (result.skipped_count > 0
+                  ? `${result.skipped_count} skipped (no email on file). `
+                  : "") +
+                "Open Approval Queue to review and send.",
+            );
+            setSelected(new Set());
+          }}
+        />
       )}
     </section>
   );

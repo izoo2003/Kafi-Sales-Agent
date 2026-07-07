@@ -15,7 +15,6 @@ import httpx
 from bs4 import BeautifulSoup
 from sqlalchemy.orm import Session
 
-from config import settings
 from modules.discovery_regions import (
     MAX_DISCOVERY_REGIONS,
     DiscoveryRegion,
@@ -32,6 +31,7 @@ from modules.countries import (
 from modules.product_catalog import load_catalog
 from modules.research import ResearchModule
 from modules.robots import USER_AGENT, can_fetch
+from modules import web_search
 
 _PARTNER_LINK_KEYWORDS = (
     "distributor",
@@ -93,6 +93,66 @@ _SKIP_TRADE_DATA_DOMAINS = (
     "cybex.in",
     "export.gov",
 )
+# B2B directory / supplier-profile sites — NOT the company's own website, but they
+# often carry accurate phone, address, and contact info we can use for enrichment.
+_DIRECTORY_PROFILE_DOMAINS = (
+    "freshdi.com",
+    "europages.com",
+    "europages.co.uk",
+    "europages.de",
+    "yellowpages.com",
+    "yelp.com",
+    "moneyhouse.ch",
+    "zefix.ch",
+    "local.ch",
+    "cylex.ch",
+    "wlw.de",
+    "yalwa.com",
+    "meritgateway.com",
+    "allbiz.ch",
+    "cybo.com",
+    "zoominfo.com",
+    "kununu.com",
+    "northdata.com",
+    "lixt.ch",
+    "oeffnungszeitenbuch.de",
+    "telefon-kontakte.ch",
+    "dnb.com",
+    "opencorporates.com",
+    "companywall.ch",
+    "firmenwissen.de",
+    "kompass.com",
+    "tuugo.ch",
+    "wogibtswas.ch",
+    "search.ch",
+    "tel.search.ch",
+)
+# Free/webmail providers — acceptable contact emails for small businesses even when
+# they don't match the company's own domain.
+_FREE_EMAIL_PROVIDERS = frozenset(
+    {
+        "gmail.com",
+        "googlemail.com",
+        "outlook.com",
+        "hotmail.com",
+        "hotmail.co.uk",
+        "live.com",
+        "yahoo.com",
+        "yahoo.co.uk",
+        "ymail.com",
+        "icloud.com",
+        "me.com",
+        "proton.me",
+        "protonmail.com",
+        "gmx.com",
+        "gmx.de",
+        "gmx.net",
+        "aol.com",
+        "mail.com",
+        "web.de",
+        "zoho.com",
+    }
+)
 _TRADE_DATA_DOMAIN_KEYWORDS = (
     "tradedata",
     "exportdata",
@@ -141,6 +201,25 @@ _SEARCH_QUERY_EXCLUSIONS = (
     "-indonesiatradedata",
 )
 _SKIP_URL_PARTS = ("/login", "/signup", "/cart", "/privacy", "/terms", "/cookie")
+_INVALID_BUSINESS_NAME_PATTERNS = (
+    r"\bcontact\s+list\b",
+    r"\bimporters?\s+(in|contact|database|list)\b",
+    r"\bexporters?\s+(in|contact|database|list)\b",
+    r"\bbuyers?\s+(in|contact|database|list)\b",
+    r"\btop\s+\d+\b",
+    r"\blist\s+of\b",
+    r"\b(?:buyers?|importers?|exporters?)\s+directory\b",
+    r"\bwholesale\s+suppliers?\s+directory\b",
+    r"\bconnect\s+with\s+verified\b",
+    r"\bverified\s+.*\s+(buyers?|importers?)\b",
+    r"\btrade\s+(data|intelligence)\b",
+    r"\bimport\s+export\s+data\b",
+    r"\bshipment\s+records?\b",
+    r"\bready\s+to\s+export\b",
+    r"\bretail\s+foods?\s+\d{4}\b",
+    r"\bcustoms\s+data\b",
+)
+_INVALID_BUSINESS_NAME_RE = re.compile("|".join(_INVALID_BUSINESS_NAME_PATTERNS), re.I)
 _COMPANY_SUFFIXES = re.compile(
     r"\b(llc|l\.l\.c|ltd|limited|inc|corp|gmbh|pte|pvt|trading|foods|food|group|international)\b",
     re.I,
@@ -162,15 +241,10 @@ _CONTACT_PATHS = (
     "",
     "/contact",
     "/contact-us",
-    "/contactus",
-    "/contact.html",
-    "/get-in-touch",
-    "/reach-us",
     "/about",
     "/about-us",
-    "/aboutus",
-    "/en/contact",
-    "/en/contact-us",
+    "/company",
+    "/products",
 )
 _NOT_FOUND = "Not found"
 MAX_DISCOVERY_INDUSTRIES = 3
@@ -181,6 +255,7 @@ class DiscoveryCandidate:
     candidate_id: str
     company_name: str
     website_url: str | None = None
+    contact_name: str | None = None
     email: str = _NOT_FOUND
     phone: str = _NOT_FOUND
     facebook_url: str = _NOT_FOUND
@@ -192,12 +267,15 @@ class DiscoveryCandidate:
     source_detail: str = ""
     match_reason: str = ""
     already_exists: bool = False
+    is_valid_business: bool = True
+    invalid_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "candidate_id": self.candidate_id,
             "company_name": self.company_name,
             "website_url": self.website_url,
+            "contact_name": self.contact_name,
             "email": self.email,
             "phone": self.phone,
             "facebook_url": self.facebook_url,
@@ -209,6 +287,8 @@ class DiscoveryCandidate:
             "source_detail": self.source_detail,
             "match_reason": self.match_reason,
             "already_exists": self.already_exists,
+            "is_valid_business": self.is_valid_business,
+            "invalid_reason": self.invalid_reason,
         }
 
 
@@ -385,13 +465,25 @@ def _best_email(emails: set[str], company_domain: str | None) -> str | None:
     if not filtered:
         return None
     if company_domain:
-        for email in filtered:
-            if email.split("@", 1)[1].endswith(company_domain):
-                return email
+        cd = company_domain.lower()
+        # 1. Prefer an email on the company's own domain (or a sub/parent domain).
         for email in filtered:
             domain = email.split("@", 1)[1]
-            if company_domain.endswith(domain) or domain.endswith(company_domain):
+            if (
+                domain == cd
+                or domain.endswith(f".{cd}")
+                or cd.endswith(f".{domain}")
+                or domain.endswith(cd)
+                or cd.endswith(domain)
+            ):
                 return email
+        # 2. Otherwise only accept free/webmail addresses. An email on a *different*
+        #    registered company domain almost certainly belongs to someone else, so we
+        #    reject it rather than attach a wrong contact to this lead.
+        for email in filtered:
+            if email.split("@", 1)[1] in _FREE_EMAIL_PROVIDERS:
+                return email
+        return None
     return filtered[0]
 
 
@@ -600,9 +692,467 @@ def _infer_country_from_pages(
     return fallback_resolved or best_name
 
 
-def _enrich_candidate_contact(candidate: DiscoveryCandidate) -> bool:
+_COMPANY_STOP_WORDS = frozenset(
+    {
+        "the",
+        "and",
+        "for",
+        "ltd",
+        "limited",
+        "llc",
+        "inc",
+        "corp",
+        "pvt",
+        "pte",
+        "gmbh",
+        "trading",
+        "foods",
+        "food",
+        "international",
+        "group",
+        "company",
+        "co",
+    }
+)
+
+
+def _company_name_tokens(name: str) -> list[str]:
+    tokens = re.split(r"\W+", name.lower())
+    return [token for token in tokens if len(token) >= 3 and token not in _COMPANY_STOP_WORDS]
+
+
+def _score_website_candidate(
+    company_name: str,
+    title: str,
+    link: str,
+    snippet: str = "",
+) -> int:
+    name_norm = _normalize_name(company_name)
+    title_norm = _normalize_name(_clean_company_name(title))
+    domain = (_domain(link) or "").replace("-", "").replace(".", "")
+    score = 0
+
+    if name_norm and title_norm and (name_norm in title_norm or title_norm in name_norm):
+        score += 60
+    else:
+        title_tokens = set(_company_name_tokens(title))
+        overlap = sum(
+            1
+            for token in _company_name_tokens(company_name)
+            if token in title_tokens or token in domain
+        )
+        score += overlap * 20
+
+    for token in _company_name_tokens(company_name):
+        if token in domain:
+            score += 15
+
+    snippet_lower = snippet.lower()
+    if snippet_lower and any(token in snippet_lower for token in _company_name_tokens(company_name)[:3]):
+        score += 10
+
+    return score
+
+
+def _result_matches_name(
+    company_name: str,
+    title: str,
+    link: str,
+    snippet: str = "",
+) -> bool:
+    """Hard gate: only True when a search result is genuinely about this company.
+
+    Prevents attaching an unrelated site (e.g. a generic listing) to a lead just
+    because a fuzzy score crossed a threshold.
+    """
+    tokens = _company_name_tokens(company_name)
+    if not tokens:
+        return False
+
+    name_norm = _normalize_name(company_name)
+    title_norm = _normalize_name(title)
+    clean_title_norm = _normalize_name(_clean_company_name(title))
+    domain = (_domain(link) or "").replace("-", "").replace(".", "")
+    snippet_norm = _normalize_name(snippet)
+
+    # Strongest signal: the full company name appears in the title or domain.
+    if name_norm and (name_norm in title_norm or name_norm in domain):
+        return True
+    if clean_title_norm and name_norm and (
+        clean_title_norm in name_norm or name_norm in clean_title_norm
+    ):
+        return True
+
+    tokens_in_domain = [t for t in tokens if t in domain]
+    tokens_in_title = [t for t in tokens if t in title_norm]
+
+    # A distinctive token (>=5 chars) present in the domain is a reliable match.
+    if any(len(t) >= 5 for t in tokens_in_domain):
+        return True
+
+    # At least two distinct name tokens appearing across the domain/title.
+    if len(set(tokens_in_domain) | set(tokens_in_title)) >= 2:
+        return True
+
+    # A domain token that is also reinforced in the result snippet.
+    if tokens_in_domain and any(t in snippet_norm for t in tokens_in_domain):
+        return True
+
+    return False
+
+
+def _domain_relates_to_name(company_name: str, link: str) -> bool:
+    """True when the site's *domain* echoes the company name.
+
+    A genuine company website's domain contains part of the company name. Aggregator
+    / directory sites (e.g. meritgateway.com) mirror the name only in the page title
+    while the domain is unrelated — this gate rejects those as the company's website.
+    """
+    domain = (_domain(link) or "").replace("-", "").replace(".", "")
+    if not domain:
+        return False
+    name_norm = _normalize_name(company_name)
+    if name_norm and (name_norm in domain or domain in name_norm):
+        return True
+    tokens = _company_name_tokens(company_name)
+    # Require a reasonably distinctive token (>=4 chars) to appear in the domain.
+    return any(len(t) >= 4 and t in domain for t in tokens)
+
+
+def _lookup_company_website(
+    company_name: str,
+    country: str | None = None,
+    industry: str | None = None,
+) -> str | None:
+    """Find a company website via web search when CSV rows only have a name."""
+    if not web_search.any_provider_available() or not company_name.strip():
+        return None
+
+    queries = [f'"{company_name}" official website']
+    if country:
+        queries.append(f'"{company_name}" {country} company website')
+    if industry:
+        queries.append(f'"{company_name}" {industry.split(",")[0].strip()} website')
+
+    best_url: str | None = None
+    best_score = 0
+    gl = _country_gl_code(country)
+
+    for query in queries:
+        found = web_search.search(query, num=10, gl_code=gl)
+
+        for item in found.organic:
+            link = item.get("link") or ""
+            title = item.get("title") or ""
+            snippet = item.get("snippet") or ""
+            domain = _domain(link)
+            if not domain:
+                continue
+            if any(skip in domain for skip in _SKIP_DOMAINS):
+                continue
+            if any(part in link.lower() for part in _SKIP_URL_PARTS):
+                continue
+            if _is_trade_data_platform(domain, title, snippet):
+                continue
+            if _domain_matches_blocklist(domain, _DIRECTORY_PROFILE_DOMAINS):
+                continue
+            # Only consider results that genuinely reference this company AND whose
+            # domain echoes the name (blocks aggregators that mirror the name in the
+            # page title but sit on an unrelated domain).
+            if not _result_matches_name(company_name, title, link, snippet):
+                continue
+            if not _domain_relates_to_name(company_name, link):
+                continue
+
+            score = _score_website_candidate(company_name, title, link, snippet)
+            if score > best_score:
+                best_score = score
+                best_url = _homepage_url(link) or link
+
+        if best_score >= 60:
+            break
+
+    return best_url if best_score >= 40 else None
+
+
+def _company_lookup(
+    company_name: str,
+    country: str | None = None,
+    industry: str | None = None,
+) -> dict[str, str | None]:
+    """Look a named company up via web search and return verified, associated details.
+
+    Uses the richest data the provider gives: a knowledge panel and local business
+    results (accurate phone/address) when available (SerpAPI), plus a strictly
+    name-matched organic website. Also captures a B2B directory profile (e.g.
+    freshdi.com) to use as a contact fallback. Never returns details that aren't
+    clearly tied to the searched company name — otherwise the field stays blank.
+    """
+    result: dict[str, str | None] = {
+        "website": None,
+        "phone": None,
+        "country": None,
+        "address": None,
+        "directory_url": None,
+        "source_detail": None,
+    }
+
+    if not web_search.any_provider_available() or not company_name.strip():
+        return result
+
+    name_norm = _normalize_name(company_name)
+    queries = [f'"{company_name}"']
+    if country:
+        queries.append(f'"{company_name}" {country}')
+    if industry:
+        queries.append(f'"{company_name}" {industry.split(",")[0].strip()}')
+
+    best_url: str | None = None
+    best_score = 0
+    gl = _country_gl_code(country)
+
+    def _name_close(text: str | None) -> bool:
+        other = _normalize_name(text or "")
+        if not other or not name_norm:
+            return False
+        return name_norm in other or other in name_norm
+
+    for query in queries:
+        found = web_search.search(query, num=10, gl_code=gl)
+
+        # 1. Knowledge panel — the most authoritative single source (when provided).
+        kg = found.knowledge_graph or {}
+        if kg and (
+            _name_close(kg.get("title"))
+            or _result_matches_name(
+                company_name, kg.get("title") or "", kg.get("website") or "", kg.get("description") or ""
+            )
+        ):
+            kg_site = kg.get("website")
+            if kg_site and not result["website"]:
+                kg_domain = _domain(kg_site)
+                if (
+                    kg_domain
+                    and not _is_trade_data_platform(kg_domain)
+                    and not _domain_matches_blocklist(kg_domain, _SKIP_DOMAINS)
+                    and not _domain_matches_blocklist(kg_domain, _DIRECTORY_PROFILE_DOMAINS)
+                    and _domain_relates_to_name(company_name, kg_site)
+                ):
+                    result["website"] = _homepage_url(kg_site) or kg_site
+                    result["source_detail"] = "Knowledge panel"
+            if not result["phone"] and kg.get("phone"):
+                result["phone"] = str(kg["phone"]).strip()
+            if not result["address"] and kg.get("address"):
+                result["address"] = str(kg["address"]).strip()
+
+        # 2. Local business results — reliable phone/address for physical companies.
+        for place in found.local:
+            if not _name_close(place.get("title")):
+                continue
+            if not result["phone"] and place.get("phone"):
+                result["phone"] = str(place["phone"]).strip()
+            if not result["address"] and place.get("address"):
+                result["address"] = str(place["address"]).strip()
+            break
+
+        # 3. Organic results — strict name-matched website + directory profile fallback.
+        for item in found.organic:
+            link = item.get("link") or ""
+            title = item.get("title") or ""
+            snippet = item.get("snippet") or ""
+            domain = _domain(link)
+            if not domain:
+                continue
+            if any(part in link.lower() for part in _SKIP_URL_PARTS):
+                continue
+            if _domain_matches_blocklist(domain, _DIRECTORY_PROFILE_DOMAINS):
+                if not result["directory_url"] and _name_close(_clean_company_name(title)):
+                    result["directory_url"] = link
+                continue
+            if any(skip in domain for skip in _SKIP_DOMAINS):
+                continue
+            if _is_trade_data_platform(domain, title, snippet):
+                continue
+            if not _result_matches_name(company_name, title, link, snippet):
+                continue
+            # The domain must echo the company name — rejects name-mirroring aggregators.
+            if not _domain_relates_to_name(company_name, link):
+                continue
+            score = _score_website_candidate(company_name, title, link, snippet)
+            if score > best_score:
+                best_score = score
+                best_url = _homepage_url(link) or link
+
+        if result["website"] and result["phone"]:
+            break
+        if best_score >= 60:
+            break
+
+    if not result["website"] and best_url and best_score >= 40:
+        result["website"] = best_url
+        result["source_detail"] = result["source_detail"] or "Website found via web search"
+
+    if result["address"] and not result["country"]:
+        detected = detect_countries_in_text(result["address"])
+        if detected:
+            result["country"] = max(detected.items(), key=lambda kv: kv[1])[0]
+
+    return result
+
+
+def _scrape_directory_profile(profile_url: str) -> dict[str, str | None]:
+    """Pull phone (and phone-derived country) from a B2B directory profile page."""
+    details: dict[str, str | None] = {"phone": None}
+    if not profile_url or not can_fetch(profile_url):
+        return details
+    try:
+        response = httpx.get(
+            profile_url,
+            timeout=10,
+            follow_redirects=True,
+            headers={"User-Agent": USER_AGENT},
+        )
+        response.raise_for_status()
+    except httpx.HTTPError:
+        return details
+    soup = BeautifulSoup(response.text, "html.parser")
+    details["phone"] = _best_phone(_extract_phones(soup))
+    return details
+
+
+def _website_matches_company(name: str, url: str | None) -> bool:
+    domain = (_domain(url) or "").replace("-", "").replace(".", "")
+    if not domain:
+        return False
+    tokens = _company_name_tokens(name)
+    if not tokens:
+        return False
+    return any(token in domain for token in tokens[:4])
+
+
+def _candidate_has_business_presence(candidate: DiscoveryCandidate) -> bool:
     homepage = _homepage_url(candidate.website_url)
+    if homepage:
+        domain = _domain(homepage)
+        if domain and not _is_trade_data_platform(domain, candidate.company_name, candidate.match_reason):
+            return True
+    if _value_or_none(candidate.email):
+        return True
+    if _value_or_none(candidate.phone):
+        return True
+    return any(
+        _value_or_none(getattr(candidate, attr))
+        for attr in ("facebook_url", "instagram_url", "linkedin_url")
+    )
+
+
+def _validate_business_name_only(name: str) -> tuple[bool, str]:
+    cleaned = (name or "").strip()
+    if not cleaned:
+        return False, "missing company name"
+    if _INVALID_BUSINESS_NAME_RE.search(cleaned):
+        return False, "name looks like a directory or list page, not a company"
+    if _text_has_trade_data_signals(cleaned):
+        return False, "name looks like a trade-data or directory listing"
+    if len(cleaned) > 100:
+        return False, "name is too long to be a company"
+    return True, ""
+
+
+def _validate_business_candidate(candidate: DiscoveryCandidate) -> tuple[bool, str]:
+    """Return whether this row is a verifiable importer/distributor/company."""
+    name = (candidate.company_name or "").strip()
+    valid_name, name_reason = _validate_business_name_only(name)
+    if not valid_name:
+        return False, name_reason
+
+    if candidate.website_url and _is_trade_data_platform(
+        _domain(candidate.website_url),
+        candidate.company_name,
+        candidate.match_reason,
+    ):
+        return False, "website is a trade-data or directory site"
+
+    if not _candidate_has_business_presence(candidate):
+        # Look the exact company name up online for a verified website/phone/contact.
+        _enrich_candidate_contact(candidate, keep_row=True)
+
+    if not _candidate_has_business_presence(candidate):
+        return False, "no verifiable website, contact details, or social presence found online"
+
+    homepage = _homepage_url(candidate.website_url)
+    if homepage and _is_trade_data_platform(
+        _domain(homepage),
+        candidate.company_name,
+        candidate.match_reason,
+    ):
+        return False, "website is a trade-data or directory site"
+
+    has_contact_or_social = any(
+        _value_or_none(getattr(candidate, attr))
+        for attr in ("email", "phone", "facebook_url", "instagram_url", "linkedin_url")
+    )
+    if homepage and not has_contact_or_social and not _website_matches_company(name, homepage):
+        return False, "website does not match the company name and no other business signals were found"
+
+    return True, ""
+
+
+def _flag_invalid_candidates(candidates: list[DiscoveryCandidate]) -> int:
+    invalid_count = 0
+    for candidate in candidates:
+        valid, reason = _validate_business_name_only(candidate.company_name)
+        if not valid:
+            candidate.is_valid_business = False
+            candidate.invalid_reason = f"Not a valid business — {reason}"
+            invalid_count += 1
+    return invalid_count
+
+
+def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool = False) -> bool:
+    homepage = _homepage_url(candidate.website_url)
+    directory_url: str | None = None
+
     if not homepage:
+        # Search Google by exact company name and pull only verified, name-matched
+        # details (knowledge panel / local results): website, phone, address, and a
+        # B2B directory profile as a contact fallback.
+        lookup = _company_lookup(
+            candidate.company_name,
+            candidate.country,
+            candidate.industry,
+        )
+        directory_url = lookup.get("directory_url")
+
+        if lookup.get("website"):
+            homepage = lookup["website"]
+            candidate.website_url = homepage
+            detail = lookup.get("source_detail") or "Website found via web search"
+            candidate.source_detail = (
+                f"{candidate.source_detail}; {detail}" if candidate.source_detail else detail
+            )
+            candidate.match_reason = (
+                f"{candidate.match_reason}; {detail}" if candidate.match_reason else detail
+            )
+
+        if candidate.phone == _NOT_FOUND and lookup.get("phone"):
+            candidate.phone = _clean_found(lookup["phone"])
+        if not candidate.country and lookup.get("country"):
+            candidate.country = lookup["country"]
+
+    if not homepage:
+        # No own website, but a directory profile or knowledge-panel phone may still
+        # give us a verified contact for this exact company.
+        if candidate.phone == _NOT_FOUND and directory_url:
+            profile = _scrape_directory_profile(directory_url)
+            if profile.get("phone"):
+                candidate.phone = _clean_found(profile["phone"])
+                if not candidate.country:
+                    candidate.country = country_from_phone(candidate.phone) or candidate.country
+        if keep_row:
+            return True
+        if _value_or_none(candidate.phone):
+            return True
         return not _is_trade_data_platform(_domain(candidate.website_url), candidate.company_name)
 
     candidate.website_url = homepage
@@ -650,23 +1200,49 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate) -> bool:
                 if key and key not in socials:
                     socials[key] = _clean_social_url(full_url)
 
-            if emails and phones:
+            # For CSV imports, keep scanning until we have contact + social signals or exhaust paths.
+            if keep_row:
+                has_contact = bool(emails or phones)
+                has_social = bool(socials)
+                if has_contact and has_social and len(page_texts) >= 2:
+                    break
+            elif emails and phones:
                 break
 
-    candidate.email = _clean_found(_best_email(emails, company_domain))
-    candidate.phone = _clean_found(_best_phone(phones))
-    candidate.facebook_url = _clean_found(socials.get("facebook_url"))
-    candidate.instagram_url = _clean_found(socials.get("instagram_url"))
-    candidate.linkedin_url = _clean_found(socials.get("linkedin_url"))
-    candidate.country = _infer_country_from_pages(
-        page_texts=page_texts,
-        phones=phones,
-        company_domain=company_domain,
-        fallback=fallback_country,
-        address_countries=address_countries,
+    if candidate.email == _NOT_FOUND:
+        candidate.email = _clean_found(_best_email(emails, company_domain))
+    if candidate.phone == _NOT_FOUND:
+        candidate.phone = _clean_found(_best_phone(phones))
+    # Only attach social links when the scraped site itself is tied to this company.
+    # On a site that only loosely matches, its Facebook/Instagram/LinkedIn could
+    # belong to someone else — better to leave those cells blank. A user-supplied
+    # (CSV/manual) website is trusted even if its domain doesn't echo the name.
+    site_is_trusted = candidate.source in ("csv", "manual") or _website_matches_company(
+        candidate.company_name, homepage
     )
+    if site_is_trusted:
+        if candidate.facebook_url == _NOT_FOUND:
+            candidate.facebook_url = _clean_found(socials.get("facebook_url"))
+        if candidate.instagram_url == _NOT_FOUND:
+            candidate.instagram_url = _clean_found(socials.get("instagram_url"))
+        if candidate.linkedin_url == _NOT_FOUND:
+            candidate.linkedin_url = _clean_found(socials.get("linkedin_url"))
+    if candidate.phone == _NOT_FOUND and directory_url:
+        profile = _scrape_directory_profile(directory_url)
+        if profile.get("phone"):
+            candidate.phone = _clean_found(profile["phone"])
+    if not candidate.country:
+        candidate.country = _infer_country_from_pages(
+            page_texts=page_texts,
+            phones=phones,
+            company_domain=company_domain,
+            fallback=fallback_country,
+            address_countries=address_countries,
+        )
 
     page_preview = " ".join(page_texts)[:8000] if page_texts else ""
+    if keep_row:
+        return True
     if _is_trade_data_platform(company_domain, candidate.company_name, page_preview, candidate.match_reason):
         return False
     return True
@@ -675,8 +1251,14 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate) -> bool:
 def _enrich_candidates(candidates: list[DiscoveryCandidate]) -> None:
     kept: list[DiscoveryCandidate] = []
     for candidate in candidates:
-        if _enrich_candidate_contact(candidate):
+        if not _enrich_candidate_contact(candidate):
+            continue
+        valid, reason = _validate_business_candidate(candidate)
+        if valid:
             kept.append(candidate)
+        else:
+            candidate.is_valid_business = False
+            candidate.invalid_reason = f"Not a valid business — {reason}"
     candidates[:] = kept
 
 
@@ -768,7 +1350,7 @@ def _build_search_query(
     return " ".join(parts)
 
 
-def _discover_via_serpapi(
+def _discover_via_web_search(
     query: str,
     limit: int,
     country: str | None,
@@ -776,34 +1358,15 @@ def _discover_via_serpapi(
     gl_code: str | None = None,
     industry_label: str | None = None,
 ) -> tuple[list[DiscoveryCandidate], list[str]]:
-    api_key = settings.serpapi_api_key
-    if not api_key:
+    if not web_search.any_provider_available():
         return [], []
 
-    params: dict[str, str | int] = {
-        "engine": "google",
-        "q": query,
-        "api_key": api_key,
-        "num": min(limit * 2, 20),
-    }
     gl = gl_code or _country_gl_code(country)
-    if gl:
-        params["gl"] = gl
+    found = web_search.search(query, num=min(limit * 2, 20), gl_code=gl)
+    provider = found.provider or "web search"
+    messages: list[str] = list(found.messages)
 
-    messages: list[str] = []
-    try:
-        response = httpx.get("https://serpapi.com/search.json", params=params, timeout=20)
-        response.raise_for_status()
-        data = response.json()
-    except httpx.HTTPError as exc:
-        messages.append(f"Web search request failed for {country or 'global'}: {exc}")
-        return [], messages
-
-    if api_error := data.get("error"):
-        messages.append(f"Web search error for {country or 'global'}: {api_error}")
-        return [], messages
-
-    organic_results = data.get("organic_results", [])
+    organic_results = found.organic
     candidates: list[DiscoveryCandidate] = []
     filtered_out = 0
     trade_data_skipped = 0
@@ -824,6 +1387,9 @@ def _discover_via_serpapi(
         if not _looks_like_company_name(company_name):
             filtered_out += 1
             continue
+        if not _validate_business_name_only(company_name)[0]:
+            filtered_out += 1
+            continue
 
         if _is_trade_data_platform(domain, company_name, title, snippet):
             trade_data_skipped += 1
@@ -837,7 +1403,7 @@ def _discover_via_serpapi(
                 country=country,
                 industry=industry_label,
                 source="web_search",
-                source_detail="SerpAPI Google search",
+                source_detail=f"{provider} search",
                 match_reason=snippet[:200] if snippet else f"Matched query: {query}",
             )
         )
@@ -852,18 +1418,18 @@ def _discover_via_serpapi(
                 else ""
             )
             messages.append(
-                f"Google returned {len(organic_results)} result(s) for {country or 'global'}, "
+                f"{provider} returned {len(organic_results)} result(s) for {country or 'global'}, "
                 f"but none looked like food importer/distributor websites after filtering{detail}."
             )
         else:
-            messages.append(f"Google returned no organic results for {country or 'global'}.")
+            messages.append(f"{provider} returned no results for {country or 'global'}.")
     elif filtered_out or trade_data_skipped:
         extras: list[str] = []
         if trade_data_skipped:
             extras.append(f"{trade_data_skipped} trade-data site(s) excluded")
         messages.append(
             f"{country or 'Global'}: kept {len(candidates)} compan{'y' if len(candidates) == 1 else 'ies'} "
-            f"from {len(organic_results)} Google result(s)"
+            f"from {len(organic_results)} {provider} result(s)"
             + (f" ({'; '.join(extras)})" if extras else "")
             + "."
         )
@@ -880,7 +1446,7 @@ def _discover_via_serpapi_for_markets(
     industry_label = _industry_label(industries)
     if not regions:
         query = _build_search_query(None, industries, categories)
-        found, messages = _discover_via_serpapi(
+        found, messages = _discover_via_web_search(
             query, limit, None, industry_label=industry_label
         )
         return found, messages, [query]
@@ -893,7 +1459,7 @@ def _discover_via_serpapi_for_markets(
     for region in regions:
         query = _build_search_query(region["label"], industries, categories)
         queries.append(query)
-        found, market_messages = _discover_via_serpapi(
+        found, market_messages = _discover_via_web_search(
             query,
             per_market_limit,
             region["label"],
@@ -1056,7 +1622,7 @@ def discover_leads(
         )
 
     if use_web_search:
-        if settings.serpapi_api_key:
+        if web_search.any_provider_available():
             found, search_messages, queries = _discover_via_serpapi_for_markets(
                 regions,
                 normalized_industries,
@@ -1075,7 +1641,8 @@ def discover_leads(
                 result.messages.append("Web search returned no results for this query.")
         else:
             result.messages.append(
-                "Set SERPAPI_API_KEY in backend/.env to enable web search discovery."
+                "No web-search provider available. Set BRAVE_API_KEY and/or "
+                "SERPAPI_API_KEY in backend/.env."
             )
 
     if use_website_links and seed_url:
@@ -1098,44 +1665,102 @@ def discover_leads(
     result.candidates = all_candidates
 
     if not all_candidates and not result.messages:
-        result.messages.append("No discovery candidates found. Try different filters or add SERPAPI_API_KEY.")
+        result.messages.append("No discovery candidates found. Try different filters or set BRAVE_API_KEY / SERPAPI_API_KEY.")
     return result
 
 
 def parse_csv_candidates(content: str, default_country: str | None = None) -> list[DiscoveryCandidate]:
-    """Parse CSV with flexible headers (company_name, website, country, industry)."""
-    reader = csv.DictReader(io.StringIO(content))
+    """Parse CSV with flexible headers (matches leads table export columns)."""
+    if not content.strip():
+        return []
+
+    sample = content[:8192]
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",\t;|")
+    except csv.Error:
+        dialect = csv.excel
+
+    reader = csv.DictReader(io.StringIO(content), dialect=dialect)
     if not reader.fieldnames:
         return []
 
     def col(*names: str) -> str | None:
         for field in reader.fieldnames or []:
-            normalized = field.strip().lower().replace(" ", "_")
+            normalized = field.strip().lower().replace(" ", "_").replace("-", "_")
             if normalized in names:
                 return field
         return None
 
-    name_col = col("company_name", "company", "name", "buyer", "organization")
-    website_col = col("website_url", "website", "url", "web")
-    country_col = col("country", "market", "region")
-    industry_col = col("industry", "sector", "type", "business_type")
+    name_col = col(
+        "company_name",
+        "company",
+        "name",
+        "buyer",
+        "organization",
+        "organisation",
+        "business_name",
+        "business",
+        "firm",
+        "client",
+        "customer",
+        "account",
+        "account_name",
+    )
+    website_col = col("website_url", "website", "url", "web", "site", "homepage")
+    country_col = col("country", "market", "region", "nation", "location")
+    industry_col = col("industry", "sector", "type", "business_type", "category")
+    contact_col = col(
+        "contact_name",
+        "contact",
+        "full_name",
+        "person",
+        "contact_person",
+        "representative",
+        "attn",
+        "attention",
+    )
+    email_col = col("contact_email", "email", "e_mail", "e-mail", "mail")
+    phone_col = col("contact_phone", "phone", "telephone", "mobile", "tel", "cell")
+    linkedin_col = col("linkedin_company_url", "linkedin", "linkedin_url")
+    facebook_col = col("facebook_company_url", "facebook", "facebook_url")
+    instagram_col = col("instagram_company_url", "instagram", "instagram_url")
+
+    if not name_col and reader.fieldnames:
+        name_col = reader.fieldnames[0]
 
     if not name_col:
         raise ValueError("CSV must include a company name column (company_name, company, or name).")
 
+    def csv_value(row: dict[str, str], column: str | None) -> str:
+        if not column:
+            return ""
+        return (row.get(column) or "").strip()
+
     candidates: list[DiscoveryCandidate] = []
     for row in reader:
-        name = (row.get(name_col) or "").strip()
+        name = csv_value(row, name_col)
         if not name:
             continue
-        website = (row.get(website_col) or "").strip() if website_col else ""
-        country = (row.get(country_col) or "").strip() if country_col else ""
-        industry = (row.get(industry_col) or "").strip() if industry_col else ""
+        website = csv_value(row, website_col)
+        country = csv_value(row, country_col)
+        industry = csv_value(row, industry_col)
+        contact_name = csv_value(row, contact_col) or None
+        email = csv_value(row, email_col)
+        phone = csv_value(row, phone_col)
+        linkedin = csv_value(row, linkedin_col)
+        facebook = csv_value(row, facebook_col)
+        instagram = csv_value(row, instagram_col)
         candidates.append(
             DiscoveryCandidate(
                 candidate_id=str(uuid.uuid4()),
                 company_name=name,
                 website_url=_homepage_url(website) or website or None,
+                contact_name=contact_name,
+                email=email or _NOT_FOUND,
+                phone=phone or _NOT_FOUND,
+                linkedin_url=linkedin or _NOT_FOUND,
+                facebook_url=facebook or _NOT_FOUND,
+                instagram_url=instagram or _NOT_FOUND,
                 country=country or default_country,
                 industry=industry or None,
                 source="csv",
@@ -1146,10 +1771,99 @@ def parse_csv_candidates(content: str, default_country: str | None = None) -> li
     return candidates
 
 
+def _field_or_not_found(raw: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = (raw.get(key) or "").strip()
+        if value:
+            return value
+    return _NOT_FOUND
+
+
+def _import_raw_to_candidate(raw: dict[str, Any]) -> DiscoveryCandidate:
+    name = (raw.get("company_name") or "").strip()
+    return DiscoveryCandidate(
+        candidate_id=str(uuid.uuid4()),
+        company_name=name,
+        website_url=raw.get("website_url") or None,
+        contact_name=(raw.get("contact_name") or "").strip() or None,
+        email=_field_or_not_found(raw, "email", "contact_email"),
+        phone=_field_or_not_found(raw, "phone", "contact_phone"),
+        linkedin_url=_field_or_not_found(raw, "linkedin_url", "linkedin_company_url"),
+        facebook_url=_field_or_not_found(raw, "facebook_url", "facebook_company_url"),
+        instagram_url=_field_or_not_found(raw, "instagram_url", "instagram_company_url"),
+        country=raw.get("country") or None,
+        industry=raw.get("industry") or None,
+        source=raw.get("source") or "csv",
+        source_detail="CSV import",
+        match_reason="Imported from CSV",
+    )
+
+
+def _sync_candidate_to_raw(candidate: DiscoveryCandidate, raw: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(raw)
+    enriched["company_name"] = candidate.company_name
+    if candidate.website_url:
+        enriched["website_url"] = candidate.website_url
+    if candidate.country:
+        enriched["country"] = candidate.country
+    if candidate.contact_name:
+        enriched["contact_name"] = candidate.contact_name
+
+    for attr, key in (
+        ("email", "email"),
+        ("phone", "phone"),
+        ("linkedin_url", "linkedin_url"),
+        ("facebook_url", "facebook_url"),
+        ("instagram_url", "instagram_url"),
+    ):
+        cleaned = _value_or_none(getattr(candidate, attr))
+        if cleaned:
+            enriched[key] = cleaned
+    return enriched
+
+
+def _enrich_import_raw(raw: dict[str, Any]) -> dict[str, Any]:
+    """Scrape each CSV import row for website, contact, and social details."""
+    name = (raw.get("company_name") or "").strip()
+    if not name:
+        return raw
+
+    candidate = _import_raw_to_candidate(raw)
+    _enrich_candidate_contact(candidate, keep_row=True)
+    return _sync_candidate_to_raw(candidate, raw)
+
+
+def _needs_import_enrichment(raw: dict[str, Any]) -> bool:
+    """Skip re-scraping when CSV preview already found website, contact, and social links."""
+    website = (raw.get("website_url") or "").strip()
+    email = (raw.get("email") or "").strip()
+    phone = (raw.get("phone") or "").strip()
+    socials = [
+        (raw.get("facebook_url") or "").strip(),
+        (raw.get("instagram_url") or "").strip(),
+        (raw.get("linkedin_url") or "").strip(),
+    ]
+    has_contact = any(
+        value and value.lower() != _NOT_FOUND.lower() for value in (email, phone)
+    )
+    has_social = any(
+        value and value.lower() != _NOT_FOUND.lower() for value in socials
+    )
+    if not website:
+        return True
+    if not has_contact:
+        return True
+    if not has_social:
+        return True
+    return False
+
+
 def discover_from_csv(
     db: Session,
     content: str,
     default_country: str | None = None,
+    *,
+    for_leads_table: bool = False,
 ) -> DiscoveryResult:
     result = DiscoveryResult(sources_used=["csv"])
     try:
@@ -1163,7 +1877,24 @@ def discover_from_csv(
         return result
 
     existing_names, existing_domains = _existing_buyer_keys(db)
-    _enrich_candidates(candidates)
+    invalid_count = _flag_invalid_candidates(candidates)
+    if invalid_count:
+        result.messages.append(
+            f"{invalid_count} row(s) look like directories or list pages — they will not be imported."
+        )
+    if for_leads_table:
+        result.messages.append(
+            f"Loaded {len(candidates)} row(s) from file. "
+            "Website scraping and scoring run when you click Import (about 6s per row)."
+        )
+        without_website = sum(1 for c in candidates if not _homepage_url(c.website_url))
+        if without_website and not web_search.any_provider_available():
+            result.messages.append(
+                f"{without_website} row(s) have no website — set BRAVE_API_KEY or "
+                "SERPAPI_API_KEY to auto-find sites on import."
+            )
+    else:
+        _enrich_candidates(candidates)
     _mark_existing(candidates, existing_names, existing_domains)
     result.candidates = candidates
     return result
@@ -1174,14 +1905,36 @@ def import_candidates(
     candidates: list[dict[str, Any]],
     *,
     auto_onboard: bool = False,
+    replace_duplicates: bool = False,
 ) -> dict[str, Any]:
     from modules import leads as leads_module
     from modules.audit import log_action
 
     created: list[Any] = []
     skipped: list[dict[str, str]] = []
+    replaced: list[dict[str, Any]] = []
     onboard_results: list[dict[str, Any]] = []
     existing_names, existing_domains = _existing_buyer_keys(db)
+
+    def _import_data_score(raw: dict[str, Any]) -> int:
+        points = 0
+        if raw.get("website_url"):
+            points += 10
+        if raw.get("country"):
+            points += 2
+        if raw.get("industry"):
+            points += 2
+        if _value_or_none(raw.get("linkedin_url")):
+            points += 3
+        if _value_or_none(raw.get("facebook_url")):
+            points += 2
+        if _value_or_none(raw.get("instagram_url")):
+            points += 2
+        if _value_or_none(raw.get("email")):
+            points += 15
+        if _value_or_none(raw.get("phone")):
+            points += 5
+        return points
 
     for raw in candidates:
         name = (raw.get("company_name") or "").strip()
@@ -1189,11 +1942,54 @@ def import_candidates(
             skipped.append({"company_name": name or "(empty)", "reason": "Missing company name"})
             continue
 
+        candidate = _import_raw_to_candidate(raw)
+        if _needs_import_enrichment(raw):
+            _enrich_candidate_contact(candidate, keep_row=True)
+
+        valid, invalid_reason = _validate_business_candidate(candidate)
+        if not valid:
+            skipped.append(
+                {
+                    "company_name": name,
+                    "reason": f"Not a valid business — {invalid_reason}",
+                }
+            )
+            continue
+
+        raw = _sync_candidate_to_raw(candidate, raw)
+        name = (raw.get("company_name") or "").strip()
+
         name_key = _normalize_name(name)
         domain = _domain(raw.get("website_url"))
-        if name_key in existing_names or (domain and domain in existing_domains):
-            skipped.append({"company_name": name, "reason": "Already in leads"})
-            continue
+        duplicate = name_key in existing_names or (domain and domain in existing_domains)
+        if duplicate:
+            existing = buyers_module.find_buyer_by_name_or_domain(
+                db,
+                company_name=name,
+                website_url=raw.get("website_url"),
+            )
+            should_replace = False
+            if replace_duplicates and existing:
+                existing_score = buyers_module.buyer_data_score(db, existing)
+                import_score = _import_data_score(raw)
+                should_replace = buyers_module.is_sparse_buyer(db, existing) or import_score > existing_score
+
+            if should_replace and existing:
+                leads_module.delete_lead_table_row(db, existing.id)
+                existing_names.discard(_normalize_name(existing.company_name))
+                existing_domain = _domain(existing.website_url)
+                if existing_domain:
+                    existing_domains.discard(existing_domain)
+                replaced.append(
+                    {
+                        "company_name": name,
+                        "replaced_id": existing.id,
+                        "reason": "Replaced sparse duplicate with fresh CSV data",
+                    }
+                )
+            else:
+                skipped.append({"company_name": name, "reason": "Already in leads"})
+                continue
 
         buyer = buyers_module.create_buyer(
             db,
@@ -1203,6 +1999,8 @@ def import_candidates(
                 "country": raw.get("country") or None,
                 "industry": raw.get("industry") or None,
                 "linkedin_company_url": _value_or_none(raw.get("linkedin_url")),
+                "facebook_company_url": _value_or_none(raw.get("facebook_url")),
+                "instagram_company_url": _value_or_none(raw.get("instagram_url")),
                 "source": raw.get("source") or "discovery",
             },
         )
@@ -1227,12 +2025,13 @@ def import_candidates(
 
         email = _value_or_none(raw.get("email"))
         phone = _value_or_none(raw.get("phone"))
-        if email or phone:
+        contact_name = (raw.get("contact_name") or "").strip() or "General contact"
+        if email or phone or contact_name != "General contact":
             buyers_module.create_contact(
                 db,
                 {
                     "buyer_id": buyer.id,
-                    "full_name": "General contact",
+                    "full_name": contact_name,
                     "email": email,
                     "phone": phone,
                     "linkedin_profile_url": _value_or_none(raw.get("linkedin_url")),
@@ -1252,7 +2051,7 @@ def import_candidates(
                         "reasoning": onboard.get("reasoning"),
                     }
                 )
-            except ValueError as exc:
+            except Exception as exc:
                 onboard_results.append(
                     {
                         "buyer_id": buyer.id,
@@ -1264,7 +2063,9 @@ def import_candidates(
     return {
         "created_count": len(created),
         "skipped_count": len(skipped),
+        "replaced_count": len(replaced),
         "created": created,
         "skipped": skipped,
+        "replaced": replaced,
         "onboard_results": onboard_results,
     }

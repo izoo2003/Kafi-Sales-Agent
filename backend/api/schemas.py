@@ -29,6 +29,8 @@ class BuyerRead(BaseModel):
     producer_conversion_pct: Optional[float] = None
     producer_tier_reasoning: Optional[str] = None
     created_at: datetime
+    latest_score: Optional[str] = None
+    score_reasoning: Optional[str] = None
 
 
 class QuotationEligibleLeadRead(BuyerRead):
@@ -200,6 +202,9 @@ class InteractionRead(BaseModel):
     content: str
     status: str
     created_at: datetime
+    company_name: Optional[str] = None
+    contact_name: Optional[str] = None
+    contact_email: Optional[str] = None
 
 
 class InteractionApprove(BaseModel):
@@ -221,6 +226,91 @@ class EmailDraftRequest(BaseModel):
     product_name: Optional[str] = None
 
 
+class EmailTemplateCreate(BaseModel):
+    name: str
+    subject: str
+    body: str
+
+
+class EmailTemplateUpdate(BaseModel):
+    name: Optional[str] = None
+    subject: Optional[str] = None
+    body: Optional[str] = None
+
+
+class EmailTemplateRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    subject: str
+    body: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class EmailTemplatePreviewRead(BaseModel):
+    subject: str
+    body: str
+    company_name: str
+    contact_email: str
+
+
+class BulkEmailDraftRequest(BaseModel):
+    template_id: int
+    buyer_ids: list[int] = Field(min_length=1)
+
+
+class BulkEmailDraftResultItem(BaseModel):
+    buyer_id: int
+    company_name: str
+    interaction_id: int
+    contact_id: int
+
+
+class BulkEmailSkippedItem(BaseModel):
+    buyer_id: int
+    company_name: Optional[str] = None
+    reason: str
+
+
+class BulkEmailDraftResponse(BaseModel):
+    created_count: int
+    skipped_count: int
+    created: list[BulkEmailDraftResultItem]
+    skipped: list[BulkEmailSkippedItem]
+
+
+class BulkApproveRequest(BaseModel):
+    interaction_ids: list[int] = Field(min_length=1)
+    approved_by: str = "sales_rep"
+    send: bool = True
+
+
+class BulkApproveResultItem(BaseModel):
+    interaction_id: int
+    status: str
+    sent: bool
+    send_status: Optional[str] = None
+    send_message: Optional[str] = None
+
+
+class BulkApproveResponse(BaseModel):
+    processed: int
+    sent_count: int
+    failed_count: int
+    results: list[BulkApproveResultItem]
+
+
+class BulkEmailSettingsRead(BaseModel):
+    batch_size: int
+    message_delay_seconds: float
+    batch_pause_seconds: float
+    max_per_request: int
+    gmail_daily_limit_hint: int = 500
+    recommendation: str
+
+
 class ProductInterestItem(BaseModel):
     name: str
     category: Optional[str] = None
@@ -240,6 +330,8 @@ class LeadTableRowRead(BaseModel):
     industry: Optional[str] = None
     website_url: Optional[str] = None
     linkedin_company_url: Optional[str] = None
+    facebook_company_url: Optional[str] = None
+    instagram_company_url: Optional[str] = None
     source: Optional[str] = None
     created_at: datetime
     latest_score: Optional[str] = None
@@ -262,6 +354,8 @@ class LeadTableRowUpdate(BaseModel):
     industry: Optional[str] = None
     website_url: Optional[str] = None
     linkedin_company_url: Optional[str] = None
+    facebook_company_url: Optional[str] = None
+    instagram_company_url: Optional[str] = None
     contact_id: Optional[int] = None
     contact_name: Optional[str] = None
     contact_email: Optional[str] = None
@@ -342,6 +436,7 @@ class DiscoveryCandidateRead(BaseModel):
     candidate_id: str
     company_name: str
     website_url: Optional[str] = None
+    contact_name: Optional[str] = None
     email: str = "Not found"
     phone: str = "Not found"
     facebook_url: str = "Not found"
@@ -353,6 +448,8 @@ class DiscoveryCandidateRead(BaseModel):
     source_detail: str = ""
     match_reason: str = ""
     already_exists: bool = False
+    is_valid_business: bool = True
+    invalid_reason: Optional[str] = None
 
 
 class DiscoverLeadsResponse(BaseModel):
@@ -365,6 +462,7 @@ class DiscoverLeadsResponse(BaseModel):
 class DiscoverImportCandidate(BaseModel):
     company_name: str
     website_url: Optional[str] = None
+    contact_name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
     facebook_url: Optional[str] = None
@@ -378,11 +476,32 @@ class DiscoverImportCandidate(BaseModel):
 class DiscoverImportRequest(BaseModel):
     candidates: list[DiscoverImportCandidate] = Field(min_length=1)
     auto_onboard: bool = False
+    replace_duplicates: bool = False
+
+
+class LeadTableDedupeGroup(BaseModel):
+    company_name: str
+    kept_id: int
+    removed_ids: list[int]
+    removed_names: list[str] = Field(default_factory=list)
+
+
+class LeadTableDedupeResponse(BaseModel):
+    removed_count: int
+    kept_count: int
+    groups: list[LeadTableDedupeGroup]
+
+
+class LeadTableCleanupResponse(BaseModel):
+    removed_count: int
+    removed: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class DiscoverImportResponse(BaseModel):
     created_count: int
     skipped_count: int
+    replaced_count: int = 0
     created: list[BuyerRead]
     skipped: list[dict[str, str]]
+    replaced: list[dict[str, Any]] = Field(default_factory=list)
     onboard_results: list[dict[str, Any]] = Field(default_factory=list)

@@ -3,11 +3,17 @@ from sqlalchemy.orm import Session
 
 from api.deps import get_db
 from api.schemas import (
+    BulkApproveRequest,
+    BulkApproveResponse,
+    BulkEmailDraftRequest,
+    BulkEmailDraftResponse,
+    BulkEmailSettingsRead,
     EmailDraftRequest,
     InteractionApprove,
     InteractionApproveResponse,
     InteractionRead,
 )
+from config import settings
 from db.models import InteractionStatus
 from modules.audit import log_action
 from modules.comms_generator import get_comms
@@ -16,20 +22,26 @@ router = APIRouter(prefix="/interactions", tags=["interactions"])
 comms = get_comms()
 
 
+def _interaction_read(db: Session, interaction) -> InteractionRead:
+    return InteractionRead(**comms.interaction_to_dict(db, interaction))
+
+
 @router.get("/drafts", response_model=list[InteractionRead])
 def list_draft_interactions(db: Session = Depends(get_db)):
-    return comms.list_drafts(db)
+    drafts = comms.list_drafts(db)
+    return [_interaction_read(db, draft) for draft in drafts]
 
 
 @router.get("", response_model=list[InteractionRead])
 def list_interactions(db: Session = Depends(get_db)):
-    return comms.list_interactions(db)
+    rows = comms.list_interactions(db)
+    return [_interaction_read(db, row) for row in rows]
 
 
 @router.post("/email-draft", response_model=InteractionRead, status_code=201)
 def create_email_draft(payload: EmailDraftRequest, db: Session = Depends(get_db)):
     try:
-        return comms.generate_email_draft(
+        draft = comms.generate_email_draft(
             db,
             contact_id=payload.contact_id,
             goal=payload.goal,
@@ -37,6 +49,72 @@ def create_email_draft(payload: EmailDraftRequest, db: Session = Depends(get_db)
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    return _interaction_read(db, draft)
+
+
+@router.get("/bulk-email-settings", response_model=BulkEmailSettingsRead)
+def get_bulk_email_settings():
+    return BulkEmailSettingsRead(
+        batch_size=settings.bulk_email_batch_size,
+        message_delay_seconds=settings.bulk_email_message_delay_seconds,
+        batch_pause_seconds=settings.bulk_email_batch_pause_seconds,
+        max_per_request=settings.bulk_email_max_per_request,
+        gmail_daily_limit_hint=500,
+        recommendation=(
+            "Current settings: 50 per batch, 3s between emails, 60s between batches. "
+            "Keep daily cold outreach under 100–200 emails per Gmail account."
+        ),
+    )
+
+
+@router.post("/bulk-email-drafts", response_model=BulkEmailDraftResponse, status_code=201)
+def create_bulk_email_drafts(payload: BulkEmailDraftRequest, db: Session = Depends(get_db)):
+    result = comms.create_bulk_drafts_from_template(
+        db,
+        buyer_ids=payload.buyer_ids,
+        template_id=payload.template_id,
+    )
+    log_action(
+        db,
+        entity_type="interaction",
+        entity_id=0,
+        action="bulk_drafts_created",
+        details={
+            "template_id": payload.template_id,
+            "created_count": result["created_count"],
+            "skipped_count": result["skipped_count"],
+        },
+    )
+    return BulkEmailDraftResponse(**result)
+
+
+@router.post("/bulk-approve", response_model=BulkApproveResponse)
+def bulk_approve_interactions(payload: BulkApproveRequest, db: Session = Depends(get_db)):
+    if len(payload.interaction_ids) > settings.bulk_email_max_per_request:
+        raise HTTPException(
+            400,
+            f"Maximum {settings.bulk_email_max_per_request} emails per batch. "
+            f"Split into smaller batches — the dashboard does this automatically.",
+        )
+    result = comms.bulk_approve_drafts(
+        db,
+        payload.interaction_ids,
+        approved_by=payload.approved_by,
+        send=payload.send,
+    )
+    log_action(
+        db,
+        entity_type="interaction",
+        entity_id=0,
+        action="bulk_approved",
+        actor=payload.approved_by,
+        details={
+            "send": payload.send,
+            "sent_count": result["sent_count"],
+            "failed_count": result["failed_count"],
+        },
+    )
+    return BulkApproveResponse(**result)
 
 
 @router.post("/{interaction_id}/approve", response_model=InteractionApproveResponse)
@@ -88,7 +166,7 @@ def approve_interaction(
         )
 
     return InteractionApproveResponse(
-        interaction=InteractionRead.model_validate(approved),
+        interaction=_interaction_read(db, approved),
         sent=sent,
         send_status=send_status,
         send_message=send_message,
@@ -102,4 +180,4 @@ def reject_interaction(interaction_id: int, db: Session = Depends(get_db)):
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     log_action(db, entity_type="interaction", entity_id=rejected.id, action="rejected")
-    return rejected
+    return _interaction_read(db, rejected)

@@ -1,0 +1,303 @@
+"""Pluggable web-search layer.
+
+Provides a single `search()` entry point that returns a normalized result set,
+regardless of which underlying provider answered. Providers are tried in priority
+order and the first one that returns usable results wins.
+
+Normalized shapes
+-----------------
+OrganicResult: {"title": str, "link": str, "snippet": str}
+SearchResults:
+    organic:        list[OrganicResult]
+    knowledge_graph: dict   (title/website/phone/address/description) — may be empty
+    local:          list[dict]  (title/phone/address)               — may be empty
+    provider:       str    (which provider answered)
+    messages:       list[str]
+
+Active providers (steps 1–2; default order conserves SerpAPI credits):
+    - "brave"        — Brave Search API, free tier ~2 000/mo, needs BRAVE_API_KEY
+    - "serpapi"      — richest (organic + knowledge panel + local), paid — fallback
+
+Disabled unless you add them to WEB_SEARCH_PROVIDERS (step 3+):
+    - "google_cse"   — Google Programmable Search, free 100/day
+    - "duckduckgo"   — ddgs package, free, no key
+
+Set WEB_SEARCH_PROVIDERS in .env to control order/enabled set, e.g.
+    WEB_SEARCH_PROVIDERS=brave,serpapi
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Callable
+
+import httpx
+
+from config import settings
+
+# Brave first to save SerpAPI credits on bulk CSV imports (~1–3 queries per lead).
+_DEFAULT_ORDER = ("brave", "serpapi")
+
+
+@dataclass
+class SearchResults:
+    organic: list[dict[str, str]] = field(default_factory=list)
+    knowledge_graph: dict[str, Any] = field(default_factory=dict)
+    local: list[dict[str, Any]] = field(default_factory=list)
+    provider: str | None = None
+    messages: list[str] = field(default_factory=list)
+
+    def is_empty(self) -> bool:
+        return not self.organic and not self.knowledge_graph and not self.local
+
+
+def _provider_order() -> list[str]:
+    raw = getattr(settings, "web_search_providers", None)
+    if not raw:
+        return list(_DEFAULT_ORDER)
+    order = [p.strip().lower() for p in raw.split(",") if p.strip()]
+    return order or list(_DEFAULT_ORDER)
+
+
+def _gl_to_region(gl_code: str | None) -> str | None:
+    """Map a 2-letter Google gl code to a DuckDuckGo/brave region hint."""
+    if not gl_code:
+        return None
+    return f"{gl_code.lower()}-{gl_code.lower()}"
+
+
+# --------------------------------------------------------------------------- #
+# Providers
+# --------------------------------------------------------------------------- #
+def _search_serpapi(query: str, *, num: int, gl_code: str | None) -> SearchResults:
+    results = SearchResults(provider="serpapi")
+    api_key = settings.serpapi_api_key
+    if not api_key:
+        return results
+
+    params: dict[str, str | int] = {
+        "engine": "google",
+        "q": query,
+        "api_key": api_key,
+        "num": num,
+    }
+    if gl_code:
+        params["gl"] = gl_code
+
+    try:
+        response = httpx.get("https://serpapi.com/search.json", params=params, timeout=20)
+        response.raise_for_status()
+        data = response.json()
+    except httpx.HTTPError as exc:
+        results.messages.append(f"SerpAPI request failed: {exc}")
+        return results
+
+    if err := data.get("error"):
+        results.messages.append(f"SerpAPI error: {err}")
+        return results
+
+    for item in data.get("organic_results", []) or []:
+        results.organic.append(
+            {
+                "title": item.get("title") or "",
+                "link": item.get("link") or "",
+                "snippet": item.get("snippet") or "",
+            }
+        )
+
+    kg = data.get("knowledge_graph") or {}
+    if kg:
+        results.knowledge_graph = {
+            "title": kg.get("title"),
+            "website": kg.get("website"),
+            "phone": kg.get("phone"),
+            "address": kg.get("address"),
+            "description": kg.get("description"),
+        }
+
+    local = data.get("local_results")
+    places: list[dict] = []
+    if isinstance(local, dict):
+        places = local.get("places") or []
+    elif isinstance(local, list):
+        places = local
+    for place in places:
+        results.local.append(
+            {
+                "title": place.get("title"),
+                "phone": place.get("phone"),
+                "address": place.get("address"),
+            }
+        )
+
+    return results
+
+
+def _search_brave(query: str, *, num: int, gl_code: str | None) -> SearchResults:
+    results = SearchResults(provider="brave")
+    api_key = getattr(settings, "brave_api_key", None)
+    if not api_key:
+        return results
+
+    params: dict[str, str | int] = {"q": query, "count": min(num, 20)}
+    if gl_code:
+        params["country"] = gl_code.upper()
+
+    try:
+        response = httpx.get(
+            "https://api.search.brave.com/res/v1/web/search",
+            params=params,
+            headers={
+                "Accept": "application/json",
+                "X-Subscription-Token": api_key,
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except httpx.HTTPError as exc:
+        results.messages.append(f"Brave request failed: {exc}")
+        return results
+
+    web = (data.get("web") or {}).get("results", []) or []
+    for item in web:
+        results.organic.append(
+            {
+                "title": item.get("title") or "",
+                "link": item.get("url") or "",
+                "snippet": item.get("description") or "",
+            }
+        )
+
+    return results
+
+
+def _search_google_cse(query: str, *, num: int, gl_code: str | None) -> SearchResults:
+    results = SearchResults(provider="google_cse")
+    api_key = getattr(settings, "google_cse_api_key", None)
+    engine_id = getattr(settings, "google_cse_engine_id", None)
+    if not api_key or not engine_id:
+        return results
+
+    params: dict[str, str | int] = {
+        "key": api_key,
+        "cx": engine_id,
+        "q": query,
+        "num": min(num, 10),
+    }
+    if gl_code:
+        params["gl"] = gl_code.lower()
+
+    try:
+        response = httpx.get(
+            "https://www.googleapis.com/customsearch/v1", params=params, timeout=20
+        )
+        response.raise_for_status()
+        data = response.json()
+    except httpx.HTTPError as exc:
+        results.messages.append(f"Google CSE request failed: {exc}")
+        return results
+
+    if err := data.get("error"):
+        message = err.get("message") if isinstance(err, dict) else str(err)
+        results.messages.append(f"Google CSE error: {message}")
+        return results
+
+    for item in data.get("items", []) or []:
+        results.organic.append(
+            {
+                "title": item.get("title") or "",
+                "link": item.get("link") or "",
+                "snippet": item.get("snippet") or "",
+            }
+        )
+
+    return results
+
+
+def _search_duckduckgo(query: str, *, num: int, gl_code: str | None) -> SearchResults:
+    results = SearchResults(provider="duckduckgo")
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        results.messages.append("ddgs package not installed — run pip install ddgs")
+        return results
+
+    region = _gl_to_region(gl_code) or "wt-wt"
+    try:
+        with DDGS() as ddgs:
+            hits = ddgs.text(query, region=region, max_results=min(num, 20))
+            for item in hits or []:
+                results.organic.append(
+                    {
+                        "title": item.get("title") or "",
+                        "link": item.get("href") or item.get("url") or "",
+                        "snippet": item.get("body") or "",
+                    }
+                )
+    except Exception as exc:  # ddgs raises assorted network/ratelimit errors
+        results.messages.append(f"DuckDuckGo request failed: {exc}")
+
+    return results
+
+
+_PROVIDERS: dict[str, Callable[..., SearchResults]] = {
+    "serpapi": _search_serpapi,
+    "brave": _search_brave,
+    "google_cse": _search_google_cse,
+    "duckduckgo": _search_duckduckgo,
+}
+
+
+def provider_available(name: str) -> bool:
+    if name == "serpapi":
+        return bool(settings.serpapi_api_key)
+    if name == "brave":
+        return bool(getattr(settings, "brave_api_key", None))
+    if name == "google_cse":
+        return bool(
+            getattr(settings, "google_cse_api_key", None)
+            and getattr(settings, "google_cse_engine_id", None)
+        )
+    if name == "duckduckgo":
+        try:
+            import ddgs  # noqa: F401
+
+            return True
+        except ImportError:
+            return False
+    return False
+
+
+def any_provider_available() -> bool:
+    return any(provider_available(name) for name in _provider_order())
+
+
+def search(
+    query: str,
+    *,
+    num: int = 10,
+    gl_code: str | None = None,
+) -> SearchResults:
+    """Run a web search through the first available provider that returns results.
+
+    Falls through the provider order until one yields organic/knowledge/local data.
+    Collects messages from every attempted provider for diagnostics.
+    """
+    messages: list[str] = []
+    last: SearchResults | None = None
+
+    for name in _provider_order():
+        provider = _PROVIDERS.get(name)
+        if not provider or not provider_available(name):
+            continue
+        result = provider(query, num=num, gl_code=gl_code)
+        messages.extend(result.messages)
+        last = result
+        if not result.is_empty():
+            result.messages = messages
+            return result
+
+    fallback = last or SearchResults()
+    fallback.messages = messages or ["No web-search provider is configured."]
+    return fallback

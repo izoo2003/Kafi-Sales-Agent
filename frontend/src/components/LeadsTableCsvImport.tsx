@@ -1,0 +1,427 @@
+import { useMemo, useState } from "react";
+import { client, type DiscoveryCandidate } from "../api/client";
+import { ScoreBadge } from "./ScoreBadge";
+
+const MAX_CSV_IMPORT = 25;
+const IMPORT_DELAY_MS = 1000;
+const IMPORT_FILE_ACCEPT = ".csv,.xlsx,.xls,.xlsm,.tsv";
+
+interface LeadsTableCsvImportProps {
+  onClose: () => void;
+  onImported: () => void;
+  onError: (message: string) => void;
+}
+
+interface ImportRowResult {
+  candidate_id: string;
+  company_name: string;
+  status: "success" | "failed" | "skipped" | "invalid";
+  score?: string;
+  reasoning?: string;
+  error?: string;
+}
+
+function isFound(value: string | null | undefined): value is string {
+  return Boolean(value && value !== "Not found");
+}
+
+function candidateToImportPayload(candidate: DiscoveryCandidate) {
+  return {
+    company_name: candidate.company_name,
+    website_url: candidate.website_url ?? undefined,
+    contact_name: candidate.contact_name ?? undefined,
+    email: isFound(candidate.email) ? candidate.email : undefined,
+    phone: isFound(candidate.phone) ? candidate.phone : undefined,
+    facebook_url: isFound(candidate.facebook_url) ? candidate.facebook_url : undefined,
+    instagram_url: isFound(candidate.instagram_url) ? candidate.instagram_url : undefined,
+    linkedin_url: isFound(candidate.linkedin_url) ? candidate.linkedin_url : undefined,
+    country: candidate.country ?? undefined,
+    industry: candidate.industry ?? undefined,
+    source: "csv",
+  };
+}
+
+export function LeadsTableCsvImport({ onClose, onImported, onError }: LeadsTableCsvImportProps) {
+  const [parsing, setParsing] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [candidates, setCandidates] = useState<DiscoveryCandidate[]>([]);
+  const [messages, setMessages] = useState<string[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [progress, setProgress] = useState<{ current: number; total: number; name: string } | null>(
+    null,
+  );
+  const [results, setResults] = useState<ImportRowResult[] | null>(null);
+
+  const importable = useMemo(() => candidates, [candidates]);
+
+  async function handleFileUpload(file: File) {
+    setParsing(true);
+    setMessages([]);
+    setResults(null);
+    try {
+      const result = await client.discoverLeadsFromCsv(file, undefined, true);
+      setCandidates(result.candidates);
+      setMessages(result.messages);
+      const validIds = result.candidates
+        .filter((candidate) => candidate.is_valid_business !== false)
+        .map((candidate) => candidate.candidate_id);
+      setSelected(new Set(validIds.slice(0, MAX_CSV_IMPORT)));
+      const invalidCount = result.candidates.filter((c) => c.is_valid_business === false).length;
+      if (invalidCount > 0) {
+        setMessages((prev) => [
+          ...prev,
+          `${invalidCount} row(s) flagged as not a valid business and excluded from import.`,
+        ]);
+      }
+      if (validIds.length > MAX_CSV_IMPORT) {
+        setMessages((prev) => [
+          ...prev,
+          `Only the first ${MAX_CSV_IMPORT} rows can be imported per batch.`,
+        ]);
+      }
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "File import failed");
+    } finally {
+      setParsing(false);
+    }
+  }
+
+  function toggleAll(checked: boolean) {
+    if (checked) {
+      setSelected(new Set(importable.slice(0, MAX_CSV_IMPORT).map((c) => c.candidate_id)));
+    } else {
+      setSelected(new Set());
+    }
+  }
+
+  function toggleOne(id: string, checked: boolean) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (checked) {
+        if (next.size >= MAX_CSV_IMPORT) return prev;
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return next;
+    });
+  }
+
+  async function handleImport() {
+    const toImport = candidates.filter(
+      (candidate) =>
+        selected.has(candidate.candidate_id) && candidate.is_valid_business !== false,
+    );
+    if (toImport.length === 0) {
+      onError("Select at least one valid business row to import");
+      return;
+    }
+    if (toImport.length > MAX_CSV_IMPORT) {
+      onError(`Import at most ${MAX_CSV_IMPORT} leads per batch`);
+      return;
+    }
+
+    const estimateSec = toImport.length * 6;
+    const withoutWebsite = toImport.filter((candidate) => !candidate.website_url?.trim());
+    const confirmed = window.confirm(
+      `Import ${toImport.length} lead${toImport.length === 1 ? "" : "s"}?\n\n` +
+        `• Each row is researched & scored before it appears in the table.\n` +
+        `• Duplicate rows replace older empty records when the new scrape has more details.\n` +
+        `• Runs one at a time (~${estimateSec}s estimated).\n` +
+        (withoutWebsite.length > 0
+          ? `• ${withoutWebsite.length} row${withoutWebsite.length === 1 ? " has" : "s have"} no website — fit signals will be weaker.\n`
+          : "") +
+        `\nContinue?`,
+    );
+    if (!confirmed) return;
+
+    setImporting(true);
+    setResults(null);
+    const rowResults: ImportRowResult[] = [];
+
+    for (let i = 0; i < toImport.length; i++) {
+      const candidate = toImport[i];
+      setProgress({
+        current: i + 1,
+        total: toImport.length,
+        name: candidate.company_name,
+      });
+
+      try {
+        const result = await client.importDiscoveredLeads({
+          candidates: [candidateToImportPayload(candidate)],
+          auto_onboard: true,
+          replace_duplicates: true,
+        });
+        if (result.created_count === 0) {
+          const skipped = result.skipped[0];
+          const reason = skipped?.reason ?? "Skipped";
+          const isInvalid = reason.toLowerCase().includes("not a valid business");
+          rowResults.push({
+            candidate_id: candidate.candidate_id,
+            company_name: candidate.company_name,
+            status: isInvalid ? "invalid" : "skipped",
+            error: reason,
+          });
+        } else {
+          const onboard = result.onboard_results[0];
+          if (onboard?.error) {
+            rowResults.push({
+              candidate_id: candidate.candidate_id,
+              company_name: candidate.company_name,
+              status: "failed",
+              error: String(onboard.error),
+            });
+          } else {
+            rowResults.push({
+              candidate_id: candidate.candidate_id,
+              company_name: candidate.company_name,
+              status: "success",
+              score: typeof onboard?.score === "string" ? onboard.score : undefined,
+              reasoning:
+                typeof onboard?.reasoning === "string" ? onboard.reasoning : undefined,
+            });
+          }
+        }
+      } catch (e) {
+        rowResults.push({
+          candidate_id: candidate.candidate_id,
+          company_name: candidate.company_name,
+          status: "failed",
+          error: e instanceof Error ? e.message : "Import failed",
+        });
+      }
+
+      if (i < toImport.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, IMPORT_DELAY_MS));
+      }
+    }
+
+    setProgress(null);
+    setImporting(false);
+    setResults(rowResults);
+    setCandidates((prev) =>
+      prev.map((candidate) =>
+        rowResults.some(
+          (result) =>
+            result.candidate_id === candidate.candidate_id && result.status === "success",
+        )
+          ? { ...candidate, already_exists: true }
+          : candidate,
+      ),
+    );
+    setSelected(new Set());
+    onImported();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
+      <div className="w-full max-w-5xl max-h-[90vh] overflow-y-auto rounded-xl border border-slate-700 bg-slate-900 shadow-xl">
+        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-slate-800 bg-slate-900 px-5 py-4">
+          <div>
+            <h3 className="text-base font-medium text-slate-100">Import to leads table</h3>
+            <p className="text-xs text-slate-500 mt-1">
+              Upload CSV, Excel (.xlsx, .xls), or TSV — preview loads instantly from your file.
+              Click Import &amp; research to scrape each company website, find contacts and socials,
+              then score (~6s per row).
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={importing}
+            className="text-sm text-slate-400 hover:text-slate-200 disabled:opacity-50"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium cursor-pointer disabled:opacity-50">
+              {parsing ? "Reading file…" : "Choose file"}
+              <input
+                type="file"
+                accept={IMPORT_FILE_ACCEPT}
+                className="hidden"
+                disabled={parsing || importing}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) void handleFileUpload(file);
+                  e.target.value = "";
+                }}
+              />
+            </label>
+            <span className="text-xs text-slate-500">Max {MAX_CSV_IMPORT} new leads per import</span>
+          </div>
+
+          {parsing && (
+            <p className="text-xs text-slate-300 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">
+              Reading and mapping columns from your file…
+            </p>
+          )}
+
+          {messages.length > 0 && (
+            <div className="text-xs text-slate-500 space-y-1 rounded-lg border border-slate-800 bg-slate-950 px-3 py-2">
+              {messages.map((message) => (
+                <p key={message}>{message}</p>
+              ))}
+            </div>
+          )}
+
+          {progress && (
+            <p className="text-xs text-slate-300 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">
+              Researching &amp; importing {progress.current} of {progress.total}:{" "}
+              <strong className="text-slate-100">{progress.name}</strong>
+            </p>
+          )}
+
+          {results && results.length > 0 && (
+            <div className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 space-y-2">
+              <p className="text-sm text-slate-200">
+                Import complete — {results.filter((r) => r.status === "success").length} added,{" "}
+                {results.filter((r) => r.status === "invalid").length} not valid businesses,{" "}
+                {results.filter((r) => r.status === "failed").length} failed,{" "}
+                {results.filter((r) => r.status === "skipped").length} skipped
+              </p>
+              <ul className="max-h-32 overflow-y-auto space-y-1 text-xs">
+                {results.map((result) => (
+                  <li key={result.candidate_id} className="flex items-center gap-2 text-slate-400">
+                    {result.status === "success" && result.score ? (
+                      <ScoreBadge score={result.score} />
+                    ) : (
+                      <span
+                        className={`px-2 py-0.5 rounded text-xs border ${
+                          result.status === "invalid"
+                            ? "border-amber-500/30 text-amber-300"
+                            : "border-red-500/30 text-red-300"
+                        }`}
+                      >
+                        {result.status === "invalid"
+                          ? "Not valid"
+                          : result.status === "skipped"
+                            ? "Skipped"
+                            : "Failed"}
+                      </span>
+                    )}
+                    <span className="text-slate-300 truncate">{result.company_name}</span>
+                    {result.error && <span className="text-red-400 truncate">{result.error}</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {candidates.length > 0 && (
+            <>
+              <div className="overflow-x-auto rounded-lg border border-slate-800">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-slate-500 border-b border-slate-800 bg-slate-950">
+                      <th className="py-2 px-3 w-10">
+                        <input
+                          type="checkbox"
+                          checked={
+                            importable.length > 0 &&
+                            selected.size === Math.min(importable.length, MAX_CSV_IMPORT)
+                          }
+                          onChange={(e) => toggleAll(e.target.checked)}
+                          disabled={importing}
+                          aria-label="Select all"
+                        />
+                      </th>
+                      <th className="py-2 pr-4">Company</th>
+                      <th className="py-2 pr-4">Country</th>
+                      <th className="py-2 pr-4">Contact</th>
+                      <th className="py-2 pr-4">Email</th>
+                      <th className="py-2 pr-4">Phone</th>
+                      <th className="py-2 pr-4">Website</th>
+                      <th className="py-2 pr-4">Industry</th>
+                      <th className="py-2 pr-4">Socials</th>
+                      <th className="py-2">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {candidates.map((candidate) => (
+                      <tr key={candidate.candidate_id} className="border-b border-slate-800/60">
+                        <td className="py-2 px-3">
+                          <input
+                            type="checkbox"
+                            checked={selected.has(candidate.candidate_id)}
+                            disabled={importing || candidate.is_valid_business === false}
+                            onChange={(e) => toggleOne(candidate.candidate_id, e.target.checked)}
+                          />
+                        </td>
+                        <td className="py-2 pr-4 text-slate-200">{candidate.company_name}</td>
+                        <td className="py-2 pr-4 text-slate-400">{candidate.country || "—"}</td>
+                        <td className="py-2 pr-4 text-slate-400">{candidate.contact_name || "—"}</td>
+                        <td className="py-2 pr-4 text-slate-400 max-w-[180px] truncate">
+                          {isFound(candidate.email) ? candidate.email : "—"}
+                        </td>
+                        <td className="py-2 pr-4 text-slate-400 whitespace-nowrap">
+                          {isFound(candidate.phone) ? candidate.phone : "—"}
+                        </td>
+                        <td className="py-2 pr-4 text-slate-400 max-w-[200px] truncate">
+                          {candidate.website_url || "—"}
+                        </td>
+                        <td className="py-2 pr-4 text-slate-400 max-w-[160px] truncate">
+                          {candidate.industry || "—"}
+                        </td>
+                        <td className="py-2 pr-4 text-slate-400 text-xs whitespace-nowrap">
+                          {[
+                            isFound(candidate.facebook_url) ? "FB" : null,
+                            isFound(candidate.instagram_url) ? "IG" : null,
+                            isFound(candidate.linkedin_url) ? "LI" : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ") || "—"}
+                        </td>
+                        <td className="py-2 text-xs">
+                          {candidate.is_valid_business === false ? (
+                            <span
+                              className="text-amber-400/90"
+                              title={candidate.invalid_reason ?? undefined}
+                            >
+                              Not a valid business
+                            </span>
+                          ) : candidate.already_exists ? (
+                            <span className="text-amber-400/90">Duplicate — replace if sparse</span>
+                          ) : (
+                            <span className="text-slate-500">Ready</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  disabled={importing}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleImport()}
+                  disabled={importing || selected.size === 0}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium disabled:opacity-50"
+                >
+                  {importing
+                    ? progress
+                      ? `Importing ${progress.current}/${progress.total}…`
+                      : "Starting…"
+                    : `Import & research (${selected.size})`}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

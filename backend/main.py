@@ -4,8 +4,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api import compliance, interactions, leads, quotations, scheduler
+from api import compliance, email_templates, interactions, leads, scheduler
 from config import settings
+from db.migrate import run_migrations
 from db.session import SessionLocal
 from db.seed import seed_sample_data
 from jobs.daily_birthday_check import run as run_birthday_check
@@ -27,11 +28,21 @@ def _run_daily_job():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    print("Applying database migrations…", flush=True)
+    try:
+        run_migrations()
+    except Exception as exc:
+        print(f"Database migration failed: {exc}", flush=True)
+        raise
+    print("Migrations complete.", flush=True)
+
     db = SessionLocal()
     try:
         seed_sample_data(db)
     finally:
         db.close()
+
+    print("Application startup complete.", flush=True)
 
     apscheduler.add_job(_run_daily_job, "cron", hour=8, minute=0, id="daily_scheduler")
     apscheduler.start()
@@ -56,8 +67,8 @@ app.add_middleware(
 
 app.include_router(leads.router, prefix="/api")
 app.include_router(compliance.router, prefix="/api")
-app.include_router(quotations.router, prefix="/api")
 app.include_router(interactions.router, prefix="/api")
+app.include_router(email_templates.router, prefix="/api")
 app.include_router(scheduler.router, prefix="/api")
 
 

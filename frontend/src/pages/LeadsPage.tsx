@@ -109,7 +109,10 @@ export function LeadsPage({ onError, onSelectLead }: LeadsPageProps) {
       )}
 
       {leads.map((lead) => {
+        // Prefer in-session onboard result (fresher), fall back to persisted score from API
         const result = onboardResult[lead.id];
+        const scoreLabel = result?.score ?? lead.latest_score ?? null;
+        const scoreReasoning = result?.reasoning ?? lead.score_reasoning ?? null;
         return (
           <div
             key={lead.id}
@@ -124,13 +127,19 @@ export function LeadsPage({ onError, onSelectLead }: LeadsPageProps) {
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="font-medium">{lead.company_name}</h3>
-                {result && <ScoreBadge score={result.score} />}
+                {scoreLabel ? (
+                  <ScoreBadge score={scoreLabel} />
+                ) : (
+                  <span className="px-2 py-0.5 rounded border text-xs font-medium bg-slate-700/30 text-slate-400 border-slate-600/40">
+                    Unscored
+                  </span>
+                )}
               </div>
               <p className="text-sm text-slate-400">
                 {[lead.country, lead.industry].filter(Boolean).join(" · ") || "—"}
               </p>
-              {result && (
-                <p className="text-sm text-slate-500 mt-1 line-clamp-2">{result.reasoning}</p>
+              {scoreReasoning && (
+                <p className="text-sm text-slate-500 mt-1 line-clamp-2">{scoreReasoning}</p>
               )}
             </div>
             <button
@@ -139,7 +148,7 @@ export function LeadsPage({ onError, onSelectLead }: LeadsPageProps) {
               disabled={onboarding === lead.id}
               className="shrink-0 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm disabled:opacity-50"
             >
-              {onboarding === lead.id ? "Scoring…" : "Quick score"}
+              {onboarding === lead.id ? "Scoring…" : "Re-score"}
             </button>
           </div>
         );

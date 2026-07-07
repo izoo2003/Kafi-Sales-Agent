@@ -30,6 +30,90 @@ def is_valid_email(email: str | None) -> bool:
     return bool(_VALID_EMAIL_RE.match(value))
 
 
+def normalize_buyer_key(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def buyer_website_domain(url: str | None) -> str | None:
+    if not url:
+        return None
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url if "://" in url else f"https://{url}")
+        host = parsed.netloc.lower()
+        return host[4:] if host.startswith("www.") else host
+    except ValueError:
+        return None
+
+
+def buyer_data_score(db: Session, buyer: Buyer) -> int:
+    """Higher score = richer lead record; used to pick which duplicate to keep."""
+    from db.models import LeadScoreLabel
+
+    contact = primary_contact_with_email(db, buyer.id)
+    if not contact:
+        contacts = list_contacts_for_buyer(db, buyer.id)
+        contact = contacts[0] if contacts else None
+
+    latest_score = (
+        db.query(LeadScore)
+        .filter(LeadScore.buyer_id == buyer.id)
+        .order_by(LeadScore.scored_at.desc())
+        .first()
+    )
+
+    points = 0
+    if buyer.website_url:
+        points += 10
+    if buyer.country:
+        points += 2
+    if buyer.industry:
+        points += 2
+    if buyer.linkedin_company_url:
+        points += 3
+    if buyer.facebook_company_url:
+        points += 2
+    if buyer.instagram_company_url:
+        points += 2
+    if contact and is_valid_email(contact.email):
+        points += 15
+    if contact and contact.phone:
+        points += 5
+    if latest_score:
+        points += 5
+        if latest_score.score == LeadScoreLabel.HOT:
+            points += 10
+        elif latest_score.score == LeadScoreLabel.WARM:
+            points += 5
+    return points
+
+
+def is_sparse_buyer(db: Session, buyer: Buyer) -> bool:
+    """True when a lead has almost no scraped details (typical failed CSV import)."""
+    return buyer_data_score(db, buyer) < 8
+
+
+def find_buyer_by_name_or_domain(
+    db: Session,
+    *,
+    company_name: str,
+    website_url: str | None = None,
+) -> Buyer | None:
+    name_key = normalize_buyer_key(company_name)
+    domain = buyer_website_domain(website_url)
+    match_by_name: Buyer | None = None
+    match_by_domain: Buyer | None = None
+
+    for buyer in list_buyers(db):
+        if normalize_buyer_key(buyer.company_name) == name_key:
+            match_by_name = buyer
+        if domain and buyer_website_domain(buyer.website_url) == domain:
+            match_by_domain = buyer
+
+    return match_by_name or match_by_domain
+
+
 def primary_contact_with_email(db: Session, buyer_id: int) -> Contact | None:
     for contact in list_contacts_for_buyer(db, buyer_id):
         if is_valid_email(contact.email):
@@ -85,7 +169,16 @@ def update_buyer(db: Session, buyer_id: int, data: dict) -> Buyer | None:
     if not buyer:
         return None
     for key, value in data.items():
-        if key in {"company_name", "website_url", "country", "industry", "linkedin_company_url", "source"}:
+        if key in {
+            "company_name",
+            "website_url",
+            "country",
+            "industry",
+            "linkedin_company_url",
+            "facebook_company_url",
+            "instagram_company_url",
+            "source",
+        }:
             setattr(buyer, key, value)
     db.commit()
     db.refresh(buyer)

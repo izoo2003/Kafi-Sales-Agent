@@ -25,6 +25,19 @@ class Settings(BaseSettings):
 
     serpapi_api_key: str | None = None
 
+    # Web search — steps 1–2 only by default (brave → serpapi). See modules/web_search.py.
+    brave_api_key: str | None = None
+    google_cse_api_key: str | None = None
+    google_cse_engine_id: str | None = None
+    # Comma-separated provider order; default is "brave,serpapi" (no step-3 providers).
+    web_search_providers: str | None = None
+
+    # Bulk email throttling (Gmail-safe batching)
+    bulk_email_batch_size: int = 50
+    bulk_email_message_delay_seconds: float = 3.0
+    bulk_email_batch_pause_seconds: float = 60.0
+    bulk_email_max_per_request: int = 50
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

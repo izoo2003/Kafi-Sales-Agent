@@ -7,7 +7,7 @@ from modules.research import BuyerProfile
 
 
 class LeadScoringModule:
-    """Rule-based lead scoring until LLM is enabled."""
+    """Rule-based lead scoring with optional LLM-enhanced reasoning."""
 
     def score(self, db: Session, profile: BuyerProfile) -> LeadScore:
         factors: list[dict[str, str | int | float]] = []
@@ -187,6 +187,19 @@ class LeadScoringModule:
             else:
                 reasoning = f"Limited engagement and weak Kafi product fit.{role_note}"
 
+        # Enhance reasoning with LLM if available
+        reasoning = self._maybe_llm_reasoning(
+            db=db,
+            profile=profile,
+            fallback_label=label.value,
+            fallback_reasoning=reasoning,
+            score_factors=factors,
+        )
+        if isinstance(reasoning, dict):
+            label = LeadScoreLabel(reasoning["score"])
+            factors = reasoning.get("key_factors", factors)
+            reasoning = reasoning["reasoning"]
+
         record = LeadScore(
             buyer_id=profile.buyer_id,
             score=label,
@@ -197,3 +210,67 @@ class LeadScoringModule:
         db.commit()
         db.refresh(record)
         return record
+
+    # ------------------------------------------------------------------
+    # LLM enrichment (optional)
+    # ------------------------------------------------------------------
+
+    def _maybe_llm_reasoning(
+        self,
+        *,
+        db: Session,
+        profile: BuyerProfile,
+        fallback_label: str,
+        fallback_reasoning: str,
+        score_factors: list,
+    ) -> dict | str:
+        """Return LLM-enriched {score, reasoning, key_factors} or the fallback string."""
+        from modules.llm_client import llm_client
+        if not llm_client.enabled:
+            return fallback_reasoning
+
+        # Build compact interaction + export summaries for the prompt
+        cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+        interactions_rows = (
+            db.query(Interaction)
+            .join(Contact, Interaction.contact_id == Contact.id)
+            .filter(Contact.buyer_id == profile.buyer_id)
+            .filter(Interaction.created_at >= cutoff)
+            .limit(5)
+            .all()
+        )
+        exports_rows = (
+            db.query(ExportHistory)
+            .filter(ExportHistory.buyer_id == profile.buyer_id)
+            .order_by(ExportHistory.order_date.desc())
+            .limit(5)
+            .all()
+        )
+
+        buyer_profile_str = (
+            f"Company: {profile.company_name}\n"
+            f"Country: {profile.country or 'unknown'}\n"
+            f"Industry: {profile.industry or 'unknown'}\n"
+            f"Market role: {profile.market_role}\n"
+            f"Website summary: {profile.website_summary or 'n/a'}\n"
+            f"Matched categories: {', '.join(profile.matched_categories) or 'none'}\n"
+            f"Product fit score: {profile.product_fit_score}\n"
+            f"Rule-based label: {fallback_label} — {fallback_reasoning}\n"
+            f"Score factors: {score_factors}"
+        )
+        interactions_str = "\n".join(
+            f"- [{i.channel}] {i.direction} on {i.created_at}: {(i.content or '')[:120]}"
+            for i in interactions_rows
+        ) or "None in last 90 days"
+        exports_str = "\n".join(
+            f"- {e.order_date}: qty {e.quantity} @ {e.unit_price}"
+            for e in exports_rows
+        ) or "No export history"
+
+        return llm_client.score_lead(
+            buyer_profile=buyer_profile_str,
+            interactions=interactions_str,
+            export_history=exports_str,
+            fallback_label=fallback_label,
+            fallback_reasoning=fallback_reasoning,
+        )

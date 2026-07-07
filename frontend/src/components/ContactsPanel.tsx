@@ -30,7 +30,7 @@ function ConsentBadge({ status }: { status: string }) {
   return (
     <span
       className={`px-2 py-0.5 rounded text-xs border ${styles[status] ?? styles.unknown}`}
-      title="Consent for automated personal outreach (birthdays, etc.)"
+      title="Permission for automated personal messages (birthdays, etc.)"
     >
       {CONSENT_LABELS[status] ?? status}
     </span>
@@ -354,14 +354,14 @@ function ContactFormFields({
         />
       </label>
       <label className="block sm:col-span-2">
-        <span className="text-sm text-slate-400">Outreach consent</span>
+        <span className="text-sm text-slate-400">Automated messages</span>
         <select
           value={form.consent_status}
           onChange={(e) => onChange("consent_status", e.target.value)}
           className={inputClass}
         >
           <option value="unknown">Unknown</option>
-          <option value="granted">Granted — OK for birthdays &amp; personal outreach</option>
+          <option value="granted">Granted — OK for birthdays &amp; personal messages</option>
           <option value="denied">Denied — no automated personal messages</option>
         </select>
       </label>

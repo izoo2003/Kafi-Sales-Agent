@@ -220,7 +220,7 @@ export function DiscoverLeadsPanel({
         new Set(result.candidates.filter((c) => !c.already_exists).map((c) => c.candidate_id)),
       );
     } catch (e) {
-      onError(e instanceof Error ? e.message : "CSV import failed");
+      onError(e instanceof Error ? e.message : "File upload failed");
     } finally {
       setDiscovering(false);
     }
@@ -238,6 +238,7 @@ export function DiscoverLeadsPanel({
         candidates: toImport.map((c) => ({
           company_name: c.company_name,
           website_url: c.website_url ?? undefined,
+          contact_name: c.contact_name ?? undefined,
           email: isFound(c.email) ? c.email : undefined,
           phone: isFound(c.phone) ? c.phone : undefined,
           facebook_url: isFound(c.facebook_url) ? c.facebook_url : undefined,
@@ -429,10 +430,10 @@ export function DiscoverLeadsPanel({
           {discovering ? "Searching…" : "Find similar leads"}
         </button>
         <label className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm cursor-pointer">
-          Upload CSV
+          Upload file
           <input
             type="file"
-            accept=".csv"
+            accept=".csv,.xlsx,.xls,.xlsm,.tsv"
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];

@@ -28,17 +28,34 @@ class CommsGenerator:
             raise ValueError("Contact not found")
         buyer = db.get(Buyer, contact.buyer_id)
 
+        company = buyer.company_name if buyer else "your company"
         subject = f"Kafi Commodities — {goal}"
-        body = (
+
+        # Template fallback
+        fallback = (
             f"Dear {contact.full_name},\n\n"
             f"I hope this message finds you well. Following up regarding {goal.lower()} "
-            f"for {buyer.company_name if buyer else 'your company'}."
+            f"for {company}."
         )
         if product_name:
-            body += f"\n\nWe would be pleased to discuss our {product_name} offering."
-        body += (
+            fallback += f"\n\nWe would be pleased to discuss our {product_name} offering."
+        fallback += (
             "\n\nPlease let us know a convenient time to connect.\n\n"
             "Best regards,\nKafi Commodities Sales Team"
+        )
+
+        from modules.llm_client import llm_client
+        buyer_context = (
+            f"Buyer: {company}, Country: {getattr(buyer, 'country', 'unknown')}, "
+            f"Industry: {getattr(buyer, 'industry', 'unknown')}"
+        )
+        body = llm_client.draft_email(
+            buyer_country=getattr(buyer, "country", "") or "",
+            target_language=contact.preferred_language or "en",
+            buyer_context=buyer_context,
+            goal=goal,
+            product_specs=product_name or "Kafi ESSENCE range",
+            fallback_body=fallback,
         )
 
         draft = Interaction(
@@ -84,7 +101,7 @@ class CommsGenerator:
 
         product_block = "\n".join(lines)
         subject = f"Kafi Commodities — ESSENCE products for {company}"
-        body = (
+        fallback_body = (
             f"Dear {contact.full_name},\n\n"
             f"I hope this message finds you well. Based on what we know about "
             f"{company}, we believe the following products from our Kafi ESSENCE "
@@ -94,6 +111,21 @@ class CommsGenerator:
             f"pricing tailored to your market. Let us know which lines you would "
             f"like to explore further.\n\n"
             f"Best regards,\nKafi Commodities Sales Team"
+        )
+
+        from modules.llm_client import llm_client
+        buyer_context = (
+            f"Buyer: {company}, Country: {getattr(buyer, 'country', 'unknown')}, "
+            f"Industry: {getattr(buyer, 'industry', 'unknown')}"
+        )
+        product_specs = product_block
+        body = llm_client.draft_email(
+            buyer_country=getattr(buyer, "country", "") or "",
+            target_language=contact.preferred_language or "en",
+            buyer_context=buyer_context,
+            goal="introduce Kafi ESSENCE product range",
+            product_specs=product_specs,
+            fallback_body=fallback_body,
         )
 
         draft = Interaction(
@@ -264,6 +296,173 @@ class CommsGenerator:
             .order_by(Interaction.created_at.desc())
             .all()
         )
+
+    def generate_draft_from_template(
+        self,
+        db: Session,
+        *,
+        buyer_id: int,
+        template_id: int,
+    ) -> Interaction:
+        from modules import buyers as buyers_module
+        from modules.email_templates import get_template, render_template_text
+
+        buyer = db.get(Buyer, buyer_id)
+        if not buyer:
+            raise ValueError(f"Buyer {buyer_id} not found")
+
+        template = get_template(db, template_id)
+        if not template:
+            raise ValueError("Email template not found")
+
+        contact = buyers_module.primary_contact_with_email(db, buyer_id)
+        if not contact:
+            raise ValueError(f"No contact with email for {buyer.company_name}")
+
+        subject = render_template_text(template.subject, buyer=buyer, contact=contact)
+        body = render_template_text(template.body, buyer=buyer, contact=contact)
+
+        draft = Interaction(
+            contact_id=contact.id,
+            channel=Channel.email,
+            direction=Direction.outbound,
+            subject=subject,
+            content=body,
+            language=contact.preferred_language or "en",
+            handled_by=HandledBy.agent,
+            status=InteractionStatus.draft,
+        )
+        db.add(draft)
+        db.commit()
+        db.refresh(draft)
+        return draft
+
+    def create_bulk_drafts_from_template(
+        self,
+        db: Session,
+        *,
+        buyer_ids: list[int],
+        template_id: int,
+    ) -> dict:
+        created: list[dict] = []
+        skipped: list[dict] = []
+
+        for buyer_id in buyer_ids:
+            buyer = db.get(Buyer, buyer_id)
+            if not buyer:
+                skipped.append({"buyer_id": buyer_id, "reason": "lead not found"})
+                continue
+            try:
+                draft = self.generate_draft_from_template(
+                    db,
+                    buyer_id=buyer_id,
+                    template_id=template_id,
+                )
+                created.append(
+                    {
+                        "buyer_id": buyer_id,
+                        "company_name": buyer.company_name,
+                        "interaction_id": draft.id,
+                        "contact_id": draft.contact_id,
+                    }
+                )
+            except ValueError as exc:
+                skipped.append(
+                    {
+                        "buyer_id": buyer_id,
+                        "company_name": buyer.company_name,
+                        "reason": str(exc),
+                    }
+                )
+
+        return {
+            "created_count": len(created),
+            "skipped_count": len(skipped),
+            "created": created,
+            "skipped": skipped,
+        }
+
+    def bulk_approve_drafts(
+        self,
+        db: Session,
+        interaction_ids: list[int],
+        *,
+        approved_by: str = "sales_rep",
+        send: bool = True,
+        message_delay_seconds: float | None = None,
+    ) -> dict:
+        import time
+
+        from config import settings
+
+        delay = (
+            message_delay_seconds
+            if message_delay_seconds is not None
+            else settings.bulk_email_message_delay_seconds
+        )
+
+        results: list[dict] = []
+        sent_count = 0
+        failed_count = 0
+
+        for index, interaction_id in enumerate(interaction_ids):
+            if index > 0 and send and delay > 0:
+                time.sleep(delay)
+            try:
+                draft, send_result = self.approve_draft(
+                    db,
+                    interaction_id,
+                    approved_by=approved_by,
+                    send=send,
+                )
+                sent = draft.status == InteractionStatus.sent
+                if sent:
+                    sent_count += 1
+                elif send:
+                    failed_count += 1
+                results.append(
+                    {
+                        "interaction_id": interaction_id,
+                        "status": draft.status.value,
+                        "sent": sent,
+                        "send_status": (send_result or {}).get("status"),
+                        "send_message": (send_result or {}).get("message"),
+                    }
+                )
+            except ValueError as exc:
+                failed_count += 1
+                results.append(
+                    {
+                        "interaction_id": interaction_id,
+                        "status": "error",
+                        "sent": False,
+                        "send_message": str(exc),
+                    }
+                )
+
+        return {
+            "processed": len(results),
+            "sent_count": sent_count,
+            "failed_count": failed_count,
+            "results": results,
+        }
+
+    def interaction_to_dict(self, db: Session, interaction: Interaction) -> dict:
+        contact = db.get(Contact, interaction.contact_id)
+        buyer = db.get(Buyer, contact.buyer_id) if contact else None
+        return {
+            "id": interaction.id,
+            "contact_id": interaction.contact_id,
+            "channel": interaction.channel.value,
+            "direction": interaction.direction.value,
+            "subject": interaction.subject,
+            "content": interaction.content,
+            "status": interaction.status.value,
+            "created_at": interaction.created_at,
+            "company_name": buyer.company_name if buyer else None,
+            "contact_name": contact.full_name if contact else None,
+            "contact_email": contact.email if contact else None,
+        }
 
     def list_interactions(self, db: Session, limit: int = 100) -> list[Interaction]:
         return (

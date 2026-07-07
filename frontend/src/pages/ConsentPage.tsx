@@ -104,10 +104,10 @@ export function ConsentPage({ onError, onSelectLead }: ConsentPageProps) {
   return (
     <section className="space-y-4">
       <div>
-        <h2 className="text-lg font-medium text-slate-100">Consent & compliance</h2>
+        <h2 className="text-lg font-medium text-slate-100">Automated messages</h2>
         <p className="text-sm text-slate-500 mt-1">
-          Manage outreach consent for birthdays and personal messages. Granted + date of birth
-          required for automated birthday drafts.
+          Control who can receive scheduled personal messages (birthdays, national days, follow-ups).
+          Grant permission and add date of birth where needed for birthday drafts.
         </p>
       </div>
 
@@ -140,7 +140,7 @@ export function ConsentPage({ onError, onSelectLead }: ConsentPageProps) {
       <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3">
         <div className="flex flex-wrap gap-3 items-end">
           <label className="block text-xs text-slate-400 min-w-[160px]">
-            Consent filter
+            Message status
             <select
               value={consentFilter}
               onChange={(e) => setConsentFilter(e.target.value)}
@@ -213,7 +213,7 @@ export function ConsentPage({ onError, onSelectLead }: ConsentPageProps) {
                 <th className="p-3 text-left">Company</th>
                 <th className="p-3 text-left">Contact</th>
                 <th className="p-3 text-left">Email</th>
-                <th className="p-3 text-left">Consent</th>
+                <th className="p-3 text-left">Message status</th>
                 <th className="p-3 text-left">Birthday</th>
                 <th className="p-3 text-left">Birthday OK</th>
               </tr>

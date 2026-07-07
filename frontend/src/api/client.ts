@@ -5,6 +5,11 @@
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 
+/** External quotation agent (separate app). */
+export const QUOTATION_AGENT_URL =
+  import.meta.env.VITE_QUOTATION_AGENT_URL ??
+  "https://bank-recon-demo.vercel.app/quotations";
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json", ...options?.headers },
@@ -38,6 +43,8 @@ export interface Lead {
   producer_conversion_pct?: number | null;
   producer_tier_reasoning?: string | null;
   created_at: string;
+  latest_score?: string | null;
+  score_reasoning?: string | null;
 }
 
 export interface BuyerProfile {
@@ -88,6 +95,9 @@ export interface DraftInteraction {
   content: string;
   status: string;
   created_at: string;
+  company_name?: string | null;
+  contact_name?: string | null;
+  contact_email?: string | null;
 }
 
 export interface ApproveDraftResult {
@@ -97,37 +107,58 @@ export interface ApproveDraftResult {
   send_message: string | null;
 }
 
-export interface QuotationLine {
-  product_id: number;
-  product_name?: string | null;
-  quantity: number;
-  unit_price: number;
-  price_unit?: string | null;
-  line_total: number;
-}
-
-export interface Quotation {
+export interface EmailTemplate {
   id: number;
-  buyer_id: number;
-  product_id: number | null;
-  quantity: number | null;
-  unit_price: number | null;
-  incoterms: string | null;
-  validity_date: string | null;
-  status: string;
-  pdf_path: string | null;
-  buyer_name?: string | null;
-  product_name?: string | null;
-  price_unit?: string | null;
-  line_total?: number | null;
-  lines?: QuotationLine[];
-  grand_total?: number | null;
+  name: string;
+  subject: string;
+  body: string;
+  created_at: string;
+  updated_at: string;
 }
 
-export interface CategoryPricing {
-  category: string;
-  unit: string;
-  price_tiers: Record<string, number>;
+export interface EmailTemplatePreview {
+  subject: string;
+  body: string;
+  company_name: string;
+  contact_email: string;
+}
+
+export interface BulkEmailDraftResponse {
+  created_count: number;
+  skipped_count: number;
+  created: Array<{
+    buyer_id: number;
+    company_name: string;
+    interaction_id: number;
+    contact_id: number;
+  }>;
+  skipped: Array<{
+    buyer_id: number;
+    company_name?: string | null;
+    reason: string;
+  }>;
+}
+
+export interface BulkApproveResponse {
+  processed: number;
+  sent_count: number;
+  failed_count: number;
+  results: Array<{
+    interaction_id: number;
+    status: string;
+    sent: boolean;
+    send_status?: string | null;
+    send_message?: string | null;
+  }>;
+}
+
+export interface BulkEmailSettings {
+  batch_size: number;
+  message_delay_seconds: number;
+  batch_pause_seconds: number;
+  max_per_request: number;
+  gmail_daily_limit_hint: number;
+  recommendation: string;
 }
 
 export interface ConsentSummary {
@@ -160,44 +191,11 @@ export interface ProductType {
   category: string;
 }
 
-export interface Product {
-  id: number;
-  name: string;
-  category: string | null;
-  price_tiers: Record<string, number> | null;
-  moq: string | null;
-}
-
-export interface QuotationLineCreate {
-  product_id: number;
-  quantity: number;
-  price_tier?: string;
-}
-
-export interface QuotationCreate {
-  buyer_id: number;
-  lines: QuotationLineCreate[];
-  incoterms?: string;
-  validity_days?: number;
-}
-
-export interface QuotationBatchCreate {
-  quantity?: number;
-  incoterms?: string;
-  max_quotes?: number;
-}
-
 export interface QuotationEligibleLead extends Lead {
   latest_score: string;
   score_reasoning: string;
   contact_email: string;
   contact_name?: string | null;
-}
-
-export interface CatalogSyncResult {
-  created: number;
-  skipped: number;
-  total: number;
 }
 
 export interface OnboardResult {
@@ -249,6 +247,7 @@ export interface DiscoveryCandidate {
   candidate_id: string;
   company_name: string;
   website_url: string | null;
+  contact_name: string | null;
   email: string;
   phone: string;
   facebook_url: string;
@@ -260,6 +259,8 @@ export interface DiscoveryCandidate {
   source_detail: string;
   match_reason: string;
   already_exists: boolean;
+  is_valid_business?: boolean;
+  invalid_reason?: string | null;
 }
 
 export interface DiscoveryRegion {
@@ -296,6 +297,7 @@ export interface DiscoverImportRequest {
   candidates: Array<{
     company_name: string;
     website_url?: string;
+    contact_name?: string;
     email?: string;
     phone?: string;
     facebook_url?: string;
@@ -306,14 +308,33 @@ export interface DiscoverImportRequest {
     source?: string;
   }>;
   auto_onboard?: boolean;
+  replace_duplicates?: boolean;
 }
 
 export interface DiscoverImportResponse {
   created_count: number;
   skipped_count: number;
+  replaced_count?: number;
   created: Lead[];
   skipped: Array<{ company_name: string; reason: string }>;
+  replaced?: Array<{ company_name: string; replaced_id: number; reason: string }>;
   onboard_results: Array<Record<string, unknown>>;
+}
+
+export interface LeadTableDedupeResponse {
+  removed_count: number;
+  kept_count: number;
+  groups: Array<{
+    company_name: string;
+    kept_id: number;
+    removed_ids: number[];
+    removed_names: string[];
+  }>;
+}
+
+export interface LeadTableCleanupResponse {
+  removed_count: number;
+  removed: Array<{ id: number; company_name: string }>;
 }
 
 export interface LeadTableRow {
@@ -323,6 +344,8 @@ export interface LeadTableRow {
   industry: string | null;
   website_url: string | null;
   linkedin_company_url: string | null;
+  facebook_company_url: string | null;
+  instagram_company_url: string | null;
   source: string | null;
   created_at: string;
   latest_score: string | null;
@@ -344,7 +367,9 @@ export interface LeadTableRowUpdate {
   country?: string;
   industry?: string;
   website_url?: string;
-  linkedin_company_url?: string;
+  linkedin_company_url?: string | null;
+  facebook_company_url?: string | null;
+  instagram_company_url?: string | null;
   contact_id?: number;
   contact_name?: string;
   contact_email?: string;
@@ -401,6 +426,10 @@ export const client = {
     }),
   deleteLeadTableRow: (leadId: number) =>
     request<void>(`/leads/table/${leadId}`, { method: "DELETE" }),
+  dedupeLeadsTable: () =>
+    request<LeadTableDedupeResponse>("/leads/table/dedupe", { method: "POST" }),
+  cleanupSparseCsvLeads: () =>
+    request<LeadTableCleanupResponse>("/leads/table/cleanup-sparse", { method: "POST" }),
   createLead: (data: LeadCreate) =>
     request<Lead>("/leads", { method: "POST", body: JSON.stringify(data) }),
   getLead: (id: number) => request<Lead>(`/leads/${id}`),
@@ -444,19 +473,31 @@ export const client = {
       body: JSON.stringify(data),
     }),
 
-  discoverLeadsFromCsv: async (file: File, defaultCountry?: string) => {
+  discoverLeadsFromCsv: async (file: File, defaultCountry?: string, forLeadsTable = false) => {
     const form = new FormData();
     form.append("file", file);
-    const params = defaultCountry
-      ? `?default_country=${encodeURIComponent(defaultCountry)}`
-      : "";
-    const res = await fetch(`${API_BASE}/leads/discover/csv${params}`, {
+    const params = new URLSearchParams();
+    if (defaultCountry) params.set("default_country", defaultCountry);
+    if (forLeadsTable) params.set("for_leads_table", "true");
+    const query = params.toString();
+    const res = await fetch(`${API_BASE}/leads/discover/csv${query ? `?${query}` : ""}`, {
       method: "POST",
       body: form,
     });
     if (!res.ok) {
+      let message = res.statusText;
       const text = await res.text();
-      throw new Error(text || res.statusText);
+      if (text) {
+        try {
+          const body = JSON.parse(text) as { detail?: string | string[] };
+          if (typeof body.detail === "string") message = body.detail;
+          else if (Array.isArray(body.detail)) message = body.detail.join("; ");
+          else message = text;
+        } catch {
+          message = text;
+        }
+      }
+      throw new Error(message);
     }
     return res.json() as Promise<DiscoverLeadsResponse>;
   },
@@ -468,7 +509,12 @@ export const client = {
     }),
 
   getCrossSell: (leadId: number) =>
-    request<CrossSellRecommendation[]>(`/quotations/cross-sell/${leadId}`),
+    request<CrossSellRecommendation[]>(`/leads/${leadId}/cross-sell`),
+
+  listProductTypes: () =>
+    request<{ count: number; product_types: ProductType[] }>("/leads/product-types").then(
+      (r) => r.product_types,
+    ),
 
   listDrafts: () => request<DraftInteraction[]>("/interactions/drafts"),
   approveDraft: (id: number, content?: string, send = true) =>
@@ -478,32 +524,43 @@ export const client = {
     }),
   rejectDraft: (id: number) =>
     request<DraftInteraction>(`/interactions/${id}/reject`, { method: "POST" }),
-
-  listQuotations: () => request<Quotation[]>("/quotations"),
-  listQuotationsForLead: (leadId: number) =>
-    request<Quotation[]>(`/quotations?buyer_id=${leadId}`),
-  listProductTypes: () =>
-    request<{ count: number; product_types: ProductType[] }>("/quotations/product-types").then(
-      (r) => r.product_types,
-    ),
-  listProducts: () => request<Product[]>("/quotations/products"),
-  syncProductsFromCatalog: () =>
-    request<CatalogSyncResult>("/quotations/products/sync", { method: "POST" }),
-  createQuotation: (data: QuotationCreate) =>
-    request<Quotation>("/quotations", { method: "POST", body: JSON.stringify(data) }),
-  createQuotationsForLead: (leadId: number, data?: QuotationBatchCreate) =>
-    request<Quotation[]>(`/quotations/for-lead/${leadId}`, {
+  createBulkEmailDrafts: (templateId: number, buyerIds: number[]) =>
+    request<BulkEmailDraftResponse>("/interactions/bulk-email-drafts", {
       method: "POST",
-      body: JSON.stringify(data ?? {}),
+      body: JSON.stringify({ template_id: templateId, buyer_ids: buyerIds }),
     }),
-  quotationFileUrl: (quotationId: number) =>
-    `${API_BASE}/quotations/${quotationId}/file`,
-  approveQuotation: (quotationId: number) =>
-    request<Quotation>(`/quotations/${quotationId}/approve`, { method: "POST" }),
-  createQuotationEmailDraft: (quotationId: number) =>
-    request<DraftInteraction>(`/quotations/${quotationId}/email-draft`, { method: "POST" }),
-  listCategoryPricing: () =>
-    request<{ categories: CategoryPricing[] }>("/quotations/pricing"),
+  bulkApproveDrafts: (interactionIds: number[], send = true) =>
+    request<BulkApproveResponse>("/interactions/bulk-approve", {
+      method: "POST",
+      body: JSON.stringify({
+        interaction_ids: interactionIds,
+        approved_by: "dashboard_user",
+        send,
+      }),
+    }),
+  getBulkEmailSettings: () =>
+    request<BulkEmailSettings>("/interactions/bulk-email-settings"),
+
+  listEmailTemplates: () => request<EmailTemplate[]>("/email-templates"),
+  getEmailTemplatePlaceholders: () =>
+    request<{ placeholders: string[]; usage: string }>("/email-templates/placeholders"),
+  createEmailTemplate: (data: { name: string; subject: string; body: string }) =>
+    request<EmailTemplate>("/email-templates", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  updateEmailTemplate: (
+    id: number,
+    data: Partial<{ name: string; subject: string; body: string }>,
+  ) =>
+    request<EmailTemplate>(`/email-templates/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  deleteEmailTemplate: (id: number) =>
+    request<void>(`/email-templates/${id}`, { method: "DELETE" }),
+  previewEmailTemplate: (templateId: number, buyerId: number) =>
+    request<EmailTemplatePreview>(`/email-templates/${templateId}/preview/${buyerId}`),
 
   getConsentSummary: () => request<ConsentSummary>("/compliance/summary"),
   listComplianceContacts: (params: { consent?: string; q?: string } = {}) => {
