@@ -505,3 +505,76 @@ class DiscoverImportResponse(BaseModel):
     skipped: list[dict[str, str]]
     replaced: list[dict[str, Any]] = Field(default_factory=list)
     onboard_results: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class CallConfigRead(BaseModel):
+    configured: bool
+    webhooks_ready: bool
+    has_default_agent_phone: bool
+
+
+class CallInitiateRequest(BaseModel):
+    agent_phone: Optional[str] = None
+    contact_id: Optional[int] = None
+
+
+class CallInitiateResponse(InteractionRead):
+    call_sid: Optional[str] = None
+    call_status: Optional[str] = None
+    agent_phone: Optional[str] = None
+    lead_phone: Optional[str] = None
+    message: Optional[str] = None
+
+
+# ── Inbox (Gmail) ─────────────────────────────────────────────────────────────
+
+
+class InboxStatus(BaseModel):
+    configured: bool
+    email: Optional[str] = None
+    unread_count: int = 0
+    showing_since: Optional[str] = None
+
+
+class InboxUnreadCount(BaseModel):
+    count: int
+
+
+class InboxAttachment(BaseModel):
+    filename: Optional[str] = None
+    size: Optional[int] = None
+    content_type: Optional[str] = None
+
+
+class InboxMessageSummary(BaseModel):
+    uid: str
+    subject: str
+    from_email: Optional[str] = None
+    from_name: Optional[str] = None
+    date: Optional[datetime] = None
+    preview: str = ""
+    unread: bool = False
+    has_attachments: bool = False
+    message_id: Optional[str] = None
+
+
+class InboxMessageDetail(InboxMessageSummary):
+    to: list[str] = Field(default_factory=list)
+    cc: list[str] = Field(default_factory=list)
+    body_text: Optional[str] = None
+    body_html: Optional[str] = None
+    attachments: list[InboxAttachment] = Field(default_factory=list)
+
+
+class InboxReplyRequest(BaseModel):
+    body: str = Field(min_length=1)
+    to: Optional[str] = None
+    subject: Optional[str] = None
+    cc: Optional[str] = None
+
+
+class InboxReplyResponse(BaseModel):
+    status: str
+    message: str
+    to: Optional[str] = None
+    subject: Optional[str] = None

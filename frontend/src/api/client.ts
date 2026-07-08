@@ -12,7 +12,10 @@ export const QUOTATION_AGENT_URL =
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...options?.headers },
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+    },
     ...options,
   });
   if (!res.ok) {
@@ -27,6 +30,46 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     return undefined as T;
   }
   return JSON.parse(text) as T;
+}
+
+export interface InboxStatus {
+  configured: boolean;
+  email: string | null;
+  unread_count: number;
+  showing_since: string | null;
+}
+
+export interface InboxMessageSummary {
+  uid: string;
+  subject: string;
+  from_email: string | null;
+  from_name: string | null;
+  date: string | null;
+  preview: string;
+  unread: boolean;
+  has_attachments: boolean;
+  message_id: string | null;
+}
+
+export interface InboxAttachment {
+  filename: string | null;
+  size: number | null;
+  content_type: string | null;
+}
+
+export interface InboxMessageDetail extends InboxMessageSummary {
+  to: string[];
+  cc: string[];
+  body_text: string | null;
+  body_html: string | null;
+  attachments: InboxAttachment[];
+}
+
+export interface InboxReplyResponse {
+  status: string;
+  message: string;
+  to: string | null;
+  subject: string | null;
 }
 
 export interface Lead {
@@ -98,6 +141,20 @@ export interface DraftInteraction {
   company_name?: string | null;
   contact_name?: string | null;
   contact_email?: string | null;
+}
+
+export interface CallConfig {
+  configured: boolean;
+  webhooks_ready: boolean;
+  has_default_agent_phone: boolean;
+}
+
+export interface CallInitiateResult extends DraftInteraction {
+  call_sid?: string | null;
+  call_status?: string | null;
+  agent_phone?: string | null;
+  lead_phone?: string | null;
+  message?: string | null;
 }
 
 export interface ApproveDraftResult {
@@ -541,6 +598,32 @@ export const client = {
   getBulkEmailSettings: () =>
     request<BulkEmailSettings>("/interactions/bulk-email-settings"),
 
+  getInboxStatus: () => request<InboxStatus>("/inbox/status"),
+  resetInboxCutoff: () =>
+    request<{ showing_since: string }>("/inbox/reset-cutoff", { method: "POST" }),
+  getInboxUnreadCount: () => request<{ count: number }>("/inbox/unread-count"),
+  listInboxMessages: (params: { limit?: number; unread_only?: boolean } = {}) => {
+    const search = new URLSearchParams();
+    if (params.limit) search.set("limit", String(params.limit));
+    if (params.unread_only) search.set("unread_only", "true");
+    const query = search.toString();
+    return request<InboxMessageSummary[]>(`/inbox/messages${query ? `?${query}` : ""}`);
+  },
+  getInboxMessage: (uid: string) =>
+    request<InboxMessageDetail>(`/inbox/messages/${encodeURIComponent(uid)}`),
+  markInboxMessageRead: (uid: string) =>
+    request<{ count: number }>(`/inbox/messages/${encodeURIComponent(uid)}/read`, {
+      method: "POST",
+    }),
+  replyInboxMessage: (
+    uid: string,
+    payload: { body: string; to?: string; subject?: string; cc?: string },
+  ) =>
+    request<InboxReplyResponse>(`/inbox/messages/${encodeURIComponent(uid)}/reply`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
   listEmailTemplates: () => request<EmailTemplate[]>("/email-templates"),
   getEmailTemplatePlaceholders: () =>
     request<{ placeholders: string[]; usage: string }>("/email-templates/placeholders"),
@@ -585,6 +668,16 @@ export const client = {
   ) =>
     request<ComplianceContact>(`/compliance/contacts/${contactId}`, {
       method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+
+  getCallConfig: () => request<CallConfig>("/calls/config"),
+  initiateLeadCall: (
+    leadId: number,
+    data: { agent_phone?: string; contact_id?: number } = {},
+  ) =>
+    request<CallInitiateResult>(`/leads/${leadId}/call`, {
+      method: "POST",
       body: JSON.stringify(data),
     }),
 };

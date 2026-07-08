@@ -18,10 +18,11 @@ Model switching vs extra keys:
 from __future__ import annotations
 
 import json
-import os
 import re
 from pathlib import Path
 from typing import Any
+
+from config import settings
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
 
@@ -40,11 +41,10 @@ def _load_prompt(filename: str) -> str:
     return ""
 
 
-def _parse_csv_env(name: str) -> list[str]:
-    raw = os.getenv(name, "").strip()
-    if not raw:
+def _parse_csv_env(value: str | None) -> list[str]:
+    if not value or not value.strip():
         return []
-    return [part.strip() for part in raw.split(",") if part.strip()]
+    return [part.strip() for part in value.split(",") if part.strip()]
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -62,6 +62,14 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     )
 
 
+def _apply_prompt_template(template: str, **values: str) -> str:
+    """Fill {name} placeholders without str.format (safe when content or template contains JSON braces)."""
+    result = template
+    for key, value in values.items():
+        result = result.replace("{" + key + "}", value)
+    return result
+
+
 class LLMClient:
     """Centralized LLM interface — cheapest model first, fallback on 429."""
 
@@ -76,8 +84,8 @@ class LLMClient:
             return self._clients
         self._initialised = True
 
-        keys = _parse_csv_env("GEMINI_API_KEYS")
-        primary = os.getenv("GEMINI_API_KEY") or os.getenv("LLM_API_KEY")
+        keys = _parse_csv_env(settings.gemini_api_keys)
+        primary = settings.gemini_api_key or settings.llm_api_key
         if primary and primary not in keys:
             keys.insert(0, primary)
 
@@ -91,18 +99,15 @@ class LLMClient:
         except Exception:
             self._clients = []
 
-        primary_model = os.getenv("GEMINI_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
-        fallbacks = _parse_csv_env("GEMINI_FALLBACK_MODELS") or list(DEFAULT_FALLBACK_MODELS)
+        primary_model = (settings.gemini_model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+        fallbacks = _parse_csv_env(settings.gemini_fallback_models) or list(DEFAULT_FALLBACK_MODELS)
         chain: list[str] = []
         for model in [primary_model, *fallbacks]:
             if model and model not in chain:
                 chain.append(model)
         self._model_chain = chain
 
-        try:
-            self._max_output_tokens = max(128, int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "512")))
-        except ValueError:
-            self._max_output_tokens = 512
+        self._max_output_tokens = max(128, int(settings.gemini_max_output_tokens or 512))
 
         return self._clients
 
@@ -235,7 +240,8 @@ class LLMClient:
                 "key_factors": [],
             }
         template = _load_prompt("lead_scoring_prompt.md")
-        prompt = template.format(
+        prompt = _apply_prompt_template(
+            template,
             buyer_profile=buyer_profile[:2500],
             interactions=interactions[:1500],
             export_history=export_history[:1000],
@@ -271,7 +277,8 @@ class LLMClient:
         if not self.enabled:
             return fallback_body
         template = _load_prompt("email_draft_prompt.md")
-        prompt = template.format(
+        prompt = _apply_prompt_template(
+            template,
             buyer_country=buyer_country or "International",
             target_language=target_language or "English",
             buyer_context=buyer_context[:1200],

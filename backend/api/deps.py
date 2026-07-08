@@ -1,4 +1,4 @@
-"""Re-export DB session dependency — the only bridge api/ uses to reach db/."""
+"""Shared API dependencies."""
 
 from db.session import get_db
 

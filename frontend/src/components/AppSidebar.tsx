@@ -1,7 +1,7 @@
-type Tab = "drafts" | "leads" | "table" | "bulk-email" | "quotations" | "compliance";
+type Tab = "drafts" | "leads" | "table" | "inbox" | "bulk-email" | "quotations" | "compliance";
 
 type NavItem =
-  | { id: Tab; label: string; count: number; external?: undefined }
+  | { id: Tab; label: string; count: number; alert?: boolean; external?: undefined }
   | { id: "quotation-agent"; label: string; count: number; external: string };
 
 interface AppSidebarProps {
@@ -25,6 +25,7 @@ export function AppSidebar({ navItems, activeTab, onSelectTab, onRefresh }: AppS
       <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
         {navItems.map((item) => {
           const isActive = !("external" in item) && activeTab === item.id;
+          const hasAlert = !("external" in item) && Boolean(item.alert);
           return (
             <button
               key={item.id}
@@ -42,13 +43,29 @@ export function AppSidebar({ navItems, activeTab, onSelectTab, onRefresh }: AppS
                   : "text-slate-300 hover:bg-slate-800 hover:text-slate-100"
               }`}
             >
-              <span className="truncate">{item.label}</span>
+              <span className="flex items-center gap-2 truncate">
+                {hasAlert && (
+                  <span
+                    aria-label="new messages"
+                    className={`shrink-0 ${isActive ? "text-white" : "text-emerald-400"} animate-pulse`}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                      <path d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm7-5-1.6-1.6V10a5.4 5.4 0 0 0-4-5.23V4a1.4 1.4 0 0 0-2.8 0v.77A5.4 5.4 0 0 0 6.6 10v5.4L5 17a.9.9 0 0 0 .64 1.54h12.72A.9.9 0 0 0 19 17Z" />
+                    </svg>
+                  </span>
+                )}
+                <span className="truncate">{item.label}</span>
+              </span>
               {"external" in item ? (
                 <span className="shrink-0 text-xs opacity-70">↗</span>
               ) : (
                 <span
                   className={`shrink-0 text-xs tabular-nums px-1.5 py-0.5 rounded ${
-                    isActive ? "bg-emerald-500/30 text-emerald-50" : "bg-slate-800 text-slate-400"
+                    hasAlert && !isActive
+                      ? "bg-emerald-500/20 text-emerald-300"
+                      : isActive
+                        ? "bg-emerald-500/30 text-emerald-50"
+                        : "bg-slate-800 text-slate-400"
                   }`}
                 >
                   {item.count}

@@ -1,0 +1,107 @@
+"""Inbox API — read Gmail and send replies from the dashboard."""
+
+from fastapi import APIRouter, HTTPException, Query
+
+from api.schemas import (
+    InboxMessageDetail,
+    InboxMessageSummary,
+    InboxReplyRequest,
+    InboxReplyResponse,
+    InboxStatus,
+    InboxUnreadCount,
+)
+from modules import inbox as inbox_module
+
+router = APIRouter(prefix="/inbox", tags=["inbox"])
+
+
+def _guard_configured() -> None:
+    if not inbox_module.is_configured():
+        raise HTTPException(
+            503,
+            "Gmail inbox is not configured. Set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, "
+            "and GMAIL_REFRESH_TOKEN in backend/.env. Run: python scripts/get_gmail_refresh_token.py",
+        )
+
+
+def _gmail_error_message(exc: Exception) -> str:
+    text = str(exc)
+    if "invalid_grant" in text.lower():
+        return (
+            "Gmail rejected the refresh token. Re-run: python scripts/get_gmail_refresh_token.py "
+            "and update GMAIL_REFRESH_TOKEN in backend/.env, then restart."
+        )
+    if "insufficient" in text.lower() or "scope" in text.lower():
+        return (
+            "Gmail token is missing inbox permissions. Re-run: python scripts/get_gmail_refresh_token.py "
+            "with the updated script (send + modify scopes) and update backend/.env."
+        )
+    return f"Could not read Gmail inbox: {exc}"
+
+
+@router.get("/status", response_model=InboxStatus)
+def inbox_status():
+    return inbox_module.status()
+
+
+@router.get("/unread-count", response_model=InboxUnreadCount)
+def inbox_unread_count():
+    return {"count": inbox_module.unread_count()}
+
+
+@router.post("/reset-cutoff")
+def reset_inbox_cutoff():
+    _guard_configured()
+    return inbox_module.reset_cutoff()
+
+
+@router.get("/messages", response_model=list[InboxMessageSummary])
+def list_inbox_messages(
+    limit: int = Query(default=25, ge=1, le=100),
+    unread_only: bool = Query(default=False),
+):
+    _guard_configured()
+    try:
+        return inbox_module.list_messages(limit=limit, unread_only=unread_only)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, _gmail_error_message(exc)) from exc
+
+
+@router.get("/messages/{uid}", response_model=InboxMessageDetail)
+def get_inbox_message(uid: str):
+    _guard_configured()
+    try:
+        message = inbox_module.get_message(uid)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"Could not read message: {exc}") from exc
+    if not message:
+        raise HTTPException(404, "Message not found")
+    return message
+
+
+@router.post("/messages/{uid}/read", response_model=InboxUnreadCount)
+def mark_inbox_message_read(uid: str):
+    _guard_configured()
+    try:
+        inbox_module.mark_read(uid, True)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"Could not update message: {exc}") from exc
+    return {"count": inbox_module.unread_count()}
+
+
+@router.post("/messages/{uid}/reply", response_model=InboxReplyResponse)
+def reply_inbox_message(uid: str, payload: InboxReplyRequest):
+    _guard_configured()
+    try:
+        result = inbox_module.reply(
+            uid,
+            payload.body,
+            to=payload.to,
+            subject=payload.subject,
+            cc=payload.cc,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"Could not send reply: {exc}") from exc
+    if result.get("status") != "sent":
+        raise HTTPException(502, result.get("message", "Reply failed"))
+    return result

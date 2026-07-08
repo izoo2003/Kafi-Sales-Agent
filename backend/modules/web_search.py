@@ -1,42 +1,35 @@
 """Pluggable web-search layer.
 
-Provides a single `search()` entry point that returns a normalized result set,
-regardless of which underlying provider answered. Providers are tried in priority
-order and the first one that returns usable results wins.
+Two modes:
+- ``search()`` — first provider in WEB_SEARCH_PROVIDERS that returns results (discovery).
+- ``search_combined()`` — runs every provider in WEB_SEARCH_COMBINED_PROVIDERS and merges
+  results (per-company CSV import / enrichment). Default: serpapi + duckduckgo.
 
 Normalized shapes
 -----------------
-OrganicResult: {"title": str, "link": str, "snippet": str}
+OrganicResult: {"title": str, "link": str, "snippet": str, "source": str?}
 SearchResults:
     organic:        list[OrganicResult]
     knowledge_graph: dict   (title/website/phone/address/description) — may be empty
     local:          list[dict]  (title/phone/address)               — may be empty
-    provider:       str    (which provider answered)
+    provider:       str    (e.g. "serpapi+duckduckgo")
     messages:       list[str]
-
-Active providers (steps 1–2; default order conserves SerpAPI credits):
-    - "brave"        — Brave Search API, free tier ~2 000/mo, needs BRAVE_API_KEY
-    - "serpapi"      — richest (organic + knowledge panel + local), paid — fallback
-
-Disabled unless you add them to WEB_SEARCH_PROVIDERS (step 3+):
-    - "google_cse"   — Google Programmable Search, free 100/day
-    - "duckduckgo"   — ddgs package, free, no key
-
-Set WEB_SEARCH_PROVIDERS in .env to control order/enabled set, e.g.
-    WEB_SEARCH_PROVIDERS=brave,serpapi
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 import httpx
 
 from config import settings
 
-# Brave first to save SerpAPI credits on bulk CSV imports (~1–3 queries per lead).
-_DEFAULT_ORDER = ("brave", "serpapi")
+# Fallback chain for market discovery (first hit wins).
+_DEFAULT_ORDER = ("serpapi", "duckduckgo")
+# Per-record enrichment runs ALL of these and merges (see search_combined).
+_DEFAULT_COMBINED = ("serpapi", "duckduckgo")
 
 
 @dataclass
@@ -57,6 +50,26 @@ def _provider_order() -> list[str]:
         return list(_DEFAULT_ORDER)
     order = [p.strip().lower() for p in raw.split(",") if p.strip()]
     return order or list(_DEFAULT_ORDER)
+
+
+def _combined_providers() -> list[str]:
+    raw = getattr(settings, "web_search_combined_providers", None)
+    if raw is None:
+        return list(_DEFAULT_COMBINED)
+    order = [p.strip().lower() for p in raw.split(",") if p.strip()]
+    return order or list(_DEFAULT_COMBINED)
+
+
+def _normalize_link_key(link: str) -> str:
+    try:
+        parsed = urlparse(link.strip())
+        host = parsed.netloc.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        path = parsed.path.rstrip("/").lower()
+        return f"{host}{path}"
+    except ValueError:
+        return link.strip().lower().rstrip("/")
 
 
 def _gl_to_region(gl_code: str | None) -> str | None:
@@ -271,6 +284,75 @@ def provider_available(name: str) -> bool:
 
 def any_provider_available() -> bool:
     return any(provider_available(name) for name in _provider_order())
+
+
+def any_combined_provider_available() -> bool:
+    return any(provider_available(name) for name in _combined_providers())
+
+
+def search_combined(
+    query: str,
+    *,
+    num: int = 10,
+    gl_code: str | None = None,
+) -> SearchResults:
+    """Run every configured combined provider and merge organic/knowledge/local results.
+
+    Used for per-company enrichment so SerpAPI and DuckDuckGo both contribute to the
+    same record (cross-validated website, directory, phone signals).
+    """
+    names = [n for n in _combined_providers() if provider_available(n)]
+    if not names:
+        return search(query, num=num, gl_code=gl_code)
+
+    merged = SearchResults()
+    used: list[str] = []
+    messages: list[str] = []
+    seen_organic: set[str] = set()
+    seen_local: set[str] = set()
+
+    for name in names:
+        provider_fn = _PROVIDERS.get(name)
+        if not provider_fn:
+            continue
+        result = provider_fn(query, num=num, gl_code=gl_code)
+        messages.extend(result.messages)
+        if result.is_empty():
+            continue
+        used.append(name)
+
+        if not merged.knowledge_graph and result.knowledge_graph:
+            merged.knowledge_graph = dict(result.knowledge_graph)
+
+        for place in result.local:
+            key = f"{place.get('title') or ''}|{place.get('phone') or ''}"
+            if key in seen_local:
+                continue
+            seen_local.add(key)
+            merged.local.append(place)
+
+        for item in result.organic:
+            link = item.get("link") or ""
+            key = _normalize_link_key(link) if link else ""
+            if not key or key in seen_organic:
+                continue
+            seen_organic.add(key)
+            merged.organic.append(
+                {
+                    "title": item.get("title") or "",
+                    "link": link,
+                    "snippet": item.get("snippet") or "",
+                    "source": name,
+                }
+            )
+
+    merged.provider = "+".join(used) if used else None
+    merged.messages = messages
+    if not merged.is_empty():
+        return merged
+
+    fallback = SearchResults(messages=messages or ["Combined search returned no results."])
+    return fallback
 
 
 def search(

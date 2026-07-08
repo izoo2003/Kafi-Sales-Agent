@@ -819,13 +819,24 @@ def _domain_relates_to_name(company_name: str, link: str) -> bool:
     return any(len(t) >= 4 and t in domain for t in tokens)
 
 
+def _phone_from_search_text(text: str | None) -> str | None:
+    """Extract a phone number embedded in a search result title or snippet."""
+    if not text:
+        return None
+    for match in _PHONE_INLINE_RE.finditer(text):
+        phone = _normalize_phone_raw(match.group(0))
+        if _is_valid_phone_candidate(phone):
+            return phone
+    return None
+
+
 def _lookup_company_website(
     company_name: str,
     country: str | None = None,
     industry: str | None = None,
 ) -> str | None:
     """Find a company website via web search when CSV rows only have a name."""
-    if not web_search.any_provider_available() or not company_name.strip():
+    if not web_search.any_combined_provider_available() or not company_name.strip():
         return None
 
     queries = [f'"{company_name}" official website']
@@ -839,7 +850,7 @@ def _lookup_company_website(
     gl = _country_gl_code(country)
 
     for query in queries:
-        found = web_search.search(query, num=10, gl_code=gl)
+        found = web_search.search_combined(query, num=10, gl_code=gl)
 
         for item in found.organic:
             link = item.get("link") or ""
@@ -897,7 +908,7 @@ def _company_lookup(
         "source_detail": None,
     }
 
-    if not web_search.any_provider_available() or not company_name.strip():
+    if not web_search.any_combined_provider_available() or not company_name.strip():
         return result
 
     name_norm = _normalize_name(company_name)
@@ -910,6 +921,7 @@ def _company_lookup(
     best_url: str | None = None
     best_score = 0
     gl = _country_gl_code(country)
+    providers_used: set[str] = set()
 
     def _name_close(text: str | None) -> bool:
         other = _normalize_name(text or "")
@@ -918,7 +930,9 @@ def _company_lookup(
         return name_norm in other or other in name_norm
 
     for query in queries:
-        found = web_search.search(query, num=10, gl_code=gl)
+        found = web_search.search_combined(query, num=10, gl_code=gl)
+        if found.provider:
+            providers_used.update(found.provider.split("+"))
 
         # 1. Knowledge panel — the most authoritative single source (when provided).
         kg = found.knowledge_graph or {}
@@ -968,6 +982,12 @@ def _company_lookup(
             if _domain_matches_blocklist(domain, _DIRECTORY_PROFILE_DOMAINS):
                 if not result["directory_url"] and _name_close(_clean_company_name(title)):
                     result["directory_url"] = link
+                if not result["phone"]:
+                    for field in (title, snippet):
+                        phone = _phone_from_search_text(field)
+                        if phone:
+                            result["phone"] = phone
+                            break
                 continue
             if any(skip in domain for skip in _SKIP_DOMAINS):
                 continue
@@ -991,6 +1011,13 @@ def _company_lookup(
     if not result["website"] and best_url and best_score >= 40:
         result["website"] = best_url
         result["source_detail"] = result["source_detail"] or "Website found via web search"
+
+    if providers_used:
+        label = " + ".join(sorted(providers_used))
+        combined = f"Search: {label}"
+        result["source_detail"] = (
+            f"{result['source_detail']}; {combined}" if result["source_detail"] else combined
+        )
 
     if result["address"] and not result["country"]:
         detected = detect_countries_in_text(result["address"])
@@ -1888,10 +1915,10 @@ def discover_from_csv(
             "Website scraping and scoring run when you click Import (about 6s per row)."
         )
         without_website = sum(1 for c in candidates if not _homepage_url(c.website_url))
-        if without_website and not web_search.any_provider_available():
+        if without_website and not web_search.any_combined_provider_available():
             result.messages.append(
-                f"{without_website} row(s) have no website — set BRAVE_API_KEY or "
-                "SERPAPI_API_KEY to auto-find sites on import."
+                f"{without_website} row(s) have no website — set SERPAPI_API_KEY (and install ddgs "
+                "for DuckDuckGo) to auto-find sites on import."
             )
     else:
         _enrich_candidates(candidates)

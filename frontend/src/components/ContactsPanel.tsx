@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { client, type Contact, type ContactCreate, type ContactUpdate } from "../api/client";
+import { CallLeadButton } from "./CallLeadButton";
 
 interface ContactsPanelProps {
   leadId: number;
@@ -242,7 +243,18 @@ export function ContactsPanel({ leadId, onError, onContactsChange }: ContactsPan
                     ) : (
                       <p className="text-slate-500">No email</p>
                     )}
-                    {contact.phone && <p className="text-slate-400">{contact.phone}</p>}
+                    {contact.phone ? (
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-slate-400">{contact.phone}</p>
+                        <CallLeadButton
+                          leadId={leadId}
+                          phone={contact.phone}
+                          contactId={contact.id}
+                          onError={onError}
+                          compact
+                        />
+                      </div>
+                    ) : null}
                   </div>
                 </div>
                 <div className="flex gap-2 shrink-0">

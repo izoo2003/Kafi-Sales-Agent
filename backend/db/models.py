@@ -3,6 +3,7 @@ from datetime import date, datetime
 from typing import Optional
 
 from sqlalchemy import (
+    Boolean,
     Date,
     DateTime,
     Enum,
@@ -24,6 +25,7 @@ class Base(DeclarativeBase):
 class Channel(str, enum.Enum):
     email = "email"
     whatsapp = "whatsapp"
+    phone = "phone"
     linkedin = "linkedin"
     facebook = "facebook"
     instagram = "instagram"
@@ -122,7 +124,6 @@ class Buyer(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
-
     contacts: Mapped[list["Contact"]] = relationship(back_populates="buyer")
     export_history: Mapped[list["ExportHistory"]] = relationship(back_populates="buyer")
     lead_scores: Mapped[list["LeadScore"]] = relationship(back_populates="buyer")

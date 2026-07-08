@@ -30,7 +30,7 @@ from modules.carton_dimensions import lookup_for_product
 
 from modules.pricing import price_tiers_for_category, price_unit_for_category
 
-from modules.product_catalog import cross_sell_for_categories, list_products, load_catalog
+from modules.product_catalog import list_products, load_catalog, recommend_cross_sell_for_buyer
 
 from modules.research import ResearchModule
 
@@ -486,7 +486,11 @@ class CommerceModule:
 
     ) -> list[dict[str, str]]:
 
-        """Cross-sell from ESSENCE catalog based on categories not yet purchased."""
+        """Cross-sell complementary ESSENCE lines based on this buyer's fit and order history."""
+
+        buyer = db.get(Buyer, buyer_id)
+        if not buyer:
+            raise ValueError("Buyer not found")
 
         history = (
 
@@ -502,27 +506,33 @@ class CommerceModule:
 
         purchased_categories = [h.product.category for h in history if h.product and h.product.category]
 
-        if not purchased_categories:
+        profile = ResearchModule().get_saved_profile(db, buyer_id)
+        matched_categories: list[str] = []
+        matched_products: list[dict] = []
+        buyer_context = " ".join(
+            filter(
+                None,
+                [
+                    buyer.company_name,
+                    buyer.industry or "",
+                    profile.website_summary if profile else "",
+                ],
+            )
+        )
 
-            catalog_products = list_products()[:limit]
+        if profile:
+            matched_categories = list(profile.matched_categories or [])
+            matched_products = list(profile.matched_products or [])
+            if profile.relationship_context:
+                buyer_context = f"{buyer_context} {profile.relationship_context}"
 
-            return [
-
-                {
-
-                    "category": p["category"],
-
-                    "product_name": p["name"],
-
-                    "rationale": f"Kafi ESSENCE {p['category'].replace('_', ' ')} line may fit this buyer.",
-
-                }
-
-                for p in catalog_products
-
-            ]
-
-        return cross_sell_for_categories(purchased_categories, limit=limit)
+        return recommend_cross_sell_for_buyer(
+            matched_categories=matched_categories,
+            matched_products=matched_products,
+            purchased_categories=purchased_categories,
+            buyer_context=buyer_context,
+            limit=limit,
+        )
 
 
 

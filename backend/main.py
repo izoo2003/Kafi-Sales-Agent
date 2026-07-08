@@ -4,7 +4,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api import compliance, email_templates, interactions, leads, scheduler
+from api import calls, compliance, email_templates, inbox, interactions, leads, scheduler
 from config import settings
 from db.migrate import run_migrations
 from db.session import SessionLocal
@@ -35,6 +35,17 @@ async def lifespan(app: FastAPI):
         print(f"Database migration failed: {exc}", flush=True)
         raise
     print("Migrations complete.", flush=True)
+
+    from integrations.email_client import email_client
+
+    if email_client.is_configured:
+        print(f"Gmail configured: {email_client.mailbox_email()}", flush=True)
+    else:
+        print(
+            "Gmail NOT configured — run python scripts/get_gmail_refresh_token.py "
+            "and set GMAIL_* vars in backend/.env",
+            flush=True,
+        )
 
     db = SessionLocal()
     try:
@@ -70,14 +81,21 @@ app.include_router(compliance.router, prefix="/api")
 app.include_router(interactions.router, prefix="/api")
 app.include_router(email_templates.router, prefix="/api")
 app.include_router(scheduler.router, prefix="/api")
+app.include_router(calls.router, prefix="/api")
+app.include_router(inbox.router, prefix="/api")
+app.include_router(calls.webhooks_router, prefix="/api")
 
 
 @app.get("/api/health")
 def health():
     from integrations.email_client import email_client
+    from integrations.voice_client import voice_client
 
     return {
         "status": "ok",
         "service": "kafi-sales-agent",
         "gmail_configured": email_client.is_configured,
+        "twilio_configured": voice_client.is_configured,
+        "twilio_webhooks_ready": voice_client.webhooks_ready,
+        "mailbox_configured": email_client.is_configured,
     }

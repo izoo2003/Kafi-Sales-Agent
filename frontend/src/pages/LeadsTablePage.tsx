@@ -13,6 +13,7 @@ import { ProducerTierBadge } from "../components/ProducerTierBadge";
 import { BulkEmailModal } from "../components/BulkEmailModal";
 import { LeadsTableCsvImport } from "../components/LeadsTableCsvImport";
 import { SocialLinksCell } from "../components/SocialLinksCell";
+import { CallLeadButton } from "../components/CallLeadButton";
 import { exportLeadsTableCsv } from "../utils/exportCsv";
 
 interface LeadsTablePageProps {
@@ -755,7 +756,7 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
                 <th className="py-3 pr-3 w-[11%]">Website</th>
                 <th className="py-3 pr-3 w-[10%]">Socials</th>
                 {editMode && <th className="py-3 pr-3 w-[8%]">Edit</th>}
-                <th className="py-3 pr-3 w-[7%]">Actions</th>
+                <th className="py-3 pr-3 w-[10%]">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -872,8 +873,18 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
                           onClick={(e) => e.stopPropagation()}
                           className={EDIT_INPUT}
                         />
+                      ) : row.contact_phone ? (
+                        <span className="flex items-center gap-2 min-w-0">
+                          <span className="truncate">{row.contact_phone}</span>
+                          <CallLeadButton
+                            leadId={row.id}
+                            phone={row.contact_phone}
+                            onError={onError}
+                            compact
+                          />
+                        </span>
                       ) : (
-                        <span className="truncate block">{row.contact_phone || "—"}</span>
+                        "—"
                       )}
                     </td>
                     <td className="py-3 pr-3 text-slate-400">

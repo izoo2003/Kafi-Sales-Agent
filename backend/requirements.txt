@@ -17,3 +17,6 @@ google-auth>=2.36.0
 google-auth-oauthlib>=1.2.0
 google-genai>=1.0.0
 ddgs>=9.0.0
+twilio>=9.0.0
+imap-tools>=1.5.0
+msal>=1.28.0

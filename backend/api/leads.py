@@ -51,13 +51,10 @@ def create_lead(payload: BuyerCreate, db: Session = Depends(get_db)):
     return buyer
 
 
-@router.get("/contacts", response_model=list[ContactRead])
-def list_contacts(db: Session = Depends(get_db)):
-    return buyers_module.list_contacts(db)
-
-
 @router.post("/contacts", response_model=ContactRead, status_code=201)
 def create_contact(payload: ContactCreate, db: Session = Depends(get_db)):
+    if not buyers_module.get_buyer(db, payload.buyer_id):
+        raise HTTPException(404, "Lead not found")
     contact = buyers_module.create_contact(db, payload.model_dump())
     log_action(
         db,
@@ -70,7 +67,14 @@ def create_contact(payload: ContactCreate, db: Session = Depends(get_db)):
 
 
 @router.patch("/contacts/{contact_id}", response_model=ContactRead)
-def update_contact(contact_id: int, payload: ContactUpdate, db: Session = Depends(get_db)):
+def update_contact(
+    contact_id: int,
+    payload: ContactUpdate,
+    db: Session = Depends(get_db),
+):
+    existing = buyers_module.get_contact(db, contact_id)
+    if not existing:
+        raise HTTPException(404, "Contact not found")
     contact = buyers_module.update_contact(
         db, contact_id, payload.model_dump(exclude_unset=True)
     )
@@ -105,8 +109,7 @@ def delete_contact(contact_id: int, db: Session = Depends(get_db)):
 
 @router.get("/{lead_id}/contacts", response_model=list[ContactRead])
 def list_lead_contacts(lead_id: int, db: Session = Depends(get_db)):
-    buyer = buyers_module.get_buyer(db, lead_id)
-    if not buyer:
+    if not buyers_module.get_buyer(db, lead_id):
         raise HTTPException(404, "Lead not found")
     return buyers_module.list_contacts_for_buyer(db, lead_id)
 
@@ -319,7 +322,10 @@ async def discover_leads_from_csv(
 
 
 @router.post("/discover/import", response_model=DiscoverImportResponse)
-def import_discovered_leads(payload: DiscoverImportRequest, db: Session = Depends(get_db)):
+def import_discovered_leads(
+    payload: DiscoverImportRequest,
+    db: Session = Depends(get_db),
+):
     result = import_candidates(
         db,
         [c.model_dump() for c in payload.candidates],
@@ -341,6 +347,8 @@ def import_discovered_leads(payload: DiscoverImportRequest, db: Session = Depend
 def cross_sell_recommendations(lead_id: int, db: Session = Depends(get_db)):
     from modules.commerce import get_commerce
 
+    if not buyers_module.get_buyer(db, lead_id):
+        raise HTTPException(404, "Lead not found")
     return get_commerce().recommend_cross_sell_from_catalog(db, lead_id)
 
 
@@ -358,6 +366,8 @@ def research_lead(
     force: bool = False,
     db: Session = Depends(get_db),
 ):
+    if not buyers_module.get_buyer(db, lead_id):
+        raise HTTPException(404, "Lead not found")
     try:
         profile = leads_module.research_buyer(db, lead_id, force_refresh=force)
     except ValueError as exc:
@@ -374,8 +384,7 @@ def research_lead(
 
 @router.get("/{lead_id}/profile", response_model=BuyerProfileRead)
 def get_lead_profile(lead_id: int, db: Session = Depends(get_db)):
-    buyer = buyers_module.get_buyer(db, lead_id)
-    if not buyer:
+    if not buyers_module.get_buyer(db, lead_id):
         raise HTTPException(404, "Lead not found")
     try:
         profile = leads_module.get_saved_buyer_profile(db, lead_id)
@@ -388,8 +397,7 @@ def get_lead_profile(lead_id: int, db: Session = Depends(get_db)):
 
 @router.get("/{lead_id}/score", response_model=LeadScoreRead)
 def get_latest_lead_score(lead_id: int, db: Session = Depends(get_db)):
-    buyer = buyers_module.get_buyer(db, lead_id)
-    if not buyer:
+    if not buyers_module.get_buyer(db, lead_id):
         raise HTTPException(404, "Lead not found")
     score = leads_module.get_latest_score(db, lead_id)
     if not score:
@@ -399,6 +407,8 @@ def get_latest_lead_score(lead_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{lead_id}/score", response_model=LeadScoreRead)
 def score_lead(lead_id: int, db: Session = Depends(get_db)):
+    if not buyers_module.get_buyer(db, lead_id):
+        raise HTTPException(404, "Lead not found")
     try:
         return leads_module.score_buyer(db, lead_id)
     except ValueError as exc:
@@ -407,6 +417,8 @@ def score_lead(lead_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{lead_id}/onboard")
 def onboard_lead(lead_id: int, db: Session = Depends(get_db)):
+    if not buyers_module.get_buyer(db, lead_id):
+        raise HTTPException(404, "Lead not found")
     try:
         result = leads_module.onboard_buyer(db, lead_id)
     except ValueError as exc:
