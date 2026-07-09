@@ -161,22 +161,25 @@ export function InboxPage({ onError, onUnreadChange }: InboxPageProps) {
     return (
       <section className="space-y-4">
         <h2 className="text-lg font-medium text-slate-100">Inbox</h2>
-        <div className="p-6 rounded-xl border border-amber-800/50 bg-amber-900/20 text-amber-100 text-sm space-y-2">
-          <p className="font-medium">Mailbox not connected yet.</p>
+        <div className="p-6 rounded-xl border border-amber-800/50 bg-amber-900/20 text-amber-100 text-sm space-y-3">
+          <p className="font-medium">Outlook mailbox not connected yet.</p>
           <p className="text-amber-200/80">
-            Add Gmail OAuth credentials to <code className="text-amber-100">backend/.env</code>:
+            Personal <code className="text-amber-100">@outlook.com</code> accounts require{" "}
+            <strong>OAuth</strong> — app passwords no longer work (Microsoft blocked them in 2024).
+          </p>
+          <p className="text-amber-200/80 text-xs">
+            1. Register an app at portal.azure.com → choose <strong>Personal Microsoft accounts</strong>
+            <br />
+            2. Run <code className="text-amber-100">python scripts/get_outlook_refresh_token.py</code>
+            <br />
+            3. Add Client ID + Refresh Token to <code className="text-amber-100">backend/.env</code>
           </p>
           <pre className="mt-2 p-3 rounded-lg bg-slate-950/60 border border-slate-800 text-xs text-slate-300 overflow-x-auto">
-{`GMAIL_CLIENT_ID=from-google-cloud
-GMAIL_CLIENT_SECRET=from-google-cloud
-GMAIL_REFRESH_TOKEN=from-setup-script
-GMAIL_SENDER_EMAIL=you@gmail.com`}
+{`MAILBOX_EMAIL=kaficommoditiespvtltd@outlook.com
+MAILBOX_CLIENT_ID=from-azure-app
+MAILBOX_REFRESH_TOKEN=from-setup-script
+MAILBOX_TENANT_ID=consumers`}
           </pre>
-          <p className="text-amber-200/70 text-xs">
-            Run once in backend/:{" "}
-            <code className="text-amber-100">python scripts/get_gmail_refresh_token.py</code>
-            {" "}then restart <code className="text-amber-100">python run.py</code>
-          </p>
         </div>
       </section>
     );
@@ -188,7 +191,7 @@ GMAIL_SENDER_EMAIL=you@gmail.com`}
         <div>
           <h2 className="text-lg font-medium text-slate-100">Inbox</h2>
           <p className="text-sm text-slate-500 mt-1">
-            {status?.email ? `Connected to ${status.email}` : "Received messages"}
+            {status?.email ? `Outlook: ${status.email}` : "Received messages"}
             {status ? ` · ${status.unread_count} unread` : ""}
           </p>
           {status?.showing_since && (

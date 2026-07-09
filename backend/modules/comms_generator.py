@@ -9,7 +9,13 @@ from db.models import (
     Interaction,
     InteractionStatus,
 )
-from integrations.email_client import email_client
+from integrations.mail_client import mail_client
+from modules.email_attachments import (
+    copy_attachments,
+    merge_attachments,
+    public_attachments,
+    resolve_attachment_list,
+)
 
 
 class CommsGenerator:
@@ -22,6 +28,7 @@ class CommsGenerator:
         contact_id: int,
         goal: str,
         product_name: str | None = None,
+        attachments: list[dict] | None = None,
     ) -> Interaction:
         contact = db.get(Contact, contact_id)
         if not contact:
@@ -67,6 +74,7 @@ class CommsGenerator:
             language=contact.preferred_language or "en",
             handled_by=HandledBy.agent,
             status=InteractionStatus.draft,
+            attachments=copy_attachments(resolve_attachment_list(attachments)),
         )
         db.add(draft)
         db.commit()
@@ -79,6 +87,7 @@ class CommsGenerator:
         *,
         contact_id: int,
         products: list[dict[str, str]],
+        attachments: list[dict] | None = None,
     ) -> Interaction:
         contact = db.get(Contact, contact_id)
         if not contact:
@@ -137,6 +146,7 @@ class CommsGenerator:
             language=contact.preferred_language or "en",
             handled_by=HandledBy.agent,
             status=InteractionStatus.draft,
+            attachments=copy_attachments(resolve_attachment_list(attachments)),
         )
         db.add(draft)
         db.commit()
@@ -268,10 +278,11 @@ class CommsGenerator:
             if not contact or not contact.email:
                 raise ValueError("Contact has no email address — cannot send")
 
-            send_result = email_client.send_approved(
+            send_result = mail_client.send_approved(
                 to=contact.email,
                 subject=draft.subject or "Kafi Commodities",
                 body=draft.content,
+                attachments=draft.attachments or [],
             )
             if send_result.get("status") == "sent":
                 draft.status = InteractionStatus.sent
@@ -297,12 +308,31 @@ class CommsGenerator:
             .all()
         )
 
+    def update_draft_attachments(
+        self,
+        db: Session,
+        interaction_id: int,
+        attachments: list[dict],
+    ) -> Interaction:
+        draft = db.get(Interaction, interaction_id)
+        if not draft:
+            raise ValueError("Interaction not found")
+        if draft.status != InteractionStatus.draft:
+            raise ValueError("Can only edit attachments on draft interactions")
+        if draft.channel != Channel.email:
+            raise ValueError("Attachments are only supported for email drafts")
+        draft.attachments = resolve_attachment_list(attachments, draft.attachments)
+        db.commit()
+        db.refresh(draft)
+        return draft
+
     def generate_draft_from_template(
         self,
         db: Session,
         *,
         buyer_id: int,
         template_id: int,
+        extra_attachments: list[dict] | None = None,
     ) -> Interaction:
         from modules import buyers as buyers_module
         from modules.email_templates import get_template, render_template_text
@@ -321,6 +351,10 @@ class CommsGenerator:
 
         subject = render_template_text(template.subject, buyer=buyer, contact=contact)
         body = render_template_text(template.body, buyer=buyer, contact=contact)
+        attachments = merge_attachments(
+            resolve_attachment_list(template.attachments),
+            resolve_attachment_list(extra_attachments),
+        )
 
         draft = Interaction(
             contact_id=contact.id,
@@ -331,6 +365,7 @@ class CommsGenerator:
             language=contact.preferred_language or "en",
             handled_by=HandledBy.agent,
             status=InteractionStatus.draft,
+            attachments=copy_attachments(resolve_attachment_list(attachments)),
         )
         db.add(draft)
         db.commit()
@@ -343,6 +378,7 @@ class CommsGenerator:
         *,
         buyer_ids: list[int],
         template_id: int,
+        extra_attachments: list[dict] | None = None,
     ) -> dict:
         created: list[dict] = []
         skipped: list[dict] = []
@@ -357,6 +393,7 @@ class CommsGenerator:
                     db,
                     buyer_id=buyer_id,
                     template_id=template_id,
+                    extra_attachments=extra_attachments,
                 )
                 created.append(
                     {
@@ -462,6 +499,7 @@ class CommsGenerator:
             "company_name": buyer.company_name if buyer else None,
             "contact_name": contact.full_name if contact else None,
             "contact_email": contact.email if contact else None,
+            "attachments": public_attachments(interaction.attachments),
         }
 
     def list_interactions(self, db: Session, limit: int = 100) -> list[Interaction]:

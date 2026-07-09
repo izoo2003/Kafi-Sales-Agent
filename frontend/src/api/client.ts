@@ -32,15 +32,24 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return JSON.parse(text) as T;
 }
 
+export interface InboxMailboxStatus {
+  provider: "gmail" | "outlook" | string;
+  email: string | null;
+  configured: boolean;
+}
+
 export interface InboxStatus {
   configured: boolean;
   email: string | null;
+  emails: string[];
+  mailboxes: InboxMailboxStatus[];
   unread_count: number;
   showing_since: string | null;
 }
 
 export interface InboxMessageSummary {
   uid: string;
+  provider?: string | null;
   subject: string;
   from_email: string | null;
   from_name: string | null;
@@ -130,6 +139,13 @@ export interface CrossSellRecommendation {
   rationale: string;
 }
 
+export interface EmailAttachment {
+  id: string;
+  filename: string;
+  content_type: string;
+  size: number;
+}
+
 export interface DraftInteraction {
   id: number;
   contact_id: number;
@@ -141,20 +157,48 @@ export interface DraftInteraction {
   company_name?: string | null;
   contact_name?: string | null;
   contact_email?: string | null;
+  attachments?: EmailAttachment[];
 }
 
 export interface CallConfig {
   configured: boolean;
   webhooks_ready: boolean;
-  has_default_agent_phone: boolean;
+  browser_ready: boolean;
+  caller_id_masked?: string | null;
+  setup_message?: string | null;
+  missing_env?: string[];
+}
+
+export interface VoiceToken {
+  token: string;
+  identity: string;
 }
 
 export interface CallInitiateResult extends DraftInteraction {
   call_sid?: string | null;
   call_status?: string | null;
-  agent_phone?: string | null;
   lead_phone?: string | null;
   message?: string | null;
+}
+
+export interface CallHistoryItem {
+  id: number;
+  contact_id: number;
+  buyer_id?: number | null;
+  company_name?: string | null;
+  contact_name?: string | null;
+  contact_phone?: string | null;
+  channel: string;
+  direction: string;
+  subject?: string | null;
+  content?: string | null;
+  status: string;
+  created_at: string;
+  call_sid?: string | null;
+  call_status?: string | null;
+  call_duration_seconds?: number | null;
+  lead_phone?: string | null;
+  notes?: string | null;
 }
 
 export interface ApproveDraftResult {
@@ -169,6 +213,7 @@ export interface EmailTemplate {
   name: string;
   subject: string;
   body: string;
+  attachments?: EmailAttachment[];
   created_at: string;
   updated_at: string;
 }
@@ -504,7 +549,11 @@ export const client = {
     request<Contact[]>(`/leads/${leadId}/contacts`),
   createProductInterestEmail: (
     leadId: number,
-    data: { contact_id?: number; products: Array<{ name: string; category?: string }> },
+    data: {
+      contact_id?: number;
+      products: Array<{ name: string; category?: string }>;
+      attachments?: EmailAttachment[];
+    },
   ) =>
     request<DraftInteraction>(`/leads/${leadId}/product-interest-email`, {
       method: "POST",
@@ -581,10 +630,18 @@ export const client = {
     }),
   rejectDraft: (id: number) =>
     request<DraftInteraction>(`/interactions/${id}/reject`, { method: "POST" }),
-  createBulkEmailDrafts: (templateId: number, buyerIds: number[]) =>
+  createBulkEmailDrafts: (
+    templateId: number,
+    buyerIds: number[],
+    attachments: EmailAttachment[] = [],
+  ) =>
     request<BulkEmailDraftResponse>("/interactions/bulk-email-drafts", {
       method: "POST",
-      body: JSON.stringify({ template_id: templateId, buyer_ids: buyerIds }),
+      body: JSON.stringify({
+        template_id: templateId,
+        buyer_ids: buyerIds,
+        attachments,
+      }),
     }),
   bulkApproveDrafts: (interactionIds: number[], send = true) =>
     request<BulkApproveResponse>("/interactions/bulk-approve", {
@@ -627,14 +684,19 @@ export const client = {
   listEmailTemplates: () => request<EmailTemplate[]>("/email-templates"),
   getEmailTemplatePlaceholders: () =>
     request<{ placeholders: string[]; usage: string }>("/email-templates/placeholders"),
-  createEmailTemplate: (data: { name: string; subject: string; body: string }) =>
+  createEmailTemplate: (data: {
+    name: string;
+    subject: string;
+    body: string;
+    attachments?: EmailAttachment[];
+  }) =>
     request<EmailTemplate>("/email-templates", {
       method: "POST",
       body: JSON.stringify(data),
     }),
   updateEmailTemplate: (
     id: number,
-    data: Partial<{ name: string; subject: string; body: string }>,
+    data: Partial<{ name: string; subject: string; body: string; attachments: EmailAttachment[] }>,
   ) =>
     request<EmailTemplate>(`/email-templates/${id}`, {
       method: "PATCH",
@@ -644,6 +706,23 @@ export const client = {
     request<void>(`/email-templates/${id}`, { method: "DELETE" }),
   previewEmailTemplate: (templateId: number, buyerId: number) =>
     request<EmailTemplatePreview>(`/email-templates/${templateId}/preview/${buyerId}`),
+
+  uploadEmailAttachment: async (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch(`${API_BASE}/email/attachments`, { method: "POST", body: form });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as { detail?: string }).detail || res.statusText);
+    }
+    return res.json() as Promise<EmailAttachment>;
+  },
+
+  updateDraftAttachments: (interactionId: number, attachments: EmailAttachment[]) =>
+    request<DraftInteraction>(`/interactions/${interactionId}/attachments`, {
+      method: "PATCH",
+      body: JSON.stringify({ attachments }),
+    }),
 
   getConsentSummary: () => request<ConsentSummary>("/compliance/summary"),
   listComplianceContacts: (params: { consent?: string; q?: string } = {}) => {
@@ -672,9 +751,19 @@ export const client = {
     }),
 
   getCallConfig: () => request<CallConfig>("/calls/config"),
+  getVoiceToken: () => request<VoiceToken>("/calls/voice-token"),
+  listCallHistory: (limit = 50) =>
+    request<CallHistoryItem[]>(`/calls/history?limit=${limit}`),
+  listLeadCalls: (leadId: number, limit = 50) =>
+    request<CallHistoryItem[]>(`/leads/${leadId}/calls?limit=${limit}`),
+  updateCallNotes: (interactionId: number, notes: string) =>
+    request<CallHistoryItem>(`/calls/${interactionId}/notes`, {
+      method: "PATCH",
+      body: JSON.stringify({ notes }),
+    }),
   initiateLeadCall: (
     leadId: number,
-    data: { agent_phone?: string; contact_id?: number } = {},
+    data: { contact_id?: number } = {},
   ) =>
     request<CallInitiateResult>(`/leads/${leadId}/call`, {
       method: "POST",

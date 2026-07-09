@@ -1,4 +1,4 @@
-type Tab = "drafts" | "leads" | "table" | "inbox" | "bulk-email" | "quotations" | "compliance";
+type Tab = "drafts" | "leads" | "table" | "inbox" | "calls" | "bulk-email" | "quotations" | "compliance";
 
 type NavItem =
   | { id: Tab; label: string; count: number; alert?: boolean; external?: undefined }

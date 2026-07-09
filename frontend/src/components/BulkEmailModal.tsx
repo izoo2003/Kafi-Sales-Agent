@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import {
   client,
   type BulkEmailDraftResponse,
+  type EmailAttachment,
   type EmailTemplate,
   type EmailTemplatePreview,
 } from "../api/client";
+import { EmailAttachmentsField } from "./EmailAttachmentsField";
 
 interface BulkEmailModalProps {
   buyerIds: number[];
@@ -26,6 +28,7 @@ export function BulkEmailModal({
   const [preview, setPreview] = useState<EmailTemplatePreview | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [extraAttachments, setExtraAttachments] = useState<EmailAttachment[]>([]);
 
   useEffect(() => {
     client
@@ -57,7 +60,11 @@ export function BulkEmailModal({
     }
     setCreating(true);
     try {
-      const result = await client.createBulkEmailDrafts(Number(templateId), buyerIds);
+      const result = await client.createBulkEmailDrafts(
+        Number(templateId),
+        buyerIds,
+        extraAttachments,
+      );
       onCreated(result);
       onClose();
     } catch (e) {
@@ -133,6 +140,20 @@ export function BulkEmailModal({
                   )}
                 </div>
               )}
+
+              <EmailAttachmentsField
+                attachments={extraAttachments}
+                onChange={setExtraAttachments}
+                label="Extra attachments for this batch"
+                hint="Added on top of any files saved on the template. All selected leads get the same attachments."
+              />
+              {templates.find((t) => String(t.id) === templateId)?.attachments?.length ? (
+                <p className="text-xs text-slate-500">
+                  Template also includes{" "}
+                  {templates.find((t) => String(t.id) === templateId)!.attachments!.length}{" "}
+                  default attachment(s).
+                </p>
+              ) : null}
             </>
           )}
 

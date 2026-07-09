@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   client,
   type Contact,
+  type EmailAttachment,
   type ProductType,
   type QuotationEligibleLead,
 } from "../api/client";
+import { EmailAttachmentsField } from "./EmailAttachmentsField";
 import { ScoreBadge } from "./ScoreBadge";
 
 function formatCategory(category: string): string {
@@ -138,6 +140,7 @@ export function ProductInterestForm({
   const [contactId, setContactId] = useState("");
   const [search, setSearch] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [attachments, setAttachments] = useState<EmailAttachment[]>([]);
 
   const suggested = useMemo(
     () => dedupeSuggested(suggestedProducts),
@@ -217,6 +220,7 @@ export function ProductInterestForm({
       await client.createProductInterestEmail(buyerId, {
         contact_id: Number(contactId),
         products: chosen,
+        attachments,
       });
       onSuccess(
         `Email draft created for ${buyerLabel}. Review it in the Approval Queue, then Approve & Send.`,
@@ -343,6 +347,14 @@ export function ProductInterestForm({
           </div>
         ))}
       </div>
+
+      <EmailAttachmentsField
+        attachments={attachments}
+        onChange={setAttachments}
+        disabled={submitting}
+        label="Attachments (optional)"
+        hint="Attach product images, spec sheets, or catalogs — sent with the email after approval."
+      />
 
       <button
         type="button"

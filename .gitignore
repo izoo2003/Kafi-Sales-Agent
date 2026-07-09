@@ -34,5 +34,8 @@ frontend/dist/
 .DS_Store
 Thumbs.db
 
-# Generated files
+# Generated / runtime storage
 backend/storage/quotations/*.pdf
+backend/storage/quotations/*.html
+backend/storage/email_attachments/
+backend/storage/inbox_cutoff.json

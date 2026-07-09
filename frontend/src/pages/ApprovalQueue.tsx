@@ -3,7 +3,9 @@ import {
   client,
   type BulkEmailSettings,
   type DraftInteraction,
+  type EmailAttachment,
 } from "../api/client";
+import { EmailAttachmentsField } from "../components/EmailAttachmentsField";
 import { useDrafts } from "../hooks/useDrafts";
 
 interface ApprovalQueueProps {
@@ -25,6 +27,7 @@ function chunkIds(ids: number[], size: number): number[][] {
 export function ApprovalQueue({ onError }: ApprovalQueueProps) {
   const { drafts, loading, refresh } = useDrafts();
   const [editingDraft, setEditingDraft] = useState<Record<number, string>>({});
+  const [editingAttachments, setEditingAttachments] = useState<Record<number, EmailAttachment[]>>({});
   const [approvingId, setApprovingId] = useState<number | null>(null);
   const [bulkApproving, setBulkApproving] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -71,6 +74,13 @@ export function ApprovalQueue({ onError }: ApprovalQueueProps) {
     setLastResult(null);
     try {
       const content = editingDraft[draft.id] ?? draft.content;
+      const attachments =
+        editingAttachments[draft.id] ?? draft.attachments ?? [];
+      const currentIds = (draft.attachments ?? []).map((a) => a.id).join(",");
+      const nextIds = attachments.map((a) => a.id).join(",");
+      if (currentIds !== nextIds) {
+        await client.updateDraftAttachments(draft.id, attachments);
+      }
       const result = await client.approveDraft(draft.id, content, send);
 
       if (result.sent) {
@@ -107,7 +117,7 @@ export function ApprovalQueue({ onError }: ApprovalQueueProps) {
 
     if (send && ids.length > 200) {
       const ok = window.confirm(
-        `You are about to send ${ids.length} emails from your Gmail account. ` +
+        `You are about to send ${ids.length} emails from your Outlook mailbox. ` +
           `This may trigger spam filters or daily limits (~${settings.gmail_daily_limit_hint}/day). ` +
           `Continue in ${batches.length} batch(es) of ${size}?`,
       );
@@ -121,6 +131,17 @@ export function ApprovalQueue({ onError }: ApprovalQueueProps) {
     let totalProcessed = 0;
 
     try {
+      for (const id of ids) {
+        const draft = drafts.find((d) => d.id === id);
+        if (!draft || draft.channel !== "email") continue;
+        const attachments = editingAttachments[id] ?? draft.attachments ?? [];
+        const currentIds = (draft.attachments ?? []).map((a) => a.id).join(",");
+        const nextIds = attachments.map((a) => a.id).join(",");
+        if (currentIds !== nextIds) {
+          await client.updateDraftAttachments(id, attachments);
+        }
+      }
+
       for (let i = 0; i < batches.length; i++) {
         setBulkProgress({
           currentBatch: i + 1,
@@ -285,6 +306,18 @@ export function ApprovalQueue({ onError }: ApprovalQueueProps) {
                 setEditingDraft((prev) => ({ ...prev, [draft.id]: e.target.value }))
               }
             />
+            {draft.channel === "email" && (
+              <div className="mt-3">
+                <EmailAttachmentsField
+                  attachments={editingAttachments[draft.id] ?? draft.attachments ?? []}
+                  onChange={(attachments) =>
+                    setEditingAttachments((prev) => ({ ...prev, [draft.id]: attachments }))
+                  }
+                  disabled={approvingId === draft.id || bulkApproving}
+                  label="Email attachments"
+                />
+              </div>
+            )}
             <div className="flex flex-wrap gap-2 mt-3">
               {draft.channel === "email" ? (
                 <>
@@ -326,7 +359,7 @@ export function ApprovalQueue({ onError }: ApprovalQueueProps) {
             </div>
             {draft.channel === "email" && (
               <p className="text-xs text-slate-500 mt-2">
-                Sends from your configured Gmail account after approval.
+                Sends from your configured Outlook mailbox after approval, including any attachments above.
               </p>
             )}
           </article>

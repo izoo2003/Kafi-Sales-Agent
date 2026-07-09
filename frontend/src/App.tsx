@@ -4,12 +4,14 @@ import { AppSidebar } from "./components/AppSidebar";
 import { InboxAlertToasts } from "./components/InboxAlertToasts";
 import { ApprovalQueue } from "./pages/ApprovalQueue";
 import { BuyerProfile } from "./pages/BuyerProfile";
+import { CallsPage } from "./pages/CallsPage";
 import { ConsentPage } from "./pages/ConsentPage";
 import { BulkEmailPage } from "./pages/BulkEmailPage";
 import { InboxPage } from "./pages/InboxPage";
 import { LeadsPage } from "./pages/LeadsPage";
 import { LeadsTablePage } from "./pages/LeadsTablePage";
 import { QuotationsPage } from "./pages/QuotationsPage";
+import { TwilioVoiceProvider } from "./hooks/useTwilioVoice";
 import { useDrafts } from "./hooks/useDrafts";
 import { useLeads } from "./hooks/useLeads";
 import {
@@ -18,7 +20,7 @@ import {
   unlockNotificationAudio,
 } from "./utils/notify";
 
-type Tab = "drafts" | "leads" | "table" | "inbox" | "bulk-email" | "quotations" | "compliance";
+type Tab = "drafts" | "leads" | "table" | "inbox" | "calls" | "bulk-email" | "quotations" | "compliance";
 
 const INBOX_POLL_INTERVAL_MS = 12_000;
 
@@ -111,7 +113,7 @@ export default function App() {
 
   function handleSelectTab(nextTab: Tab) {
     setTab(nextTab);
-    if (nextTab !== "leads" && nextTab !== "table") {
+    if (nextTab !== "leads" && nextTab !== "table" && nextTab !== "calls") {
       setSelectedLeadId(null);
     }
   }
@@ -121,6 +123,7 @@ export default function App() {
     { id: "leads", label: "Discover Leads", count: leads.length },
     { id: "table", label: "Leads table", count: leads.length },
     { id: "inbox", label: "Inbox", count: inboxUnread, alert: inboxUnread > 0 },
+    { id: "calls", label: "Calls", count: 0 },
     { id: "bulk-email", label: "Bulk email", count: 0 },
     { id: "quotations", label: "Product outreach", count: 0 },
     {
@@ -137,6 +140,7 @@ export default function App() {
   ];
 
   return (
+    <TwilioVoiceProvider>
     <div className="min-h-screen flex">
       <InboxAlertToasts onOpenInbox={() => handleSelectTab("inbox")} />
       <AppSidebar
@@ -179,6 +183,16 @@ export default function App() {
           {tab === "inbox" && (
             <InboxPage onError={setError} onUnreadChange={setInboxUnread} />
           )}
+          {tab === "calls" && selectedLeadId !== null && (
+            <BuyerProfile
+              leadId={selectedLeadId}
+              onBack={handleBackFromProfile}
+              onError={setError}
+            />
+          )}
+          {tab === "calls" && selectedLeadId === null && (
+            <CallsPage onError={setError} onSelectLead={handleSelectLead} />
+          )}
           {tab === "bulk-email" && <BulkEmailPage onError={setError} />}
           {tab === "quotations" && <QuotationsPage onError={setError} />}
           {tab === "compliance" && selectedLeadId !== null && (
@@ -194,5 +208,6 @@ export default function App() {
         </main>
       </div>
     </div>
+    </TwilioVoiceProvider>
   );
 }

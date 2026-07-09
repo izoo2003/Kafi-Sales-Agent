@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { client, type CallConfig, type CallInitiateResult } from "../api/client";
+import { useTwilioVoiceOptional } from "../hooks/useTwilioVoice";
 
 interface CallLeadButtonProps {
   leadId: number;
@@ -24,48 +25,34 @@ export function CallLeadButton({
   onSuccess,
   compact = false,
 }: CallLeadButtonProps) {
+  const voice = useTwilioVoiceOptional();
   const [config, setConfig] = useState<CallConfig | null>(null);
   const [calling, setCalling] = useState(false);
-  const [agentPhone, setAgentPhone] = useState("");
-  const [showAgentInput, setShowAgentInput] = useState(false);
 
   const loadConfig = useCallback(async () => {
     try {
-      const cfg = await client.getCallConfig();
-      setConfig(cfg);
-      if (!cfg.has_default_agent_phone) {
-        setShowAgentInput(true);
-      }
+      setConfig(await client.getCallConfig());
     } catch {
       setConfig(null);
     }
   }, []);
 
   useEffect(() => {
-    loadConfig();
+    void loadConfig();
   }, [loadConfig]);
 
   if (!phone?.trim()) {
     return null;
   }
 
-  const canUseTwilio = config?.configured && config?.webhooks_ready;
+  const canUseTwilio = config?.browser_ready && voice;
 
   async function handleTwilioCall() {
-    if (!canUseTwilio) return;
-    const resolvedAgent = agentPhone.trim();
-    if (!config?.has_default_agent_phone && !resolvedAgent) {
-      onError("Enter your phone in international format (+92…, +1…) to receive the call.");
-      setShowAgentInput(true);
-      return;
-    }
+    if (!canUseTwilio || !voice) return;
 
     setCalling(true);
     try {
-      const result = await client.initiateLeadCall(leadId, {
-        agent_phone: resolvedAgent || undefined,
-        contact_id: contactId,
-      });
+      const result = await voice.placeCall(leadId, contactId);
       onSuccess?.(result);
     } catch (e) {
       onError(e instanceof Error ? e.message : "Call failed");
@@ -78,35 +65,48 @@ export function CallLeadButton({
     ? "px-2 py-0.5 rounded text-xs bg-sky-600 hover:bg-sky-500 text-white disabled:opacity-50"
     : "px-3 py-1.5 rounded-lg text-sm bg-sky-600 hover:bg-sky-500 text-white font-medium disabled:opacity-50";
 
+  const inCall = voice?.active ?? false;
+
   return (
     <span className="inline-flex items-center gap-1.5 flex-wrap" onClick={(e) => e.stopPropagation()}>
       {canUseTwilio ? (
         <>
-          {showAgentInput && !config?.has_default_agent_phone && (
-            <input
-              type="tel"
-              placeholder="+92… your mobile"
-              value={agentPhone}
-              onChange={(e) => setAgentPhone(e.target.value)}
-              className="w-28 min-w-0 rounded bg-slate-950 border border-slate-700 px-2 py-0.5 text-xs text-slate-200"
-              title="Your phone — Twilio rings you first, then connects the lead"
-            />
-          )}
           <button
             type="button"
             onClick={handleTwilioCall}
-            disabled={calling}
+            disabled={calling || inCall || !voice.ready}
             className={btnClass}
-            title="Twilio rings your phone; answer to connect to the lead"
+            title={
+              voice.ready
+                ? "Call client directly from your browser (allow microphone)"
+                : "Initializing Twilio…"
+            }
           >
-            {calling ? "Calling…" : compact ? "Call" : "Call now"}
+            {calling ? "Connecting…" : inCall ? "On call" : compact ? "Call" : "Call now"}
           </button>
+          {inCall && (
+            <button
+              type="button"
+              onClick={() => voice.hangUp()}
+              className={
+                compact
+                  ? "px-2 py-0.5 rounded text-xs bg-red-600 hover:bg-red-500 text-white"
+                  : "px-2 py-1 rounded-lg text-xs bg-red-600 hover:bg-red-500 text-white"
+              }
+            >
+              End
+            </button>
+          )}
         </>
       ) : (
         <a
           href={normalizeTelHref(phone)}
           className={btnClass + " inline-block text-center no-underline"}
-          title={config?.configured ? "Set TWILIO_WEBHOOK_BASE_URL for in-app calling" : "Call via your phone"}
+          title={
+            config?.configured
+              ? "Complete Twilio browser setup (API key + TwiML App) for in-app calling"
+              : "Call via your phone"
+          }
         >
           {compact ? "Call" : "Call"}
         </a>

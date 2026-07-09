@@ -48,7 +48,9 @@ def _write_file_cutoff(value: datetime) -> None:
 
 def get_inbox_since(*, initialize: bool = True) -> datetime:
     """Return the earliest message time to include. Auto-initializes to now if unset."""
-    env_value = _parse_datetime(settings.gmail_inbox_since or "")
+    env_value = _parse_datetime(
+        settings.inbox_since or settings.gmail_inbox_since or ""
+    )
     if env_value:
         return env_value
 

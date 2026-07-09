@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_DIR = Path(__file__).resolve().parent
@@ -24,7 +25,8 @@ class Settings(BaseSettings):
     gmail_refresh_token: str | None = None
     gmail_sender_email: str | None = None
     # Only show inbox mail on/after this date (YYYY-MM-DD). If unset, auto-set to connect day.
-    gmail_inbox_since: str | None = None
+    inbox_since: str | None = None
+    gmail_inbox_since: str | None = None  # legacy alias — use INBOX_SINCE instead
 
     # Outlook shared inbox via IMAP (receive) + SMTP (send) — integrations/outlook_client.py
     # Standard Outlook/Office 365 servers are the defaults; only email + password are required.
@@ -58,19 +60,45 @@ class Settings(BaseSettings):
     # Per-record enrichment: ALL listed providers run and results merge (default serpapi+duckduckgo).
     web_search_combined_providers: str | None = None
 
-    # Twilio Voice — international outbound calls (integrations/voice_client.py)
+    # Twilio Voice — browser calling from dashboard (integrations/voice_client.py)
     twilio_account_sid: str | None = None
     twilio_auth_token: str | None = None
     twilio_phone_number: str | None = None
-    twilio_agent_phone: str | None = None
+    twilio_api_key_sid: str | None = None
+    twilio_api_key_secret: str | None = None
+    twilio_twiml_app_sid: str | None = None
     # Public HTTPS base URL for Twilio webhooks (e.g. https://your-api.railway.app or ngrok URL)
     twilio_webhook_base_url: str | None = None
+    # Validate X-Twilio-Signature on webhooks (set false only for local debugging)
+    twilio_validate_webhooks: bool = True
 
     # Bulk email throttling (Gmail-safe batching)
     bulk_email_batch_size: int = 50
     bulk_email_message_delay_seconds: float = 3.0
     bulk_email_batch_pause_seconds: float = 60.0
     bulk_email_max_per_request: int = 50
+
+    @field_validator("mailbox_imap_port", "mailbox_smtp_port", mode="before")
+    @classmethod
+    def _empty_port_uses_default(cls, value: object, info: ValidationInfo) -> object:
+        if value == "" or value is None:
+            return 993 if info.field_name == "mailbox_imap_port" else 587
+        return value
+
+    @field_validator(
+        "mailbox_email",
+        "mailbox_password",
+        "mailbox_display_name",
+        "mailbox_client_id",
+        "mailbox_client_secret",
+        "mailbox_refresh_token",
+        mode="before",
+    )
+    @classmethod
+    def _empty_str_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @property
     def cors_origin_list(self) -> list[str]:

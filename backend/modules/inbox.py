@@ -1,53 +1,76 @@
-"""Inbox business logic — wraps the Gmail client and builds threaded replies."""
+"""Inbox — company Outlook mailbox (receives mail from Gmail, Outlook, and any provider)."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from integrations.email_client import email_client
+from integrations.outlook_client import outlook_client
+from modules.inbox_cutoff import get_inbox_since, set_inbox_since_to_now
 
 
 def is_configured() -> bool:
-    return email_client.is_configured
+    return outlook_client.is_configured
 
 
 def status() -> dict[str, Any]:
-    if not email_client.is_configured:
-        return {"configured": False, "email": None, "unread_count": 0}
+    if not outlook_client.is_configured:
+        return {
+            "configured": False,
+            "email": None,
+            "emails": [],
+            "mailboxes": [],
+            "unread_count": 0,
+            "showing_since": None,
+        }
+
+    from config import settings
+
+    email = settings.mailbox_email
     unread = 0
     try:
-        unread = email_client.unread_count()
-    except Exception:  # noqa: BLE001 — credentials set but API may still fail
+        unread = outlook_client.unread_count()
+    except Exception:  # noqa: BLE001
         unread = 0
+
+    mailbox = {
+        "provider": "outlook",
+        "email": email,
+        "configured": True,
+    }
     return {
         "configured": True,
-        "email": email_client.mailbox_email(),
+        "email": email,
+        "emails": [email] if email else [],
+        "mailboxes": [mailbox],
         "unread_count": unread,
-        "showing_since": email_client.inbox_since(),
+        "showing_since": get_inbox_since().isoformat(),
     }
 
 
 def list_messages(*, limit: int = 25, unread_only: bool = False) -> list[dict[str, Any]]:
-    return email_client.list_messages(limit=limit, unread_only=unread_only)
+    messages = outlook_client.list_messages(limit=limit, unread_only=unread_only)
+    return [{**message, "provider": "outlook"} for message in messages]
 
 
 def get_message(uid: str) -> dict[str, Any] | None:
-    return email_client.get_message(uid)
+    message = outlook_client.get_message(uid)
+    if not message:
+        return None
+    return {**message, "provider": "outlook"}
 
 
 def unread_count() -> int:
-    if not email_client.is_configured:
+    if not outlook_client.is_configured:
         return 0
-    return email_client.unread_count()
+    return outlook_client.unread_count()
 
 
 def mark_read(uid: str, seen: bool = True) -> None:
-    email_client.mark_read(uid, seen)
+    outlook_client.mark_read(uid, seen)
 
 
 def reset_cutoff() -> dict[str, str]:
-    showing_since = email_client.reset_inbox_cutoff()
-    return {"showing_since": showing_since}
+    return {"showing_since": set_inbox_since_to_now().isoformat()}
 
 
 def _reply_subject(original_subject: str | None) -> str:
@@ -65,8 +88,7 @@ def reply(
     subject: str | None = None,
     cc: str | None = None,
 ) -> dict[str, Any]:
-    """Send a reply to a received message, threading it via In-Reply-To/References."""
-    original = email_client.get_message(uid)
+    original = get_message(uid)
     if not original:
         return {"status": "error", "message": "Original message not found"}
 
@@ -74,19 +96,18 @@ def reply(
     reply_subject = subject or _reply_subject(original.get("subject"))
     message_id = original.get("message_id")
 
-    result = email_client.send_reply(
+    result = outlook_client.send_reply(
         to=recipient,
         subject=reply_subject,
         body=body,
         in_reply_to=message_id,
         references=message_id,
         cc=cc,
-        thread_id=original.get("thread_id"),
     )
 
     if result.get("status") == "sent":
         try:
-            email_client.mark_read(uid, True)
-        except Exception:  # noqa: BLE001 — reply already sent; read-flag is best effort
+            mark_read(uid, True)
+        except Exception:  # noqa: BLE001
             pass
     return result

@@ -14,16 +14,30 @@ from modules.audit import log_action
 router = APIRouter(prefix="/email-templates", tags=["email-templates"])
 
 
+def _template_read(record) -> EmailTemplateRead:
+    from modules.email_attachments import public_attachments
+
+    return EmailTemplateRead(
+        id=record.id,
+        name=record.name,
+        subject=record.subject,
+        body=record.body,
+        attachments=public_attachments(getattr(record, "attachments", None)),
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
 @router.get("", response_model=list[EmailTemplateRead])
 def list_email_templates(db: Session = Depends(get_db)):
-    return templates_module.list_templates(db)
+    return [_template_read(t) for t in templates_module.list_templates(db)]
 
 
 @router.post("", response_model=EmailTemplateRead, status_code=201)
 def create_email_template(payload: EmailTemplateCreate, db: Session = Depends(get_db)):
     record = templates_module.create_template(db, payload.model_dump())
     log_action(db, entity_type="email_template", entity_id=record.id, action="created")
-    return record
+    return _template_read(record)
 
 
 @router.get("/placeholders")
@@ -41,7 +55,7 @@ def get_email_template(template_id: int, db: Session = Depends(get_db)):
     record = templates_module.get_template(db, template_id)
     if not record:
         raise HTTPException(404, "Template not found")
-    return record
+    return _template_read(record)
 
 
 @router.patch("/{template_id}", response_model=EmailTemplateRead)
@@ -56,7 +70,7 @@ def update_email_template(
     if not record:
         raise HTTPException(404, "Template not found")
     log_action(db, entity_type="email_template", entity_id=record.id, action="updated")
-    return record
+    return _template_read(record)
 
 
 @router.delete("/{template_id}", status_code=204)

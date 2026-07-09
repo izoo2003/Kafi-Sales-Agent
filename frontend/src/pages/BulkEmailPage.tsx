@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { client, type EmailTemplate } from "../api/client";
+import { client, type EmailAttachment, type EmailTemplate } from "../api/client";
+import { EmailAttachmentsField } from "../components/EmailAttachmentsField";
 
 interface BulkEmailPageProps {
   onError: (message: string) => void;
@@ -26,6 +27,7 @@ Please let us know if you would like specifications or pricing.
 
 Best regards,
 Kafi Commodities Export Team`,
+    attachments: [] as EmailAttachment[],
   };
 }
 
@@ -64,6 +66,7 @@ export function BulkEmailPage({ onError }: BulkEmailPageProps) {
       name: template.name,
       subject: template.subject,
       body: template.body,
+      attachments: template.attachments ?? [],
     });
     setNotice(null);
   }
@@ -157,6 +160,12 @@ export function BulkEmailPage({ onError }: BulkEmailPageProps) {
                   <div className="min-w-0">
                     <p className="font-medium text-slate-100">{template.name}</p>
                     <p className="text-sm text-slate-400 truncate">{template.subject}</p>
+                    {(template.attachments?.length ?? 0) > 0 && (
+                      <p className="text-xs text-slate-500 mt-1">
+                        {template.attachments!.length} attachment
+                        {template.attachments!.length === 1 ? "" : "s"}
+                      </p>
+                    )}
                   </div>
                   <div className="flex gap-2 shrink-0">
                     <button
@@ -232,9 +241,16 @@ export function BulkEmailPage({ onError }: BulkEmailPageProps) {
             />
           </div>
 
+          <EmailAttachmentsField
+            attachments={form.attachments}
+            onChange={(attachments) => setForm((p) => ({ ...p, attachments }))}
+            label="Default attachments for this template"
+            hint="Included on every bulk email draft created from this template. Images, PDF, Word, Excel — up to 10 MB each."
+          />
+
           <p className="text-xs text-slate-500">
             Each lead gets its own draft with placeholders replaced — e.g. Dear Acme Trading
-            becomes Dear [contact_name] filled with the contact on file. Sends from your Gmail in{" "}
+            becomes Dear [contact_name] filled with the contact on file. Sends from your Outlook mailbox in{" "}
             <code className="text-slate-400">backend/.env</code> after approval.
           </p>
 

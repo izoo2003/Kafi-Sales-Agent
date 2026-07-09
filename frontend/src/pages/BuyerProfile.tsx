@@ -9,6 +9,7 @@ import {
 import { ScoreBadge } from "../components/ScoreBadge";
 import { MarketRoleBadge } from "../components/MarketRoleBadge";
 import { ConversionBar, ProducerTierBadge } from "../components/ProducerTierBadge";
+import { CallHistoryPanel } from "../components/CallHistoryPanel";
 import { ContactsPanel } from "../components/ContactsPanel";
 import { DiscoverLeadsPanel } from "../components/DiscoverLeadsPanel";
 import { ProductInterestPanel } from "../components/ProductInterestPanel";
@@ -188,6 +189,8 @@ export function BuyerProfile({ leadId, onBack, onError }: BuyerProfileProps) {
         onError={onError}
         onContactsChange={() => setContactsVersion((v) => v + 1)}
       />
+
+      <CallHistoryPanel leadId={leadId} onError={onError} />
 
       {score && (
         <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">

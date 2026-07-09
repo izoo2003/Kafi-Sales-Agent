@@ -8,11 +8,15 @@ from __future__ import annotations
 import base64
 import re
 import smtplib
+from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
 from typing import Any
 
 from config import settings
+from modules.inbox_cutoff import get_inbox_since, message_is_after_cutoff
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
@@ -31,6 +35,16 @@ def _html_to_preview(html: str) -> str:
 
 def _xoauth2_bytes(email: str, access_token: str) -> bytes:
     return f"user={email}\x01auth=Bearer {access_token}\x01\x01".encode()
+
+
+def _password_auth_help() -> str:
+    return (
+        "Outlook rejected password/app-password login. Microsoft no longer allows this for "
+        "@outlook.com accounts — you must use OAuth. Steps: "
+        "1) Register an app at portal.azure.com (Personal Microsoft accounts only). "
+        "2) Run: python scripts/get_outlook_refresh_token.py "
+        "3) Add MAILBOX_CLIENT_ID and MAILBOX_REFRESH_TOKEN to backend/.env"
+    )
 
 
 class OutlookClient:
@@ -101,9 +115,12 @@ class OutlookClient:
         else:
             if not settings.mailbox_password:
                 raise RuntimeError("Mailbox password is not configured")
-            login_result = client.login(settings.mailbox_email, settings.mailbox_password)
+            try:
+                login_result = client.login(settings.mailbox_email, settings.mailbox_password)
+            except Exception as exc:
+                raise RuntimeError(_password_auth_help()) from exc
             if login_result[0] != "OK":
-                raise RuntimeError(login_result[1][0].decode() if login_result[1] else "IMAP login failed")
+                raise RuntimeError(_password_auth_help())
 
         mailbox = MailBox(host, port)
         mailbox.client = client
@@ -139,13 +156,14 @@ class OutlookClient:
     def list_messages(self, *, limit: int = 25, unread_only: bool = False) -> list[dict[str, Any]]:
         from imap_tools import AND
 
-        criteria = AND(seen=False) if unread_only else "ALL"
+        since = get_inbox_since().date()
+        criteria = AND(date_gte=since, seen=False) if unread_only else AND(date_gte=since)
         mailbox = self._mailbox()
         try:
             messages = list(
                 mailbox.fetch(
                     criteria,
-                    limit=limit,
+                    limit=max(limit, 50),
                     reverse=True,
                     mark_seen=False,
                     bulk=True,
@@ -156,7 +174,9 @@ class OutlookClient:
                 mailbox.logout()
             except Exception:  # noqa: BLE001
                 pass
-        return [self._summarize(m) for m in messages]
+        summaries = [self._summarize(m) for m in messages]
+        filtered = [m for m in summaries if message_is_after_cutoff(m.get("date"))]
+        return filtered[:limit]
 
     def get_message(self, uid: str) -> dict[str, Any] | None:
         from imap_tools import AND
@@ -188,16 +208,7 @@ class OutlookClient:
         return data
 
     def unread_count(self) -> int:
-        from imap_tools import AND
-
-        mailbox = self._mailbox()
-        try:
-            return len(mailbox.numbers(AND(seen=False)))
-        finally:
-            try:
-                mailbox.logout()
-            except Exception:  # noqa: BLE001
-                pass
+        return sum(1 for m in self.list_messages(limit=100, unread_only=True) if m.get("unread"))
 
     def mark_read(self, uid: str, seen: bool = True) -> None:
         from imap_tools import MailMessageFlags
@@ -235,6 +246,7 @@ class OutlookClient:
         in_reply_to: str | None = None,
         references: str | None = None,
         cc: str | None = None,
+        attachments: list[dict] | None = None,
     ) -> dict[str, Any]:
         if not self.is_configured:
             return {
@@ -244,7 +256,25 @@ class OutlookClient:
         if not to:
             return {"status": "error", "message": "Recipient email is missing"}
 
-        message = MIMEText(body, "plain", "utf-8")
+        from modules.email_attachments import load_bytes
+
+        att_list = attachments or []
+        if att_list:
+            message = MIMEMultipart()
+            message.attach(MIMEText(body, "plain", "utf-8"))
+            for meta in att_list:
+                try:
+                    data, filename, content_type = load_bytes(meta)
+                except FileNotFoundError as exc:
+                    return {"status": "error", "message": str(exc)}
+                part = MIMEBase(*content_type.split("/", 1))
+                part.set_payload(data)
+                encoders.encode_base64(part)
+                part.add_header("Content-Disposition", "attachment", filename=filename)
+                message.attach(part)
+        else:
+            message = MIMEText(body, "plain", "utf-8")
+
         display = settings.mailbox_display_name
         message["From"] = formataddr((display, settings.mailbox_email)) if display else settings.mailbox_email
         message["To"] = to
@@ -257,7 +287,7 @@ class OutlookClient:
 
         recipients = [to] + ([cc] if cc else [])
         try:
-            with smtplib.SMTP(settings.mailbox_smtp_host, settings.mailbox_smtp_port, timeout=30) as server:
+            with smtplib.SMTP(settings.mailbox_smtp_host, settings.mailbox_smtp_port, timeout=60) as server:
                 server.ehlo()
                 server.starttls()
                 server.ehlo()
@@ -267,6 +297,17 @@ class OutlookClient:
             return {"status": "error", "message": f"Reply send failed: {exc}"}
 
         return {"status": "sent", "message": "Reply sent", "to": to, "subject": subject}
+
+    def send_approved(
+        self,
+        *,
+        to: str,
+        subject: str,
+        body: str,
+        attachments: list[dict] | None = None,
+    ) -> dict[str, Any]:
+        """Send an approved outbound email (quotations, outreach, bulk campaigns)."""
+        return self.send_reply(to=to, subject=subject, body=body, attachments=attachments)
 
 
 outlook_client = OutlookClient()

@@ -1,21 +1,34 @@
 """One-time Outlook OAuth setup — prints a refresh token for backend/.env.
 
-Microsoft blocks password login for most Outlook.com accounts. Use OAuth instead.
+Microsoft disabled app-password / basic auth for personal @outlook.com (2024+).
+OAuth is required for IMAP inbox access.
 
-Prerequisites (Azure Portal — free):
-  1. https://portal.azure.com → App registrations → New registration
-  2. Name: Kafi Sales Agent Inbox
-  3. Supported accounts: "Personal Microsoft accounts only" (or both)
-  4. Redirect URI: Mobile/desktop → http://localhost
-  5. Copy Application (client) ID
-  6. Certificates & secrets → New client secret (optional but recommended)
-  7. API permissions → Add → APIs my organization uses → search "Office 365 Exchange Online"
-     → Delegated → IMAP.AccessAsUser.All + SMTP.Send → Grant admin consent if shown
+=== Azure app setup (one time, ~5 min) ===
 
-Run from backend/:
-  python scripts/get_outlook_refresh_token.py
+1. Open: https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/CreateApplicationBlade
+   Sign in as kaficommoditiespvtltd@outlook.com (same mailbox account).
 
-Then add printed values to backend/.env and restart python run.py
+2. New registration:
+   - Name: Kafi Sales Agent Inbox
+   - Supported account types: pick the THIRD option:
+     "Accounts in any organizational directory and personal Microsoft accounts"
+     (NOT "Single tenant" — that causes the tenant error you saw before)
+   - Redirect URI: select "Public client/native (mobile & desktop)" → http://localhost
+   - Click Register
+
+3. Copy the "Application (client) ID" from the Overview page.
+
+4. Left menu → Authentication → Advanced settings:
+   - "Allow public client flows" → Yes → Save
+
+5. Left menu → API permissions → Add a permission:
+   - APIs my organization uses → Office 365 Exchange Online
+   - Delegated permissions → check IMAP.AccessAsUser.All and SMTP.Send → Add
+
+6. Run this script (from backend/):
+   python scripts/get_outlook_refresh_token.py
+
+7. Paste printed values into backend/.env and restart python run.py
 """
 
 from __future__ import annotations
@@ -43,23 +56,17 @@ def main() -> None:
     print("Outlook Inbox OAuth setup")
     print("=" * 50)
     print(
-        "IMPORTANT: Your Azure app must be registered as\n"
-        "  'Personal Microsoft accounts only'\n"
-        "  OR 'Multitenant + personal Microsoft accounts'\n"
-        "NOT 'Single tenant / My organization only' — that causes the\n"
-        "'account does not exist in tenant' error for @outlook.com accounts.\n"
-    )
-    print(
-        "Sign in to portal.azure.com with the SAME @outlook.com account\n"
-        "you want in the inbox (or create the app under that account).\n"
+        "Personal @outlook.com accounts MUST use OAuth (app passwords no longer work).\n"
+        "If you have not created an Azure app yet, read the steps at the top of:\n"
+        "  scripts/get_outlook_refresh_token.py\n"
     )
     client_id = input("Application (client) ID from Azure: ").strip()
     if not client_id:
         print("Client ID is required.", file=sys.stderr)
         sys.exit(1)
 
-    client_secret = input("Client secret (leave blank for public/desktop app only): ").strip()
-    tenant = input("Tenant [consumers for personal Outlook]: ").strip() or "consumers"
+    client_secret = input("Client secret (leave blank — recommended for personal Outlook): ").strip()
+    tenant = input("Tenant [press Enter for consumers]: ").strip() or "consumers"
     authority = f"https://login.microsoftonline.com/{tenant}"
 
     if client_secret:
@@ -71,37 +78,42 @@ def main() -> None:
     else:
         app = PublicClientApplication(client_id, authority=authority)
 
-    print("\nOpening browser to sign in with your Outlook mailbox account…")
+    print("\nOpening browser — sign in as your Outlook mailbox (kaficommoditiespvtltd@outlook.com)…")
     result = app.acquire_token_interactive(
         scopes=SCOPES,
         prompt="consent",
     )
 
     if "access_token" not in result:
-        print("Auth failed:", result.get("error_description") or result, file=sys.stderr)
+        print("\nAuth failed:", result.get("error_description") or result, file=sys.stderr)
+        print(
+            "\nIf you see 'account does not exist in tenant': recreate the Azure app with\n"
+            "'Personal Microsoft accounts' enabled (not Single tenant only).",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     refresh = result.get("refresh_token")
     if not refresh:
         print(
-            "No refresh token returned. Try again or revoke the app at "
-            "https://account.microsoft.com/privacy/app-access",
+            "No refresh token returned. Revoke old access at account.microsoft.com/privacy/app-access "
+            "and try again.",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    email = input("\nMailbox email address (e.g. you@outlook.com): ").strip()
+    default_email = "kaficommoditiespvtltd@outlook.com"
+    email = input(f"\nMailbox email [{default_email}]: ").strip() or default_email
 
-    print("\nAdd these lines to backend/.env:\n")
+    print("\nAdd these lines to backend/.env (remove MAILBOX_PASSWORD if present):\n")
     print(f"MAILBOX_EMAIL={email}")
     print(f"MAILBOX_CLIENT_ID={client_id}")
     if client_secret:
         print(f"MAILBOX_CLIENT_SECRET={client_secret}")
     print(f"MAILBOX_REFRESH_TOKEN={refresh}")
     print(f"MAILBOX_TENANT_ID={tenant}")
-    print("MAILBOX_DISPLAY_NAME=Kafi Commodities Sales")
-    print("\nYou can remove MAILBOX_PASSWORD — OAuth is used instead.")
-    print("Restart the backend: python run.py")
+    print("MAILBOX_DISPLAY_NAME=Kafi Commodities")
+    print("\nRestart the backend: python run.py")
 
 
 if __name__ == "__main__":

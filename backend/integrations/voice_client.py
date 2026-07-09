@@ -1,10 +1,9 @@
-"""Twilio Programmable Voice — bridge calls from the sales dashboard."""
+"""Twilio Programmable Voice — browser calling from the sales dashboard."""
 
 from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import quote
 
 from config import settings
 
@@ -28,6 +27,14 @@ def normalize_e164(phone: str | None) -> str | None:
     return None
 
 
+def mask_phone(phone: str | None) -> str | None:
+    """Mask a phone number for display (e.g. +971****4567)."""
+    normalized = normalize_e164(phone)
+    if not normalized or len(normalized) < 8:
+        return None
+    return f"{normalized[:4]}****{normalized[-4:]}"
+
+
 class VoiceClient:
     @property
     def is_configured(self) -> bool:
@@ -41,12 +48,14 @@ class VoiceClient:
     def webhooks_ready(self) -> bool:
         return self.is_configured and bool(settings.twilio_webhook_base_url)
 
-    def _client(self):
-        if not self.is_configured:
-            raise RuntimeError("Twilio is not configured")
-        from twilio.rest import Client
-
-        return Client(settings.twilio_account_sid, settings.twilio_auth_token)
+    @property
+    def browser_ready(self) -> bool:
+        return bool(
+            self.webhooks_ready
+            and settings.twilio_api_key_sid
+            and settings.twilio_api_key_secret
+            and settings.twilio_twiml_app_sid
+        )
 
     def webhook_url(self, path: str) -> str:
         base = (settings.twilio_webhook_base_url or "").rstrip("/")
@@ -59,60 +68,71 @@ class VoiceClient:
             path = f"/{path}"
         return f"{base}{path}"
 
-    def initiate_bridge_call(
-        self,
-        *,
-        agent_phone: str,
-        lead_phone: str,
-        interaction_id: int,
-    ) -> dict[str, Any]:
-        """Ring the sales rep first; TwiML connects them to the lead when they answer."""
-        agent = normalize_e164(agent_phone)
-        lead = normalize_e164(lead_phone)
-        if not agent:
-            return {"status": "error", "message": "Agent phone must be in international format (+92…, +1…)."}
-        if not lead:
-            return {"status": "error", "message": "Lead phone must be in international format (+971…, +44…)."}
+    def validate_webhook(self, url: str, params: dict[str, str], signature: str) -> bool:
+        if not settings.twilio_validate_webhooks:
+            return True
+        if not settings.twilio_auth_token or not signature:
+            return False
+        from twilio.request_validator import RequestValidator
 
-        connect_url = self.webhook_url(
-            "/api/webhooks/twilio/voice/connect"
-            f"?To={quote(lead)}&interaction_id={interaction_id}"
+        validator = RequestValidator(settings.twilio_auth_token)
+        return validator.validate(url, params, signature)
+
+    def create_access_token(self, *, identity: str = "sales-agent") -> str:
+        if not self.browser_ready:
+            raise RuntimeError(
+                "Browser calling is not configured. Set TWILIO_API_KEY_SID, "
+                "TWILIO_API_KEY_SECRET, and TWILIO_TWIML_APP_SID in backend/.env"
+            )
+        from twilio.jwt.access_token import AccessToken
+        from twilio.jwt.access_token.grants import VoiceGrant
+
+        token = AccessToken(
+            settings.twilio_account_sid,
+            settings.twilio_api_key_sid,
+            settings.twilio_api_key_secret,
+            identity=identity,
+            ttl=3600,
         )
+        grant = VoiceGrant(
+            outgoing_application_sid=settings.twilio_twiml_app_sid,
+            incoming_allow=False,
+        )
+        token.add_grant(grant)
+        return token.to_jwt()
+
+    def client_dial_twiml(self, lead_phone: str, interaction_id: int) -> str:
+        """TwiML for browser-initiated outbound calls — dials the lead directly."""
+        lead = normalize_e164(lead_phone) or lead_phone
+        caller_id = settings.twilio_phone_number or ""
         status_url = self.webhook_url(
             f"/api/webhooks/twilio/voice/status?interaction_id={interaction_id}"
         )
-
-        try:
-            call = self._client().calls.create(
-                to=agent,
-                from_=settings.twilio_phone_number,
-                url=connect_url,
-                method="POST",
-                status_callback=status_url,
-                status_callback_event=["completed", "busy", "no-answer", "failed", "canceled"],
-                status_callback_method="POST",
-            )
-        except Exception as exc:
-            return {"status": "error", "message": str(exc)}
-
-        return {
-            "status": "initiated",
-            "message": f"Calling your phone ({agent}). Answer to connect to the lead.",
-            "call_sid": call.sid,
-            "call_status": call.status,
-            "agent_phone": agent,
-            "lead_phone": lead,
-        }
-
-    def connect_twiml(self, lead_phone: str) -> str:
-        lead = normalize_e164(lead_phone) or lead_phone
-        caller_id = settings.twilio_phone_number or ""
         return (
             '<?xml version="1.0" encoding="UTF-8"?>'
             "<Response>"
-            f'<Dial callerId="{caller_id}">{lead}</Dial>'
+            f'<Dial callerId="{caller_id}" answerOnBridge="true" '
+            f'action="{status_url}" method="POST">{lead}</Dial>'
             "</Response>"
         )
+
+    def setup_hints(self) -> dict[str, Any]:
+        missing: list[str] = []
+        if not settings.twilio_account_sid:
+            missing.append("TWILIO_ACCOUNT_SID")
+        if not settings.twilio_auth_token:
+            missing.append("TWILIO_AUTH_TOKEN")
+        if not settings.twilio_phone_number:
+            missing.append("TWILIO_PHONE_NUMBER")
+        if not settings.twilio_webhook_base_url:
+            missing.append("TWILIO_WEBHOOK_BASE_URL")
+        if not settings.twilio_api_key_sid:
+            missing.append("TWILIO_API_KEY_SID")
+        if not settings.twilio_api_key_secret:
+            missing.append("TWILIO_API_KEY_SECRET")
+        if not settings.twilio_twiml_app_sid:
+            missing.append("TWILIO_TWIML_APP_SID")
+        return {"missing": missing, "browser_ready": self.browser_ready}
 
 
 voice_client = VoiceClient()

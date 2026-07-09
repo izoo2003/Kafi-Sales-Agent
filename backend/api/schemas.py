@@ -205,6 +205,18 @@ class InteractionRead(BaseModel):
     company_name: Optional[str] = None
     contact_name: Optional[str] = None
     contact_email: Optional[str] = None
+    attachments: list["EmailAttachmentRead"] = Field(default_factory=list)
+
+
+class EmailAttachmentRead(BaseModel):
+    id: str
+    filename: str
+    content_type: str
+    size: int
+
+
+class InteractionAttachmentsUpdate(BaseModel):
+    attachments: list[EmailAttachmentRead] = Field(default_factory=list)
 
 
 class InteractionApprove(BaseModel):
@@ -224,18 +236,21 @@ class EmailDraftRequest(BaseModel):
     contact_id: int
     goal: str
     product_name: Optional[str] = None
+    attachments: list[EmailAttachmentRead] = Field(default_factory=list)
 
 
 class EmailTemplateCreate(BaseModel):
     name: str
     subject: str
     body: str
+    attachments: list[EmailAttachmentRead] = Field(default_factory=list)
 
 
 class EmailTemplateUpdate(BaseModel):
     name: Optional[str] = None
     subject: Optional[str] = None
     body: Optional[str] = None
+    attachments: Optional[list[EmailAttachmentRead]] = None
 
 
 class EmailTemplateRead(BaseModel):
@@ -245,6 +260,7 @@ class EmailTemplateRead(BaseModel):
     name: str
     subject: str
     body: str
+    attachments: list[EmailAttachmentRead] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -259,6 +275,7 @@ class EmailTemplatePreviewRead(BaseModel):
 class BulkEmailDraftRequest(BaseModel):
     template_id: int
     buyer_ids: list[int] = Field(min_length=1)
+    attachments: list[EmailAttachmentRead] = Field(default_factory=list)
 
 
 class BulkEmailDraftResultItem(BaseModel):
@@ -319,6 +336,7 @@ class ProductInterestItem(BaseModel):
 class ProductInterestEmailRequest(BaseModel):
     contact_id: Optional[int] = None
     products: list[ProductInterestItem] = Field(min_length=1)
+    attachments: list[EmailAttachmentRead] = Field(default_factory=list)
 
 
 class LeadTableRowRead(BaseModel):
@@ -510,28 +528,66 @@ class DiscoverImportResponse(BaseModel):
 class CallConfigRead(BaseModel):
     configured: bool
     webhooks_ready: bool
-    has_default_agent_phone: bool
+    browser_ready: bool = False
+    caller_id_masked: Optional[str] = None
+    setup_message: Optional[str] = None
+    missing_env: list[str] = Field(default_factory=list)
+
+
+class VoiceTokenRead(BaseModel):
+    token: str
+    identity: str
 
 
 class CallInitiateRequest(BaseModel):
-    agent_phone: Optional[str] = None
     contact_id: Optional[int] = None
 
 
 class CallInitiateResponse(InteractionRead):
     call_sid: Optional[str] = None
     call_status: Optional[str] = None
-    agent_phone: Optional[str] = None
     lead_phone: Optional[str] = None
     message: Optional[str] = None
 
 
-# ── Inbox (Gmail) ─────────────────────────────────────────────────────────────
+class CallHistoryItem(BaseModel):
+    id: int
+    contact_id: int
+    buyer_id: Optional[int] = None
+    company_name: Optional[str] = None
+    contact_name: Optional[str] = None
+    contact_phone: Optional[str] = None
+    channel: str = "phone"
+    direction: str
+    subject: Optional[str] = None
+    content: Optional[str] = None
+    status: str
+    created_at: datetime
+    call_sid: Optional[str] = None
+    call_status: Optional[str] = None
+    call_duration_seconds: Optional[int] = None
+    lead_phone: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class CallNotesRequest(BaseModel):
+    notes: str = ""
+
+
+# ── Inbox (Outlook) ───────────────────────────────────────────────────────────
+
+
+class InboxMailboxStatus(BaseModel):
+    provider: str
+    email: Optional[str] = None
+    configured: bool = True
 
 
 class InboxStatus(BaseModel):
     configured: bool
     email: Optional[str] = None
+    emails: list[str] = Field(default_factory=list)
+    mailboxes: list[InboxMailboxStatus] = Field(default_factory=list)
     unread_count: int = 0
     showing_since: Optional[str] = None
 
@@ -548,6 +604,7 @@ class InboxAttachment(BaseModel):
 
 class InboxMessageSummary(BaseModel):
     uid: str
+    provider: Optional[str] = None
     subject: str
     from_email: Optional[str] = None
     from_name: Optional[str] = None

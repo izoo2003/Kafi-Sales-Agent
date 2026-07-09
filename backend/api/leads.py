@@ -159,7 +159,10 @@ def create_product_interest_email(
     products = [p.model_dump() for p in payload.products]
     try:
         draft = get_comms().generate_product_interest_email(
-            db, contact_id=contact.id, products=products
+            db,
+            contact_id=contact.id,
+            products=products,
+            attachments=[a.model_dump() for a in payload.attachments],
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

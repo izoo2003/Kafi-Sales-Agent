@@ -44,11 +44,15 @@ def get_template(db: Session, template_id: int) -> EmailTemplate | None:
     return db.get(EmailTemplate, template_id)
 
 
+from modules.email_attachments import resolve_attachment_list
+
+
 def create_template(db: Session, data: dict) -> EmailTemplate:
     record = EmailTemplate(
         name=data["name"],
         subject=data["subject"],
         body=data["body"],
+        attachments=resolve_attachment_list(data.get("attachments") or []),
     )
     db.add(record)
     db.commit()
@@ -60,9 +64,12 @@ def update_template(db: Session, template_id: int, data: dict) -> EmailTemplate 
     record = get_template(db, template_id)
     if not record:
         return None
-    for key in ("name", "subject", "body"):
+    for key in ("name", "subject", "body", "attachments"):
         if key in data and data[key] is not None:
-            setattr(record, key, data[key])
+            value = data[key]
+            if key == "attachments":
+                value = resolve_attachment_list(value, record.attachments)
+            setattr(record, key, value)
     db.commit()
     db.refresh(record)
     return record

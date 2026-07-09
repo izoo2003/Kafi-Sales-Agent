@@ -240,6 +240,7 @@ class Interaction(Base):
         Enum(InteractionStatus), default=InteractionStatus.draft
     )
     approved_by: Mapped[Optional[str]] = mapped_column(String(255))
+    attachments: Mapped[list] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     contact: Mapped["Contact"] = relationship(back_populates="interactions")
@@ -319,6 +320,7 @@ class EmailTemplate(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     subject: Mapped[str] = mapped_column(String(500), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
+    attachments: Mapped[list] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

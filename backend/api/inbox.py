@@ -1,4 +1,4 @@
-"""Inbox API — read Gmail and send replies from the dashboard."""
+"""Inbox API — read the Outlook mailbox and send replies from the dashboard."""
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -19,24 +19,33 @@ def _guard_configured() -> None:
     if not inbox_module.is_configured():
         raise HTTPException(
             503,
-            "Gmail inbox is not configured. Set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, "
-            "and GMAIL_REFRESH_TOKEN in backend/.env. Run: python scripts/get_gmail_refresh_token.py",
+            "Outlook inbox is not configured. Set MAILBOX_EMAIL and MAILBOX_REFRESH_TOKEN "
+            "(or MAILBOX_PASSWORD) in backend/.env. Run: python scripts/get_outlook_refresh_token.py",
         )
 
 
-def _gmail_error_message(exc: Exception) -> str:
+def _inbox_error_message(exc: Exception) -> str:
     text = str(exc)
-    if "invalid_grant" in text.lower():
+    if "no longer allows this" in text.lower() or "app-password" in text.lower():
         return (
-            "Gmail rejected the refresh token. Re-run: python scripts/get_gmail_refresh_token.py "
-            "and update GMAIL_REFRESH_TOKEN in backend/.env, then restart."
+            "Outlook app passwords no longer work for @outlook.com. "
+            "Run: python scripts/get_outlook_refresh_token.py "
+            "then add MAILBOX_CLIENT_ID and MAILBOX_REFRESH_TOKEN to backend/.env "
+            "(remove MAILBOX_PASSWORD)."
         )
-    if "insufficient" in text.lower() or "scope" in text.lower():
+    if "oauth is not configured" in text.lower():
         return (
-            "Gmail token is missing inbox permissions. Re-run: python scripts/get_gmail_refresh_token.py "
-            "with the updated script (send + modify scopes) and update backend/.env."
+            "Outlook OAuth is not set up. Add MAILBOX_CLIENT_ID and MAILBOX_REFRESH_TOKEN "
+            "to backend/.env — run: python scripts/get_outlook_refresh_token.py"
         )
-    return f"Could not read Gmail inbox: {exc}"
+    if "invalid_grant" in text.lower() or "token refresh failed" in text.lower():
+        return (
+            "Outlook refresh token expired or invalid. Re-run: "
+            "python scripts/get_outlook_refresh_token.py and update backend/.env"
+        )
+    if "oauth" in text.lower() or "xoauth2" in text.lower():
+        return f"Outlook OAuth failed: {text}"
+    return f"Could not read Outlook inbox: {exc}"
 
 
 @router.get("/status", response_model=InboxStatus)
@@ -64,7 +73,7 @@ def list_inbox_messages(
     try:
         return inbox_module.list_messages(limit=limit, unread_only=unread_only)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(502, _gmail_error_message(exc)) from exc
+        raise HTTPException(502, _inbox_error_message(exc)) from exc
 
 
 @router.get("/messages/{uid}", response_model=InboxMessageDetail)

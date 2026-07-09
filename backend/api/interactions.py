@@ -11,6 +11,7 @@ from api.schemas import (
     EmailDraftRequest,
     InteractionApprove,
     InteractionApproveResponse,
+    InteractionAttachmentsUpdate,
     InteractionRead,
 )
 from config import settings
@@ -46,6 +47,7 @@ def create_email_draft(payload: EmailDraftRequest, db: Session = Depends(get_db)
             contact_id=payload.contact_id,
             goal=payload.goal,
             product_name=payload.product_name,
+            attachments=[a.model_dump() for a in payload.attachments],
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -59,10 +61,10 @@ def get_bulk_email_settings():
         message_delay_seconds=settings.bulk_email_message_delay_seconds,
         batch_pause_seconds=settings.bulk_email_batch_pause_seconds,
         max_per_request=settings.bulk_email_max_per_request,
-        gmail_daily_limit_hint=500,
+        gmail_daily_limit_hint=300,
         recommendation=(
             "Current settings: 50 per batch, 3s between emails, 60s between batches. "
-            "Keep daily cold outreach under 100–200 emails per Gmail account."
+            "Keep daily cold outreach under 100–200 emails per Outlook mailbox."
         ),
     )
 
@@ -73,6 +75,7 @@ def create_bulk_email_drafts(payload: BulkEmailDraftRequest, db: Session = Depen
         db,
         buyer_ids=payload.buyer_ids,
         template_id=payload.template_id,
+        extra_attachments=[a.model_dump() for a in payload.attachments],
     )
     log_action(
         db,
@@ -171,6 +174,23 @@ def approve_interaction(
         send_status=send_status,
         send_message=send_message,
     )
+
+
+@router.patch("/{interaction_id}/attachments", response_model=InteractionRead)
+def update_draft_attachments(
+    interaction_id: int,
+    payload: InteractionAttachmentsUpdate,
+    db: Session = Depends(get_db),
+):
+    try:
+        draft = comms.update_draft_attachments(
+            db,
+            interaction_id,
+            [a.model_dump() for a in payload.attachments],
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return _interaction_read(db, draft)
 
 
 @router.post("/{interaction_id}/reject", response_model=InteractionRead)
