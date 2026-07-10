@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { client, QUOTATION_AGENT_URL } from "./api/client";
-import { AppSidebar } from "./components/AppSidebar";
+import { AppSidebar, type LeadsTableSection, type NavItem } from "./components/AppSidebar";
 import { InboxAlertToasts } from "./components/InboxAlertToasts";
 import { ApprovalQueue } from "./pages/ApprovalQueue";
 import { BuyerProfile } from "./pages/BuyerProfile";
@@ -11,7 +11,8 @@ import { InboxPage } from "./pages/InboxPage";
 import { LeadsPage } from "./pages/LeadsPage";
 import { LeadsTablePage } from "./pages/LeadsTablePage";
 import { QuotationsPage } from "./pages/QuotationsPage";
-import { TwilioVoiceProvider } from "./hooks/useTwilioVoice";
+import { TwilioVoiceProvider, useTwilioVoiceOptional } from "./hooks/useTwilioVoice";
+import { PostCallRemarksModal } from "./components/PostCallRemarksModal";
 import { useDrafts } from "./hooks/useDrafts";
 import { useLeads } from "./hooks/useLeads";
 import {
@@ -24,12 +25,29 @@ type Tab = "drafts" | "leads" | "table" | "inbox" | "calls" | "bulk-email" | "qu
 
 const INBOX_POLL_INTERVAL_MS = 12_000;
 
-type NavItem =
-  | { id: Tab; label: string; count: number; alert?: boolean; external?: undefined }
-  | { id: "quotation-agent"; label: string; count: number; external: string };
+function CallInitBanner() {
+  const voice = useTwilioVoiceOptional();
+  if (!voice?.initError) return null;
+  return (
+    <div className="mb-7 p-4 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-100 text-sm">
+      <p className="font-medium">Browser calling is not ready</p>
+      <p className="mt-1 text-amber-200/80">{voice.initError}</p>
+      <p className="mt-2 text-xs text-amber-200/60">
+        Restart the backend after running: <code className="text-amber-100">pip install -r requirements.txt</code>
+      </p>
+    </div>
+  );
+}
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("drafts");
+  const [tableSection, setTableSection] = useState<LeadsTableSection>("all");
+  const [tableCounts, setTableCounts] = useState({
+    all: 0,
+    old_clients: 0,
+    interested_clients: 0,
+  });
+  const [leadsTableRefreshToken, setLeadsTableRefreshToken] = useState(0);
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { drafts, refresh: refreshDrafts } = useDrafts();
@@ -38,6 +56,35 @@ export default function App() {
   const [consentSummary, setConsentSummary] = useState<{ unknown: number } | null>(null);
   const [inboxUnread, setInboxUnread] = useState(0);
   const seenMessageUidsRef = useRef<Set<string> | null>(null);
+
+  const loadTableCounts = useCallback(async () => {
+    try {
+      const [allResult, oldResult, interestedResult] = await Promise.all([
+        client.listLeadsTable({
+          exclude_source: "old_clients",
+          sort_by: "company_name",
+          sort_dir: "asc",
+        }),
+        client.listLeadsTable({
+          source: "old_clients",
+          sort_by: "company_name",
+          sort_dir: "asc",
+        }),
+        client.listLeadsTable({
+          call_outcome: "interested",
+          sort_by: "company_name",
+          sort_dir: "asc",
+        }),
+      ]);
+      setTableCounts({
+        all: allResult.total,
+        old_clients: oldResult.total,
+        interested_clients: interestedResult.total,
+      });
+    } catch {
+      /* optional badges */
+    }
+  }, []);
 
   const pollInbox = useCallback(() => {
     client
@@ -80,12 +127,14 @@ export default function App() {
     setError(null);
     refreshDrafts();
     refreshLeads();
+    void loadTableCounts();
     client.getConsentSummary().then(setConsentSummary).catch(() => setConsentSummary(null));
     pollInbox();
-  }, [refreshDrafts, refreshLeads, pollInbox]);
+  }, [loadTableCounts, refreshDrafts, refreshLeads, pollInbox]);
 
   useEffect(() => {
     client.getConsentSummary().then(setConsentSummary).catch(() => setConsentSummary(null));
+    void loadTableCounts();
     requestNotificationPermission();
 
     const unlock = () => unlockNotificationAudio();
@@ -99,7 +148,7 @@ export default function App() {
       window.removeEventListener("click", unlock);
       window.removeEventListener("keydown", unlock);
     };
-  }, [pollInbox]);
+  }, [loadTableCounts, pollInbox]);
 
   function handleSelectLead(leadId: number) {
     setError(null);
@@ -109,6 +158,7 @@ export default function App() {
   function handleBackFromProfile() {
     setSelectedLeadId(null);
     refreshLeads();
+    void loadTableCounts();
   }
 
   function handleSelectTab(nextTab: Tab) {
@@ -118,10 +168,32 @@ export default function App() {
     }
   }
 
+  function handleSelectTableSection(section: LeadsTableSection) {
+    setTableSection(section);
+    setSelectedLeadId(null);
+  }
+
+  function handleCallFollowUpSaved(_outcome: string | null | undefined) {
+    void loadTableCounts();
+    setLeadsTableRefreshToken((token) => token + 1);
+  }
+
   const navItems: NavItem[] = [
     { id: "drafts", label: "Approval Queue", count: drafts.length },
     { id: "leads", label: "Discover Leads", count: leads.length },
-    { id: "table", label: "Leads table", count: leads.length },
+    {
+      id: "table",
+      label: "Leads table",
+      count: tableCounts.all,
+      children: [
+        { id: "old_clients", label: "Old clients", count: tableCounts.old_clients },
+        {
+          id: "interested_clients",
+          label: "Interested clients",
+          count: tableCounts.interested_clients,
+        },
+      ],
+    },
     { id: "inbox", label: "Inbox", count: inboxUnread, alert: inboxUnread > 0 },
     { id: "calls", label: "Calls", count: 0 },
     { id: "bulk-email", label: "Bulk email", count: 0 },
@@ -141,73 +213,96 @@ export default function App() {
 
   return (
     <TwilioVoiceProvider>
-    <div className="min-h-screen flex">
-      <InboxAlertToasts onOpenInbox={() => handleSelectTab("inbox")} />
-      <AppSidebar
-        navItems={navItems}
-        activeTab={tab}
-        onSelectTab={handleSelectTab}
-        onRefresh={refreshAll}
+      <PostCallRemarksModal
+        onError={setError}
+        onSaved={(outcome) => {
+          handleCallFollowUpSaved(outcome);
+        }}
       />
+      <div className="min-h-screen flex">
+        <InboxAlertToasts onOpenInbox={() => handleSelectTab("inbox")} />
+        <AppSidebar
+          navItems={navItems}
+          activeTab={tab}
+          tableSection={tableSection}
+          onSelectTab={handleSelectTab}
+          onSelectTableSection={handleSelectTableSection}
+          onRefresh={refreshAll}
+        />
 
-      <div className="flex-1 min-w-0 overflow-x-hidden">
-        <main className="max-w-6xl mx-auto px-8 py-8">
-          {error && (
-            <div className="mb-7 p-4 rounded-lg bg-red-500/10 border border-red-500/30 text-red-200 text-sm">
-              {error}
-              <p className="mt-1 text-red-300/70">Is the backend running? (python run.py)</p>
-            </div>
-          )}
+        <div className="flex-1 min-w-0 overflow-x-hidden">
+          <main className="max-w-6xl mx-auto px-8 py-8">
+            <CallInitBanner />
+            {error && (
+              <div className="mb-7 p-4 rounded-lg bg-red-500/10 border border-red-500/30 text-red-200 text-sm">
+                {error}
+                <p className="mt-1 text-red-300/70">Is the backend running? (python run.py)</p>
+              </div>
+            )}
 
-          {tab === "drafts" && <ApprovalQueue onError={setError} />}
-          {tab === "leads" && selectedLeadId !== null && (
-            <BuyerProfile
-              leadId={selectedLeadId}
-              onBack={handleBackFromProfile}
-              onError={setError}
-            />
-          )}
-          {tab === "leads" && selectedLeadId === null && (
-            <LeadsPage onError={setError} onSelectLead={handleSelectLead} />
-          )}
-          {tab === "table" && selectedLeadId !== null && (
-            <BuyerProfile
-              leadId={selectedLeadId}
-              onBack={handleBackFromProfile}
-              onError={setError}
-            />
-          )}
-          {tab === "table" && selectedLeadId === null && (
-            <LeadsTablePage onError={setError} onSelectLead={handleSelectLead} />
-          )}
-          {tab === "inbox" && (
-            <InboxPage onError={setError} onUnreadChange={setInboxUnread} />
-          )}
-          {tab === "calls" && selectedLeadId !== null && (
-            <BuyerProfile
-              leadId={selectedLeadId}
-              onBack={handleBackFromProfile}
-              onError={setError}
-            />
-          )}
-          {tab === "calls" && selectedLeadId === null && (
-            <CallsPage onError={setError} onSelectLead={handleSelectLead} />
-          )}
-          {tab === "bulk-email" && <BulkEmailPage onError={setError} />}
-          {tab === "quotations" && <QuotationsPage onError={setError} />}
-          {tab === "compliance" && selectedLeadId !== null && (
-            <BuyerProfile
-              leadId={selectedLeadId}
-              onBack={handleBackFromProfile}
-              onError={setError}
-            />
-          )}
-          {tab === "compliance" && selectedLeadId === null && (
-            <ConsentPage onError={setError} onSelectLead={handleSelectLead} />
-          )}
-        </main>
+            {tab === "drafts" && <ApprovalQueue onError={setError} />}
+            {tab === "leads" && selectedLeadId !== null && (
+              <BuyerProfile
+                leadId={selectedLeadId}
+                onBack={handleBackFromProfile}
+                onError={setError}
+                onCallFollowUpSaved={handleCallFollowUpSaved}
+              />
+            )}
+            {tab === "leads" && selectedLeadId === null && (
+              <LeadsPage onError={setError} onSelectLead={handleSelectLead} />
+            )}
+            {tab === "table" && selectedLeadId !== null && (
+              <BuyerProfile
+                leadId={selectedLeadId}
+                onBack={handleBackFromProfile}
+                onError={setError}
+                onCallFollowUpSaved={handleCallFollowUpSaved}
+              />
+            )}
+            {tab === "table" && selectedLeadId === null && (
+              <LeadsTablePage
+                section={tableSection}
+                refreshToken={leadsTableRefreshToken}
+                onError={setError}
+                onSelectLead={handleSelectLead}
+                onSectionCountsChange={setTableCounts}
+              />
+            )}
+            {tab === "inbox" && (
+              <InboxPage onError={setError} onUnreadChange={setInboxUnread} />
+            )}
+            {tab === "calls" && selectedLeadId !== null && (
+              <BuyerProfile
+                leadId={selectedLeadId}
+                onBack={handleBackFromProfile}
+                onError={setError}
+                onCallFollowUpSaved={handleCallFollowUpSaved}
+              />
+            )}
+            {tab === "calls" && selectedLeadId === null && (
+              <CallsPage
+                onError={setError}
+                onSelectLead={handleSelectLead}
+                onCallFollowUpSaved={handleCallFollowUpSaved}
+              />
+            )}
+            {tab === "bulk-email" && <BulkEmailPage onError={setError} />}
+            {tab === "quotations" && <QuotationsPage onError={setError} />}
+            {tab === "compliance" && selectedLeadId !== null && (
+              <BuyerProfile
+                leadId={selectedLeadId}
+                onBack={handleBackFromProfile}
+                onError={setError}
+                onCallFollowUpSaved={handleCallFollowUpSaved}
+              />
+            )}
+            {tab === "compliance" && selectedLeadId === null && (
+              <ConsentPage onError={setError} onSelectLead={handleSelectLead} />
+            )}
+          </main>
+        </div>
       </div>
-    </div>
     </TwilioVoiceProvider>
   );
 }

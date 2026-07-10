@@ -32,7 +32,17 @@ from modules.comms_generator import get_comms
 from modules import buyers as buyers_module
 from modules import leads as leads_module
 from modules.audit import log_action
-from modules.lead_discovery import discover_from_csv, discover_leads, import_candidates
+from modules.lead_discovery import (
+    OLD_CLIENTS_IMPORT_PARSER,
+    _existing_buyer_keys,
+    _import_scope_for_source,
+    _mark_existing,
+    discover_from_csv,
+    discover_leads,
+    enrich_discovery_candidate,
+    discovery_candidate_from_dict,
+    import_candidates,
+)
 from modules.file_to_csv import SUPPORTED_UPLOAD_EXTENSIONS, convert_upload_to_csv
 from modules.discovery_regions import list_discovery_regions
 
@@ -201,6 +211,8 @@ def list_leads_table(
     country: str | None = None,
     industry: str | None = None,
     source: str | None = None,
+    exclude_source: str | None = None,
+    call_outcome: str | None = None,
     market_role: str | None = None,
     q: str | None = None,
     sort_by: str = "created_at",
@@ -213,6 +225,8 @@ def list_leads_table(
         country=country,
         industry=industry,
         source=source,
+        exclude_source=exclude_source,
+        call_outcome=call_outcome,
         market_role=market_role,
         q=q,
         sort_by=sort_by,
@@ -244,14 +258,30 @@ def delete_lead_table_row(lead_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/table/dedupe", response_model=LeadTableDedupeResponse)
-def dedupe_leads_table(db: Session = Depends(get_db)):
-    result = leads_module.dedupe_leads_table(db)
+def dedupe_leads_table(
+    source: str | None = None,
+    exclude_source: str | None = None,
+    db: Session = Depends(get_db),
+):
+    result = leads_module.dedupe_leads_table(
+        db,
+        source=source,
+        exclude_source=exclude_source,
+    )
     return LeadTableDedupeResponse(**result)
 
 
 @router.post("/table/cleanup-sparse", response_model=LeadTableCleanupResponse)
-def cleanup_sparse_csv_leads(db: Session = Depends(get_db)):
-    result = leads_module.cleanup_sparse_csv_leads(db)
+def cleanup_sparse_csv_leads(
+    source: str | None = None,
+    exclude_source: str | None = None,
+    db: Session = Depends(get_db),
+):
+    result = leads_module.cleanup_sparse_csv_leads(
+        db,
+        source=source,
+        exclude_source=exclude_source,
+    )
     return LeadTableCleanupResponse(**result)
 
 
@@ -274,6 +304,7 @@ def discover_similar_leads(payload: DiscoverLeadsRequest, db: Session = Depends(
         limit=payload.limit,
         use_web_search=payload.use_web_search,
         use_website_links=payload.use_website_links,
+        skip_enrichment=payload.skip_enrichment,
     )
     return DiscoverLeadsResponse(
         candidates=[DiscoveryCandidateRead(**c.to_dict()) for c in result.candidates],
@@ -283,11 +314,27 @@ def discover_similar_leads(payload: DiscoverLeadsRequest, db: Session = Depends(
     )
 
 
+@router.post("/discover/enrich", response_model=DiscoveryCandidateRead)
+def enrich_discovered_lead(
+    payload: DiscoveryCandidateRead,
+    db: Session = Depends(get_db),
+):
+    candidate = discovery_candidate_from_dict(payload.model_dump())
+    enrich_discovery_candidate(candidate)
+    existing_names, existing_domains = _existing_buyer_keys(
+        db,
+        **_import_scope_for_source(None),
+    )
+    _mark_existing([candidate], existing_names, existing_domains)
+    return DiscoveryCandidateRead(**candidate.to_dict())
+
+
 @router.post("/discover/csv", response_model=DiscoverLeadsResponse)
 async def discover_leads_from_csv(
     file: UploadFile = File(...),
     default_country: str | None = None,
     for_leads_table: bool = False,
+    import_source: str | None = None,
     db: Session = Depends(get_db),
 ):
     raw = await file.read()
@@ -307,6 +354,7 @@ async def discover_leads_from_csv(
         content,
         default_country=default_country,
         for_leads_table=for_leads_table,
+        import_source=import_source,
     )
     result.messages = convert_messages + result.messages
     if not result.candidates:
@@ -321,6 +369,7 @@ async def discover_leads_from_csv(
         sources_used=result.sources_used,
         messages=result.messages,
         search_query=result.search_query,
+        import_parser=OLD_CLIENTS_IMPORT_PARSER,
     )
 
 
@@ -334,6 +383,7 @@ def import_discovered_leads(
         [c.model_dump() for c in payload.candidates],
         auto_onboard=payload.auto_onboard,
         replace_duplicates=payload.replace_duplicates,
+        skip_enrichment=payload.skip_enrichment,
     )
     return DiscoverImportResponse(
         created_count=result["created_count"],

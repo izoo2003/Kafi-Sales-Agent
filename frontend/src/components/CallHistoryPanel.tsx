@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { client, type CallHistoryItem } from "../api/client";
+import { type CallOutcome, callOutcomeBadge, callOutcomeLabel } from "../utils/callOutcomes";
+import { CallRemarksForm } from "./CallRemarksForm";
+import { CallRecordingPanel } from "./CallRecordingPanel";
 
 interface CallHistoryPanelProps {
   leadId: number;
   onError: (message: string) => void;
+  onCallFollowUpSaved?: (outcome: string | null | undefined) => void;
 }
 
 function formatDate(value: string): string {
@@ -31,12 +35,18 @@ function statusBadge(status: string | null | undefined): string {
   return "bg-slate-700/50 text-slate-300 border-slate-600";
 }
 
-export function CallHistoryPanel({ leadId, onError }: CallHistoryPanelProps) {
+export function CallHistoryPanel({
+  leadId,
+  onError,
+  onCallFollowUpSaved,
+}: CallHistoryPanelProps) {
   const [calls, setCalls] = useState<CallHistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [notesDraft, setNotesDraft] = useState("");
+  const [remarksDraft, setRemarksDraft] = useState("");
+  const [outcomeDraft, setOutcomeDraft] = useState<CallOutcome | "">("");
   const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const loadCalls = useCallback(async () => {
     setLoading(true);
@@ -53,17 +63,31 @@ export function CallHistoryPanel({ leadId, onError }: CallHistoryPanelProps) {
     void loadCalls();
   }, [loadCalls]);
 
-  async function saveNotes(interactionId: number) {
+  async function saveFollowUp(interactionId: number) {
     setSaving(true);
     try {
-      const updated = await client.updateCallNotes(interactionId, notesDraft);
+      const updated = await client.updateCallFollowUp(interactionId, {
+        notes: remarksDraft,
+        call_outcome: outcomeDraft || null,
+      });
       setCalls((prev) => prev.map((c) => (c.id === interactionId ? updated : c)));
       setEditingId(null);
+      onCallFollowUpSaved?.(updated.call_outcome);
+      if (updated.call_outcome === "interested") {
+        setNotice("Added to Interested clients list.");
+        setTimeout(() => setNotice(null), 4000);
+      }
     } catch (e) {
-      onError(e instanceof Error ? e.message : "Failed to save notes");
+      onError(e instanceof Error ? e.message : "Failed to save call remarks");
     } finally {
       setSaving(false);
     }
+  }
+
+  function startEditing(call: CallHistoryItem) {
+    setEditingId(call.id);
+    setRemarksDraft(call.notes ?? "");
+    setOutcomeDraft((call.call_outcome as CallOutcome | undefined) ?? "");
   }
 
   if (loading) {
@@ -96,6 +120,11 @@ export function CallHistoryPanel({ leadId, onError }: CallHistoryPanelProps) {
           Refresh
         </button>
       </div>
+      {notice && (
+        <p className="text-xs text-emerald-300/90 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
+          {notice}
+        </p>
+      )}
       <ul className="space-y-3">
         {calls.map((call) => (
           <li key={call.id} className="rounded-lg border border-slate-800 bg-slate-950 p-3 space-y-2">
@@ -109,57 +138,64 @@ export function CallHistoryPanel({ leadId, onError }: CallHistoryPanelProps) {
                 </p>
                 <p className="text-xs text-slate-500">{formatDate(call.created_at)}</p>
               </div>
-              {call.call_status && (
-                <span
-                  className={`text-xs px-2 py-0.5 rounded border ${statusBadge(call.call_status)}`}
-                >
-                  {call.call_status}
-                  {call.call_duration_seconds
-                    ? ` · ${formatDuration(call.call_duration_seconds)}`
-                    : ""}
-                </span>
-              )}
+              <div className="flex flex-wrap items-center gap-1.5">
+                {call.call_outcome && (
+                  <span
+                    className={`text-xs px-2 py-0.5 rounded border ${callOutcomeBadge(call.call_outcome)}`}
+                  >
+                    {callOutcomeLabel(call.call_outcome)}
+                  </span>
+                )}
+                {call.call_status && (
+                  <span
+                    className={`text-xs px-2 py-0.5 rounded border ${statusBadge(call.call_status)}`}
+                  >
+                    {call.call_status}
+                    {call.call_duration_seconds
+                      ? ` · ${formatDuration(call.call_duration_seconds)}`
+                      : ""}
+                  </span>
+                )}
+              </div>
             </div>
             {call.notes && editingId !== call.id && (
               <p className="text-sm text-slate-400 whitespace-pre-wrap">{call.notes}</p>
             )}
+            <CallRecordingPanel
+              call={call}
+              compact
+              onError={onError}
+              onUpdated={(updated) => {
+                setCalls((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+              }}
+            />
             {editingId === call.id ? (
               <div className="space-y-2">
-                <textarea
-                  value={notesDraft}
-                  onChange={(e) => setNotesDraft(e.target.value)}
-                  rows={3}
-                  placeholder="Post-call notes — products discussed, follow-up, etc."
-                  className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200"
+                <CallRemarksForm
+                  remarks={remarksDraft}
+                  outcome={outcomeDraft}
+                  onRemarksChange={setRemarksDraft}
+                  onOutcomeChange={setOutcomeDraft}
+                  onSave={() => void saveFollowUp(call.id)}
+                  saving={saving}
+                  saveLabel="Save remarks"
+                  compact
                 />
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    disabled={saving}
-                    onClick={() => void saveNotes(call.id)}
-                    className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm disabled:opacity-50"
-                  >
-                    {saving ? "Saving…" : "Save notes"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEditingId(null)}
-                    className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-300 text-sm"
-                  >
-                    Cancel
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditingId(null)}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-300 text-sm"
+                >
+                  Cancel
+                </button>
               </div>
             ) : (
               <button
                 type="button"
-                onClick={() => {
-                  setEditingId(call.id);
-                  setNotesDraft(call.notes ?? "");
-                }}
+                onClick={() => startEditing(call)}
                 className="text-xs text-sky-400 hover:text-sky-300"
               >
-                {call.notes ? "Edit notes" : "Add notes"}
+                {call.notes || call.call_outcome ? "Edit remarks" : "Add remarks"}
               </button>
             )}
           </li>

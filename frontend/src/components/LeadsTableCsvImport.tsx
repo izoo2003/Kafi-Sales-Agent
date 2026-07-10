@@ -1,23 +1,24 @@
 import { useMemo, useState } from "react";
 import { client, type DiscoveryCandidate } from "../api/client";
-import { ScoreBadge } from "./ScoreBadge";
 
-const MAX_CSV_IMPORT = 25;
-const IMPORT_DELAY_MS = 1000;
+const MAX_CSV_IMPORT = 200;
+const IMPORT_BATCH_SIZE = 25;
 const IMPORT_FILE_ACCEPT = ".csv,.xlsx,.xls,.xlsm,.tsv";
 
 interface LeadsTableCsvImportProps {
   onClose: () => void;
   onImported: () => void;
   onError: (message: string) => void;
+  /** Stored on buyer.source — use "old_clients" for the Old clients section. */
+  importSource?: string;
+  title?: string;
+  description?: string;
 }
 
 interface ImportRowResult {
   candidate_id: string;
   company_name: string;
   status: "success" | "failed" | "skipped" | "invalid";
-  score?: string;
-  reasoning?: string;
   error?: string;
 }
 
@@ -25,7 +26,12 @@ function isFound(value: string | null | undefined): value is string {
   return Boolean(value && value !== "Not found");
 }
 
-function candidateToImportPayload(candidate: DiscoveryCandidate) {
+function displayOrDash(value: string | null | undefined): string {
+  if (!value || value === "Not found") return "—";
+  return value;
+}
+
+function candidateToImportPayload(candidate: DiscoveryCandidate, importSource: string) {
   return {
     company_name: candidate.company_name,
     website_url: candidate.website_url ?? undefined,
@@ -37,11 +43,48 @@ function candidateToImportPayload(candidate: DiscoveryCandidate) {
     linkedin_url: isFound(candidate.linkedin_url) ? candidate.linkedin_url : undefined,
     country: candidate.country ?? undefined,
     industry: candidate.industry ?? undefined,
-    source: "csv",
+    legacy_serial_no: candidate.legacy_serial_no ?? undefined,
+    company_grading: candidate.company_grading ?? undefined,
+    designation: candidate.designation ?? undefined,
+    secondary_mobile: candidate.secondary_mobile ?? undefined,
+    primary_phone: candidate.primary_phone ?? undefined,
+    secondary_phone: candidate.secondary_phone ?? undefined,
+    secondary_email: candidate.secondary_email ?? undefined,
+    product_interest: candidate.product_interest ?? undefined,
+    city: candidate.city ?? undefined,
+    address: candidate.address ?? undefined,
+    remarks: candidate.remarks ?? undefined,
+    source: importSource,
   };
 }
 
-export function LeadsTableCsvImport({ onClose, onImported, onError }: LeadsTableCsvImportProps) {
+function mappingLooksBroken(candidates: DiscoveryCandidate[]): boolean {
+  if (candidates.length === 0) return false;
+  const sample = candidates.slice(0, 5);
+  const hasCompany = sample.some((row) => row.company_name?.trim());
+  if (!hasCompany) return false;
+  const hasMappedDetail = sample.some(
+    (row) =>
+      row.industry ||
+      row.company_grading ||
+      row.legacy_serial_no != null ||
+      isFound(row.phone) ||
+      row.primary_phone ||
+      isFound(row.email) ||
+      row.product_interest ||
+      row.remarks,
+  );
+  return !hasMappedDetail;
+}
+
+export function LeadsTableCsvImport({
+  onClose,
+  onImported,
+  onError,
+  importSource = "old_clients",
+  title = "Import old clients",
+  description = "Upload CSV or Excel (.xlsx). Columns are mapped to the Old clients table. Import only saves rows as-is — research and score later from the table.",
+}: LeadsTableCsvImportProps) {
   const [parsing, setParsing] = useState(false);
   const [importing, setImporting] = useState(false);
   const [candidates, setCandidates] = useState<DiscoveryCandidate[]>([]);
@@ -52,16 +95,30 @@ export function LeadsTableCsvImport({ onClose, onImported, onError }: LeadsTable
   );
   const [results, setResults] = useState<ImportRowResult[] | null>(null);
 
-  const importable = useMemo(() => candidates, [candidates]);
+  const importable = useMemo(
+    () => candidates.filter((candidate) => candidate.is_valid_business !== false),
+    [candidates],
+  );
 
   async function handleFileUpload(file: File) {
     setParsing(true);
     setMessages([]);
     setResults(null);
     try {
-      const result = await client.discoverLeadsFromCsv(file, undefined, true);
+      const result = await client.discoverLeadsFromCsv(file, undefined, true, importSource);
       setCandidates(result.candidates);
       setMessages(result.messages);
+
+      if (result.import_parser && result.import_parser !== "old_clients_v2") {
+        onError(
+          `Backend import parser is outdated (${result.import_parser}). Stop old API servers and run only one backend on port 8001.`,
+        );
+      } else if (mappingLooksBroken(result.candidates)) {
+        onError(
+          "Spreadsheet columns were not mapped. Your UI is likely talking to an old backend. Stop extra processes, keep only port 8001 running, then restart the frontend and upload again.",
+        );
+      }
+
       const validIds = result.candidates
         .filter((candidate) => candidate.is_valid_business !== false)
         .map((candidate) => candidate.candidate_id);
@@ -121,17 +178,12 @@ export function LeadsTableCsvImport({ onClose, onImported, onError }: LeadsTable
       return;
     }
 
-    const estimateSec = toImport.length * 6;
-    const withoutWebsite = toImport.filter((candidate) => !candidate.website_url?.trim());
     const confirmed = window.confirm(
-      `Import ${toImport.length} lead${toImport.length === 1 ? "" : "s"}?\n\n` +
-        `• Each row is researched & scored before it appears in the table.\n` +
-        `• Duplicate rows replace older empty records when the new scrape has more details.\n` +
-        `• Runs one at a time (~${estimateSec}s estimated).\n` +
-        (withoutWebsite.length > 0
-          ? `• ${withoutWebsite.length} row${withoutWebsite.length === 1 ? " has" : "s have"} no website — fit signals will be weaker.\n`
-          : "") +
-        `\nContinue?`,
+      `Import ${toImport.length} old client${toImport.length === 1 ? "" : "s"} as-is?\n\n` +
+        `• Rows are saved with spreadsheet fields only (no website research or scoring).\n` +
+        `• Duplicate company names are skipped unless the existing record is sparse.\n` +
+        `• Use Research & score on the table later when you are ready.\n\n` +
+        `Continue?`,
     );
     if (!confirmed) return;
 
@@ -139,23 +191,41 @@ export function LeadsTableCsvImport({ onClose, onImported, onError }: LeadsTable
     setResults(null);
     const rowResults: ImportRowResult[] = [];
 
-    for (let i = 0; i < toImport.length; i++) {
-      const candidate = toImport[i];
-      setProgress({
-        current: i + 1,
-        total: toImport.length,
-        name: candidate.company_name,
-      });
-
-      try {
-        const result = await client.importDiscoveredLeads({
-          candidates: [candidateToImportPayload(candidate)],
-          auto_onboard: true,
-          replace_duplicates: true,
+    try {
+      let completed = 0;
+      for (let start = 0; start < toImport.length; start += IMPORT_BATCH_SIZE) {
+        const batch = toImport.slice(start, start + IMPORT_BATCH_SIZE);
+        setProgress({
+          current: completed,
+          total: toImport.length,
+          name: `Batch ${Math.floor(start / IMPORT_BATCH_SIZE) + 1} of ${Math.ceil(toImport.length / IMPORT_BATCH_SIZE)}`,
         });
-        if (result.created_count === 0) {
-          const skipped = result.skipped[0];
-          const reason = skipped?.reason ?? "Skipped";
+
+        const result = await client.importDiscoveredLeads({
+          candidates: batch.map((candidate) => candidateToImportPayload(candidate, importSource)),
+          auto_onboard: false,
+          replace_duplicates: true,
+          skip_enrichment: true,
+        });
+
+        const skippedByName = new Map(
+          result.skipped.map((item) => [item.company_name.toLowerCase(), item.reason]),
+        );
+        const createdNames = new Set(
+          result.created.map((buyer) => buyer.company_name.trim().toLowerCase()),
+        );
+
+        for (const candidate of batch) {
+          const key = candidate.company_name.trim().toLowerCase();
+          if (createdNames.has(key)) {
+            rowResults.push({
+              candidate_id: candidate.candidate_id,
+              company_name: candidate.company_name,
+              status: "success",
+            });
+            continue;
+          }
+          const reason = skippedByName.get(key) ?? "Skipped";
           const isInvalid = reason.toLowerCase().includes("not a valid business");
           rowResults.push({
             candidate_id: candidate.candidate_id,
@@ -163,38 +233,20 @@ export function LeadsTableCsvImport({ onClose, onImported, onError }: LeadsTable
             status: isInvalid ? "invalid" : "skipped",
             error: reason,
           });
-        } else {
-          const onboard = result.onboard_results[0];
-          if (onboard?.error) {
-            rowResults.push({
-              candidate_id: candidate.candidate_id,
-              company_name: candidate.company_name,
-              status: "failed",
-              error: String(onboard.error),
-            });
-          } else {
-            rowResults.push({
-              candidate_id: candidate.candidate_id,
-              company_name: candidate.company_name,
-              status: "success",
-              score: typeof onboard?.score === "string" ? onboard.score : undefined,
-              reasoning:
-                typeof onboard?.reasoning === "string" ? onboard.reasoning : undefined,
-            });
-          }
         }
-      } catch (e) {
-        rowResults.push({
-          candidate_id: candidate.candidate_id,
-          company_name: candidate.company_name,
-          status: "failed",
-          error: e instanceof Error ? e.message : "Import failed",
+
+        completed += batch.length;
+        setProgress({
+          current: completed,
+          total: toImport.length,
+          name: batch[batch.length - 1]?.company_name ?? "",
         });
       }
-
-      if (i < toImport.length - 1) {
-        await new Promise((resolve) => setTimeout(resolve, IMPORT_DELAY_MS));
-      }
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Import failed");
+      setImporting(false);
+      setProgress(null);
+      return;
     }
 
     setProgress(null);
@@ -216,15 +268,11 @@ export function LeadsTableCsvImport({ onClose, onImported, onError }: LeadsTable
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
-      <div className="w-full max-w-5xl max-h-[90vh] overflow-y-auto rounded-xl border border-slate-700 bg-slate-900 shadow-xl">
+      <div className="w-full max-w-6xl max-h-[90vh] overflow-y-auto rounded-xl border border-slate-700 bg-slate-900 shadow-xl">
         <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-slate-800 bg-slate-900 px-5 py-4">
           <div>
-            <h3 className="text-base font-medium text-slate-100">Import to leads table</h3>
-            <p className="text-xs text-slate-500 mt-1">
-              Upload CSV, Excel (.xlsx, .xls), or TSV — preview loads instantly from your file.
-              Click Import &amp; research to scrape each company website, find contacts and socials,
-              then score (~6s per row).
-            </p>
+            <h3 className="text-base font-medium text-slate-100">{title}</h3>
+            <p className="text-xs text-slate-500 mt-1">{description}</p>
           </div>
           <button
             type="button"
@@ -252,7 +300,9 @@ export function LeadsTableCsvImport({ onClose, onImported, onError }: LeadsTable
                 }}
               />
             </label>
-            <span className="text-xs text-slate-500">Max {MAX_CSV_IMPORT} new leads per import</span>
+            <span className="text-xs text-slate-500">
+              Up to {MAX_CSV_IMPORT} rows per import · saves in batches of {IMPORT_BATCH_SIZE}
+            </span>
           </div>
 
           {parsing && (
@@ -271,7 +321,7 @@ export function LeadsTableCsvImport({ onClose, onImported, onError }: LeadsTable
 
           {progress && (
             <p className="text-xs text-slate-300 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">
-              Researching &amp; importing {progress.current} of {progress.total}:{" "}
+              Importing {progress.current} of {progress.total}:{" "}
               <strong className="text-slate-100">{progress.name}</strong>
             </p>
           )}
@@ -287,23 +337,23 @@ export function LeadsTableCsvImport({ onClose, onImported, onError }: LeadsTable
               <ul className="max-h-32 overflow-y-auto space-y-1 text-xs">
                 {results.map((result) => (
                   <li key={result.candidate_id} className="flex items-center gap-2 text-slate-400">
-                    {result.status === "success" && result.score ? (
-                      <ScoreBadge score={result.score} />
-                    ) : (
-                      <span
-                        className={`px-2 py-0.5 rounded text-xs border ${
-                          result.status === "invalid"
+                    <span
+                      className={`px-2 py-0.5 rounded text-xs border ${
+                        result.status === "success"
+                          ? "border-emerald-500/30 text-emerald-300"
+                          : result.status === "invalid"
                             ? "border-amber-500/30 text-amber-300"
                             : "border-red-500/30 text-red-300"
-                        }`}
-                      >
-                        {result.status === "invalid"
+                      }`}
+                    >
+                      {result.status === "success"
+                        ? "Added"
+                        : result.status === "invalid"
                           ? "Not valid"
                           : result.status === "skipped"
                             ? "Skipped"
                             : "Failed"}
-                      </span>
-                    )}
+                    </span>
                     <span className="text-slate-300 truncate">{result.company_name}</span>
                     {result.error && <span className="text-red-400 truncate">{result.error}</span>}
                   </li>
@@ -315,7 +365,7 @@ export function LeadsTableCsvImport({ onClose, onImported, onError }: LeadsTable
           {candidates.length > 0 && (
             <>
               <div className="overflow-x-auto rounded-lg border border-slate-800">
-                <table className="w-full text-sm">
+                <table className="w-full min-w-[1600px] text-sm">
                   <thead>
                     <tr className="text-left text-slate-500 border-b border-slate-800 bg-slate-950">
                       <th className="py-2 px-3 w-10">
@@ -330,14 +380,23 @@ export function LeadsTableCsvImport({ onClose, onImported, onError }: LeadsTable
                           aria-label="Select all"
                         />
                       </th>
-                      <th className="py-2 pr-4">Company</th>
-                      <th className="py-2 pr-4">Country</th>
-                      <th className="py-2 pr-4">Contact</th>
-                      <th className="py-2 pr-4">Email</th>
-                      <th className="py-2 pr-4">Phone</th>
-                      <th className="py-2 pr-4">Website</th>
-                      <th className="py-2 pr-4">Industry</th>
-                      <th className="py-2 pr-4">Socials</th>
+                      <th className="py-2 pr-3 whitespace-nowrap">S. No</th>
+                      <th className="py-2 pr-3 whitespace-nowrap">Company Name</th>
+                      <th className="py-2 pr-3 whitespace-nowrap">Business Type</th>
+                      <th className="py-2 pr-3 whitespace-nowrap">Grading</th>
+                      <th className="py-2 pr-3 whitespace-nowrap">Designation</th>
+                      <th className="py-2 pr-3 whitespace-nowrap">Contact Person</th>
+                      <th className="py-2 pr-3 whitespace-nowrap">Primary Mobile</th>
+                      <th className="py-2 pr-3 whitespace-nowrap">Secondary Mobile</th>
+                      <th className="py-2 pr-3 whitespace-nowrap">Primary Phone</th>
+                      <th className="py-2 pr-3 whitespace-nowrap">Secondary Phone</th>
+                      <th className="py-2 pr-3 whitespace-nowrap">Primary Email</th>
+                      <th className="py-2 pr-3 whitespace-nowrap">Secondary Email</th>
+                      <th className="py-2 pr-3 whitespace-nowrap">Country</th>
+                      <th className="py-2 pr-3 whitespace-nowrap">Product</th>
+                      <th className="py-2 pr-3 whitespace-nowrap">City</th>
+                      <th className="py-2 pr-3 whitespace-nowrap">Address</th>
+                      <th className="py-2 pr-3 whitespace-nowrap">Remarks</th>
                       <th className="py-2">Status</th>
                     </tr>
                   </thead>
@@ -352,29 +411,52 @@ export function LeadsTableCsvImport({ onClose, onImported, onError }: LeadsTable
                             onChange={(e) => toggleOne(candidate.candidate_id, e.target.checked)}
                           />
                         </td>
-                        <td className="py-2 pr-4 text-slate-200">{candidate.company_name}</td>
-                        <td className="py-2 pr-4 text-slate-400">{candidate.country || "—"}</td>
-                        <td className="py-2 pr-4 text-slate-400">{candidate.contact_name || "—"}</td>
-                        <td className="py-2 pr-4 text-slate-400 max-w-[180px] truncate">
-                          {isFound(candidate.email) ? candidate.email : "—"}
+                        <td className="py-2 pr-3 text-slate-400">
+                          {candidate.legacy_serial_no ?? "—"}
                         </td>
-                        <td className="py-2 pr-4 text-slate-400 whitespace-nowrap">
+                        <td className="py-2 pr-3 text-slate-200">{candidate.company_name}</td>
+                        <td className="py-2 pr-3 text-slate-400 max-w-[140px] truncate">
+                          {displayOrDash(candidate.industry)}
+                        </td>
+                        <td className="py-2 pr-3 text-slate-400">
+                          {displayOrDash(candidate.company_grading)}
+                        </td>
+                        <td className="py-2 pr-3 text-slate-400">
+                          {displayOrDash(candidate.designation)}
+                        </td>
+                        <td className="py-2 pr-3 text-slate-400">
+                          {displayOrDash(candidate.contact_name)}
+                        </td>
+                        <td className="py-2 pr-3 text-slate-400 whitespace-nowrap">
                           {isFound(candidate.phone) ? candidate.phone : "—"}
                         </td>
-                        <td className="py-2 pr-4 text-slate-400 max-w-[200px] truncate">
-                          {candidate.website_url || "—"}
+                        <td className="py-2 pr-3 text-slate-400 whitespace-nowrap">
+                          {displayOrDash(candidate.secondary_mobile)}
                         </td>
-                        <td className="py-2 pr-4 text-slate-400 max-w-[160px] truncate">
-                          {candidate.industry || "—"}
+                        <td className="py-2 pr-3 text-slate-400 whitespace-nowrap">
+                          {displayOrDash(candidate.primary_phone)}
                         </td>
-                        <td className="py-2 pr-4 text-slate-400 text-xs whitespace-nowrap">
-                          {[
-                            isFound(candidate.facebook_url) ? "FB" : null,
-                            isFound(candidate.instagram_url) ? "IG" : null,
-                            isFound(candidate.linkedin_url) ? "LI" : null,
-                          ]
-                            .filter(Boolean)
-                            .join(" · ") || "—"}
+                        <td className="py-2 pr-3 text-slate-400 whitespace-nowrap">
+                          {displayOrDash(candidate.secondary_phone)}
+                        </td>
+                        <td className="py-2 pr-3 text-slate-400 max-w-[160px] truncate">
+                          {isFound(candidate.email) ? candidate.email : "—"}
+                        </td>
+                        <td className="py-2 pr-3 text-slate-400 max-w-[160px] truncate">
+                          {displayOrDash(candidate.secondary_email)}
+                        </td>
+                        <td className="py-2 pr-3 text-slate-400">
+                          {displayOrDash(candidate.country)}
+                        </td>
+                        <td className="py-2 pr-3 text-slate-400 max-w-[120px] truncate">
+                          {displayOrDash(candidate.product_interest)}
+                        </td>
+                        <td className="py-2 pr-3 text-slate-400">{displayOrDash(candidate.city)}</td>
+                        <td className="py-2 pr-3 text-slate-400 max-w-[180px] truncate">
+                          {displayOrDash(candidate.address)}
+                        </td>
+                        <td className="py-2 pr-3 text-slate-400 max-w-[160px] truncate">
+                          {displayOrDash(candidate.remarks)}
                         </td>
                         <td className="py-2 text-xs">
                           {candidate.is_valid_business === false ? (
@@ -409,13 +491,13 @@ export function LeadsTableCsvImport({ onClose, onImported, onError }: LeadsTable
                   type="button"
                   onClick={() => void handleImport()}
                   disabled={importing || selected.size === 0}
-                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium disabled:opacity-50"
+                  className="px-3 py-1.5 rounded-lg bg-violet-700 hover:bg-violet-600 text-sm font-medium disabled:opacity-50"
                 >
                   {importing
                     ? progress
                       ? `Importing ${progress.current}/${progress.total}…`
                       : "Starting…"
-                    : `Import & research (${selected.size})`}
+                    : `Import only (${selected.size})`}
                 </button>
               </div>
             </>

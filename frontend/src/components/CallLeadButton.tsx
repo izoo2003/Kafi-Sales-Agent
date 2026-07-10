@@ -45,10 +45,22 @@ export function CallLeadButton({
     return null;
   }
 
-  const canUseTwilio = config?.browser_ready && voice;
+  const canUseTwilio = Boolean(config?.browser_ready && voice);
+  const callBlockedReason =
+    voice?.initError ??
+    config?.setup_message ??
+    (!voice?.ready ? "Initializing calling…" : null);
 
   async function handleTwilioCall() {
     if (!canUseTwilio || !voice) return;
+    if (!voice.ready) {
+      try {
+        await voice.retryInit();
+      } catch (e) {
+        onError(e instanceof Error ? e.message : "Calling is not ready yet");
+        return;
+      }
+    }
 
     setCalling(true);
     try {
@@ -66,9 +78,15 @@ export function CallLeadButton({
     : "px-3 py-1.5 rounded-lg text-sm bg-sky-600 hover:bg-sky-500 text-white font-medium disabled:opacity-50";
 
   const inCall = voice?.active ?? false;
+  const showInitError = canUseTwilio && voice && !voice.ready && voice.initError;
 
   return (
     <span className="inline-flex items-center gap-1.5 flex-wrap" onClick={(e) => e.stopPropagation()}>
+      {showInitError && !compact && (
+        <span className="text-xs text-red-300" title={voice.initError ?? undefined}>
+          Calling unavailable
+        </span>
+      )}
       {canUseTwilio ? (
         <>
           <button
@@ -79,7 +97,7 @@ export function CallLeadButton({
             title={
               voice.ready
                 ? "Call client directly from your browser (allow microphone)"
-                : "Initializing Twilio…"
+                : callBlockedReason ?? "Calling is not ready yet"
             }
           >
             {calling ? "Connecting…" : inCall ? "On call" : compact ? "Call" : "Call now"}

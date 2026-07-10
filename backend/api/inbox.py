@@ -19,33 +19,12 @@ def _guard_configured() -> None:
     if not inbox_module.is_configured():
         raise HTTPException(
             503,
-            "Outlook inbox is not configured. Set MAILBOX_EMAIL and MAILBOX_REFRESH_TOKEN "
-            "(or MAILBOX_PASSWORD) in backend/.env. Run: python scripts/get_outlook_refresh_token.py",
+            "Inbox is not enabled. Set MAILBOX_ENABLED=true and mailbox credentials in backend/.env",
         )
 
 
 def _inbox_error_message(exc: Exception) -> str:
-    text = str(exc)
-    if "no longer allows this" in text.lower() or "app-password" in text.lower():
-        return (
-            "Outlook app passwords no longer work for @outlook.com. "
-            "Run: python scripts/get_outlook_refresh_token.py "
-            "then add MAILBOX_CLIENT_ID and MAILBOX_REFRESH_TOKEN to backend/.env "
-            "(remove MAILBOX_PASSWORD)."
-        )
-    if "oauth is not configured" in text.lower():
-        return (
-            "Outlook OAuth is not set up. Add MAILBOX_CLIENT_ID and MAILBOX_REFRESH_TOKEN "
-            "to backend/.env — run: python scripts/get_outlook_refresh_token.py"
-        )
-    if "invalid_grant" in text.lower() or "token refresh failed" in text.lower():
-        return (
-            "Outlook refresh token expired or invalid. Re-run: "
-            "python scripts/get_outlook_refresh_token.py and update backend/.env"
-        )
-    if "oauth" in text.lower() or "xoauth2" in text.lower():
-        return f"Outlook OAuth failed: {text}"
-    return f"Could not read Outlook inbox: {exc}"
+    return f"Could not read inbox: {exc}"
 
 
 @router.get("/status", response_model=InboxStatus)

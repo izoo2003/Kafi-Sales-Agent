@@ -6,6 +6,7 @@ import {
   type LeadTableRow,
   type LeadTableRowUpdate,
 } from "../api/client";
+import type { LeadsTableSection } from "../components/AppSidebar";
 import { formatCountryLabel } from "../data/countries";
 import { ScoreBadge } from "../components/ScoreBadge";
 import { MarketRoleBadge } from "../components/MarketRoleBadge";
@@ -17,8 +18,15 @@ import { CallLeadButton } from "../components/CallLeadButton";
 import { exportLeadsTableCsv } from "../utils/exportCsv";
 
 interface LeadsTablePageProps {
+  section: LeadsTableSection;
+  refreshToken?: number;
   onError: (message: string) => void;
   onSelectLead: (leadId: number) => void;
+  onSectionCountsChange?: (counts: {
+    all: number;
+    old_clients: number;
+    interested_clients: number;
+  }) => void;
 }
 
 type SortField =
@@ -46,6 +54,27 @@ function scoreLabel(score: string | null): string {
   return score ?? "Unscored";
 }
 
+function sectionTableScope(section: LeadsTableSection): { source?: string; exclude_source?: string } {
+  if (section === "old_clients") return { source: "old_clients" };
+  return { exclude_source: "old_clients" };
+}
+
+function sectionTitle(section: LeadsTableSection): string {
+  if (section === "old_clients") return "Old clients";
+  if (section === "interested_clients") return "Interested clients";
+  return "Leads table";
+}
+
+function sectionDescription(section: LeadsTableSection): string {
+  if (section === "old_clients") {
+    return "Past clients mapped from your spreadsheet. Import as-is first; research and score later from the table.";
+  }
+  if (section === "interested_clients") {
+    return "Clients labeled Interested after a call. Update outcomes from the Calls tab or post-call remarks.";
+  }
+  return "Browse, filter, edit, delete, and export leads. Social icons link to Facebook, Instagram, and LinkedIn — filled automatically when you research a lead.";
+}
+
 function rowDraftKey(row: LeadTableRow): string {
   return JSON.stringify({
     company_name: row.company_name,
@@ -58,6 +87,17 @@ function rowDraftKey(row: LeadTableRow): string {
     linkedin_company_url: row.linkedin_company_url,
     facebook_company_url: row.facebook_company_url,
     instagram_company_url: row.instagram_company_url,
+    legacy_serial_no: row.legacy_serial_no,
+    company_grading: row.company_grading,
+    product_interest: row.product_interest,
+    city: row.city,
+    address: row.address,
+    remarks: row.remarks,
+    contact_designation: row.contact_designation,
+    contact_secondary_mobile: row.contact_secondary_mobile,
+    contact_primary_phone: row.contact_primary_phone,
+    contact_secondary_phone: row.contact_secondary_phone,
+    contact_secondary_email: row.contact_secondary_email,
   });
 }
 
@@ -77,14 +117,67 @@ function buildUpdatePayload(draft: LeadTableRow): LeadTableRowUpdate {
     linkedin_company_url: normalizeSocialUrl(draft.linkedin_company_url),
     facebook_company_url: normalizeSocialUrl(draft.facebook_company_url),
     instagram_company_url: normalizeSocialUrl(draft.instagram_company_url),
+    legacy_serial_no: draft.legacy_serial_no,
+    company_grading: draft.company_grading,
+    product_interest: draft.product_interest,
+    city: draft.city,
+    address: draft.address,
+    remarks: draft.remarks,
     contact_id: draft.contact_id ?? undefined,
     contact_name: draft.contact_name ?? undefined,
     contact_email: draft.contact_email ?? undefined,
     contact_phone: draft.contact_phone ?? undefined,
+    contact_designation: draft.contact_designation,
+    contact_secondary_mobile: draft.contact_secondary_mobile,
+    contact_primary_phone: draft.contact_primary_phone,
+    contact_secondary_phone: draft.contact_secondary_phone,
+    contact_secondary_email: draft.contact_secondary_email,
   };
 }
 
-export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
+function FullscreenExpandIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="15"
+      height="15"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3" />
+    </svg>
+  );
+}
+
+function FullscreenCollapseIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="15"
+      height="15"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" />
+    </svg>
+  );
+}
+
+export function LeadsTablePage({
+  section,
+  refreshToken = 0,
+  onError,
+  onSelectLead,
+  onSectionCountsChange,
+}: LeadsTablePageProps) {
   const [filters, setFilters] = useState<LeadTableFilters | null>(null);
   const [rows, setRows] = useState<LeadTableRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -112,6 +205,26 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
   const [showCsvImport, setShowCsvImport] = useState(false);
   const [bulkEmailNotice, setBulkEmailNotice] = useState<string | null>(null);
   const [deduping, setDeduping] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    if (!isFullscreen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsFullscreen(false);
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [isFullscreen]);
 
   const [score, setScore] = useState("");
   const [marketRole, setMarketRole] = useState("");
@@ -120,9 +233,49 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
   const [sortBy, setSortBy] = useState<SortField>("company_name");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
+  const isOldClients = section === "old_clients";
+  const isInterestedClients = section === "interested_clients";
+
+  const loadSectionCounts = useCallback(async () => {
+    if (!onSectionCountsChange) return;
+    try {
+      const [allResult, oldResult, interestedResult] = await Promise.all([
+        client.listLeadsTable({
+          exclude_source: "old_clients",
+          sort_by: "company_name",
+          sort_dir: "asc",
+        }),
+        client.listLeadsTable({
+          source: "old_clients",
+          sort_by: "company_name",
+          sort_dir: "asc",
+        }),
+        client.listLeadsTable({
+          call_outcome: "interested",
+          sort_by: "company_name",
+          sort_dir: "asc",
+        }),
+      ]);
+      onSectionCountsChange({
+        all: allResult.total,
+        old_clients: oldResult.total,
+        interested_clients: interestedResult.total,
+      });
+    } catch {
+      /* optional */
+    }
+  }, [onSectionCountsChange]);
+
   const loadTable = useCallback(async () => {
     setLoading(true);
     try {
+      const sectionParams =
+        section === "old_clients"
+          ? { source: "old_clients" }
+          : section === "interested_clients"
+            ? { call_outcome: "interested" }
+            : { exclude_source: "old_clients" };
+
       const result = await client.listLeadsTable({
         score: score || undefined,
         market_role: marketRole || undefined,
@@ -130,6 +283,7 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
         q: search.trim() || undefined,
         sort_by: sortBy,
         sort_dir: sortDir,
+        ...sectionParams,
       });
       setRows(result.rows);
       setTotal(result.total);
@@ -140,18 +294,40 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
     } finally {
       setLoading(false);
     }
-  }, [country, marketRole, onError, score, search, sortBy, sortDir]);
+  }, [country, marketRole, onError, score, search, section, sortBy, sortDir]);
 
   useEffect(() => {
     client
       .listLeadTableFilters()
       .then(setFilters)
       .catch(() => onError("Failed to load lead filters"));
-  }, [onError]);
+    void loadSectionCounts();
+  }, [loadSectionCounts, onError]);
 
   useEffect(() => {
     void loadTable();
   }, [loadTable]);
+
+  useEffect(() => {
+    if (refreshToken > 0) {
+      void loadTable();
+      void loadSectionCounts();
+    }
+  }, [loadSectionCounts, loadTable, refreshToken]);
+
+  useEffect(() => {
+    setSelected(new Set());
+    setEditMode(false);
+    setDrafts({});
+    setOriginalKeys({});
+    setBulkResults(null);
+    setSaveNotice(null);
+    setShowCsvImport(false);
+    setScore("");
+    setMarketRole("");
+    setCountry("");
+    setSearch("");
+  }, [section]);
 
   function enterEditMode() {
     setDrafts(Object.fromEntries(rows.map((row) => [row.id, { ...row }])));
@@ -161,13 +337,26 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
   }
 
   function updateDraft(rowId: number, field: keyof LeadTableRow, value: string) {
-    setDrafts((prev) => ({
-      ...prev,
-      [rowId]: {
-        ...prev[rowId],
-        [field]: value || null,
-      },
-    }));
+    setDrafts((prev) => {
+      const current = prev[rowId];
+      if (!current) return prev;
+      let nextValue: string | number | null = value || null;
+      if (field === "legacy_serial_no") {
+        const trimmed = value.trim();
+        if (!trimmed) nextValue = null;
+        else {
+          const parsed = Number(trimmed);
+          nextValue = Number.isFinite(parsed) ? Math.trunc(parsed) : current.legacy_serial_no;
+        }
+      }
+      return {
+        ...prev,
+        [rowId]: {
+          ...current,
+          [field]: nextValue,
+        },
+      };
+    });
   }
 
   function isRowDirty(rowId: number): boolean {
@@ -282,22 +471,28 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
 
   async function removeEmptyImports() {
     const confirmed = window.confirm(
-      "Remove empty CSV imports?\n\n" +
-        "• Deletes CSV leads with no website, email, or score (failed scrapes).\n" +
-        "• Use this before re-importing the same file with fresh scraped data.\n\n" +
-        "Continue?",
+      isOldClients
+        ? "Remove empty old-client imports?\n\n" +
+            "• Deletes old clients with no website, email, or score (failed enrichments).\n" +
+            "• Use this before re-importing the same file with fresh search data.\n\n" +
+            "Continue?"
+        : "Remove empty CSV imports?\n\n" +
+            "• Deletes CSV leads with no website, email, or score (failed scrapes).\n" +
+            "• Use this before re-importing the same file with fresh scraped data.\n\n" +
+            "Continue?",
     );
     if (!confirmed) return;
 
     setDeduping(true);
     setSaveNotice(null);
     try {
-      const result = await client.cleanupSparseCsvLeads();
+      const result = await client.cleanupSparseCsvLeads(sectionTableScope(section));
       await loadTable();
+      await loadSectionCounts();
       setSaveNotice(
         result.removed_count > 0
-          ? `Removed ${result.removed_count} empty CSV import${result.removed_count === 1 ? "" : "s"}`
-          : "No empty CSV imports found",
+          ? `Removed ${result.removed_count} empty import${result.removed_count === 1 ? "" : "s"}`
+          : "No empty imports found",
       );
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to remove empty imports");
@@ -307,11 +502,12 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
   }
 
   async function removeDuplicates() {
+    const scopeLabel = isOldClients ? "old clients" : "leads table";
     const confirmed = window.confirm(
-      "Remove duplicate leads from the table?\n\n" +
-        "• Duplicates are matched by company name or website domain.\n" +
-        "• The record with the most details (website, email, score) is kept.\n" +
-        "• Empty/sparse duplicates from failed imports are removed first.\n\n" +
+      `Remove duplicate ${scopeLabel} entries?\n\n` +
+        "• Duplicates are matched by company name or website domain within this section only.\n" +
+        "• Old clients and leads table entries are never merged together.\n" +
+        "• The record with the most details (website, email, score) is kept.\n\n" +
         "Continue?",
     );
     if (!confirmed) return;
@@ -319,7 +515,7 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
     setDeduping(true);
     setSaveNotice(null);
     try {
-      const result = await client.dedupeLeadsTable();
+      const result = await client.dedupeLeadsTable(sectionTableScope(section));
       await loadTable();
       setSaveNotice(
         result.removed_count > 0
@@ -384,6 +580,7 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
       );
       const updatedFilters = await client.listLeadTableFilters();
       setFilters(updatedFilters);
+      await loadSectionCounts();
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to delete lead(s)");
     } finally {
@@ -458,29 +655,39 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
 
   const hasActiveFilters = Boolean(score || marketRole || country || search.trim());
   const allOnPageSelected = rows.length > 0 && selected.size === rows.length;
+  const tableOuterClass = isFullscreen
+    ? "flex flex-col flex-1 min-h-0 rounded-xl border border-slate-800 overflow-hidden"
+    : "rounded-xl border border-slate-800 overflow-hidden";
+  const tableBodyScrollClass = isFullscreen ? "flex-1 min-h-0 overflow-auto" : "overflow-x-auto";
+  const theadStickyClass = isFullscreen ? "sticky top-0 z-[2]" : "";
 
   return (
-    <section className="space-y-4">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
+    <section
+      className={
+        isFullscreen
+          ? "fixed inset-0 z-50 flex flex-col bg-slate-950 p-3 sm:p-4 gap-3 overflow-hidden"
+          : "space-y-4"
+      }
+    >
+      <div className="flex items-start justify-between gap-4 flex-wrap shrink-0">
         <div>
-          <h2 className="text-lg font-medium text-slate-100">Leads table</h2>
+          <h2 className="text-lg font-medium text-slate-100">{sectionTitle(section)}</h2>
+          <p className="text-sm text-slate-500 mt-1">{sectionDescription(section)}</p>
           <p className="text-sm text-slate-500 mt-1">
-            Browse, filter, edit, delete, and export leads. Social icons link to Facebook, Instagram,
-            and LinkedIn — filled automatically when you research a lead (scraped from their website).
+            Showing {filteredCount} of {total}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <p className="text-sm text-slate-400 mr-2">
-            Showing {filteredCount} of {total}
-          </p>
-          <button
-            type="button"
-            onClick={() => setShowCsvImport(true)}
-            disabled={bulkOnboarding || deletingSelected || deletingId !== null || editMode}
-            className="px-3 py-1.5 rounded-lg bg-violet-700 hover:bg-violet-600 border border-violet-600/50 text-sm font-medium disabled:opacity-50"
-          >
-            Import CSV
-          </button>
+          {isOldClients && (
+            <button
+              type="button"
+              onClick={() => setShowCsvImport(true)}
+              disabled={bulkOnboarding || deletingSelected || deletingId !== null || editMode}
+              className="px-3 py-1.5 rounded-lg bg-violet-700 hover:bg-violet-600 border border-violet-600/50 text-sm font-medium disabled:opacity-50"
+            >
+              Import spreadsheet
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setShowBulkEmail(true)}
@@ -521,14 +728,16 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
           >
             {deletingSelected ? "Deleting…" : `Delete selected (${selected.size})`}
           </button>
-          <button
-            type="button"
-            onClick={() => void removeEmptyImports()}
-            disabled={deduping || rows.length === 0 || loading}
-            className="px-3 py-1.5 rounded-lg bg-amber-900/60 hover:bg-amber-800 border border-amber-800/60 text-sm text-amber-100 disabled:opacity-50"
-          >
-            {deduping ? "Cleaning…" : "Remove empty imports"}
-          </button>
+          {isOldClients && (
+            <button
+              type="button"
+              onClick={() => void removeEmptyImports()}
+              disabled={deduping || rows.length === 0 || loading}
+              className="px-3 py-1.5 rounded-lg bg-amber-900/60 hover:bg-amber-800 border border-amber-800/60 text-sm text-amber-100 disabled:opacity-50"
+            >
+              {deduping ? "Cleaning…" : "Remove empty imports"}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => void removeDuplicates()}
@@ -566,8 +775,13 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
         </div>
       </div>
 
+      <div
+        className={
+          isFullscreen ? "flex flex-col flex-1 min-h-0 gap-3 overflow-hidden" : "space-y-4"
+        }
+      >
       {editMode && (
-        <p className="text-xs text-amber-300/90 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2">
+        <p className="text-xs text-amber-300/90 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 shrink-0">
           Edit mode is on. Update fields after visiting a company website, then click Done editing to save all changes (or Save on a single row).
           Social URLs can be edited in the Socials column.
           {dirtyCount > 0 ? ` ${dirtyCount} unsaved row${dirtyCount === 1 ? "" : "s"}.` : ""}
@@ -575,19 +789,19 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
       )}
 
       {saveNotice && (
-        <p className="text-xs text-emerald-300 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2">
+        <p className="text-xs text-emerald-300 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 shrink-0">
           {saveNotice}
         </p>
       )}
 
       {bulkEmailNotice && (
-        <p className="text-xs text-emerald-300 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2">
+        <p className="text-xs text-emerald-300 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 shrink-0">
           {bulkEmailNotice}
         </p>
       )}
 
       {bulkProgress && (
-        <p className="text-xs text-slate-300 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">
+        <p className="text-xs text-slate-300 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 shrink-0">
           Researching &amp; scoring {bulkProgress.current} of {bulkProgress.total}:{" "}
           <strong className="text-slate-200">{bulkProgress.name}</strong>
           <span className="text-slate-500 ml-2">(one lead at a time — same quality as manual)</span>
@@ -595,7 +809,7 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
       )}
 
       {bulkResults && bulkResults.length > 0 && (
-        <div className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 space-y-2">
+        <div className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 space-y-2 shrink-0">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <p className="text-sm text-slate-200">
               Bulk research complete —{" "}
@@ -646,7 +860,7 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
         </div>
       )}
 
-      <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3">
+      <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3 shrink-0">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <label className="block text-xs text-slate-400">
             Score
@@ -713,14 +927,333 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
       {loading ? (
         <p className="text-slate-400 text-sm">Loading leads table…</p>
       ) : rows.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/50 p-8 text-center">
-          <p className="text-slate-400 text-sm">No leads match these filters.</p>
+        <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/50 p-8 text-center space-y-3">
+          <p className="text-slate-400 text-sm">
+            {hasActiveFilters
+              ? "No leads match these filters."
+              : isOldClients
+                ? "No old clients yet. Import a CSV or Excel file to map past clients into this table."
+                : isInterestedClients
+                  ? "No interested clients yet. After a call, label the client as Interested in post-call remarks."
+                  : "No leads in this section yet."}
+          </p>
+          {isOldClients && !hasActiveFilters && (
+            <button
+              type="button"
+              onClick={() => setShowCsvImport(true)}
+              className="px-3 py-1.5 rounded-lg bg-violet-700 hover:bg-violet-600 border border-violet-600/50 text-sm font-medium"
+            >
+              Import spreadsheet
+            </button>
+          )}
         </div>
       ) : (
-        <div className="rounded-xl border border-slate-800 overflow-hidden">
+        <div className={tableOuterClass}>
+          <div className="flex justify-end px-2 py-1 border-b border-slate-800/80 bg-slate-950 shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsFullscreen((prev) => !prev)}
+              className={`inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
+                isFullscreen
+                  ? "text-amber-400 hover:text-amber-300 hover:bg-amber-500/10"
+                  : "text-slate-500 hover:text-slate-200 hover:bg-slate-800"
+              }`}
+              title={isFullscreen ? "Exit full screen (Esc)" : "Expand table"}
+              aria-label={isFullscreen ? "Exit full screen" : "Expand table to full screen"}
+            >
+              {isFullscreen ? <FullscreenCollapseIcon /> : <FullscreenExpandIcon />}
+            </button>
+          </div>
+          <div className={tableBodyScrollClass}>
+          {isOldClients ? (
+            <table className="w-full min-w-[1800px] text-sm">
+              <thead>
+                <tr className={`text-left text-slate-500 border-b border-slate-800 bg-slate-950 ${theadStickyClass}`}>
+                  <th
+                    className={`py-3 pl-3 pr-2 w-10 sticky left-0 bg-slate-950 z-[1] ${
+                      isFullscreen ? "top-0 z-[3]" : ""
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={allOnPageSelected}
+                      onChange={toggleSelectAllOnPage}
+                      aria-label="Select all leads on this page"
+                      className="rounded border-slate-600 bg-slate-950"
+                    />
+                  </th>
+                  <th className="py-3 pr-3 whitespace-nowrap">S. No</th>
+                  <th className="py-3 pr-3 whitespace-nowrap min-w-[160px]">Company Name</th>
+                  <th className="py-3 pr-3 whitespace-nowrap">Business Type</th>
+                  <th className="py-3 pr-3 whitespace-nowrap">Companies Grading</th>
+                  <th className="py-3 pr-3 whitespace-nowrap">Designation</th>
+                  <th className="py-3 pr-3 whitespace-nowrap">Contact Person</th>
+                  <th className="py-3 pr-3 whitespace-nowrap">Primary Mobile No.</th>
+                  <th className="py-3 pr-3 whitespace-nowrap">Secondary Mobile No.</th>
+                  <th className="py-3 pr-3 whitespace-nowrap">Primary Phone No.</th>
+                  <th className="py-3 pr-3 whitespace-nowrap">Secondary Phone No.</th>
+                  <th className="py-3 pr-3 whitespace-nowrap">Primary Email</th>
+                  <th className="py-3 pr-3 whitespace-nowrap">Secondary Email</th>
+                  <th className="py-3 pr-3 whitespace-nowrap">Country</th>
+                  <th className="py-3 pr-3 whitespace-nowrap">Product</th>
+                  <th className="py-3 pr-3 whitespace-nowrap">City</th>
+                  <th className="py-3 pr-3 whitespace-nowrap min-w-[180px]">Address</th>
+                  <th className="py-3 pr-3 whitespace-nowrap min-w-[160px]">Remarks</th>
+                  <th className="py-3 pr-3 whitespace-nowrap">Score</th>
+                  <th className="py-3 pr-3 whitespace-nowrap min-w-[120px]">Website</th>
+                  <th className="py-3 pr-3 whitespace-nowrap">Socials</th>
+                  {editMode && <th className="py-3 pr-3">Edit</th>}
+                  <th className="py-3 pr-3">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => {
+                  const draft = drafts[row.id] ?? row;
+                  const dirty = editMode && isRowDirty(row.id);
+                  const cell = (
+                    field: keyof LeadTableRow,
+                    display: string,
+                    opts?: { type?: string; className?: string },
+                  ) =>
+                    editMode ? (
+                      <input
+                        type={opts?.type ?? "text"}
+                        value={
+                          field === "legacy_serial_no"
+                            ? draft.legacy_serial_no != null
+                              ? String(draft.legacy_serial_no)
+                              : ""
+                            : String((draft[field] as string | null | undefined) ?? "")
+                        }
+                        onChange={(e) => updateDraft(row.id, field, e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        className={`${EDIT_INPUT} ${opts?.className ?? ""}`}
+                      />
+                    ) : (
+                      <span className={`block truncate ${opts?.className ?? ""}`}>{display || "—"}</span>
+                    );
+
+                  return (
+                    <tr
+                      key={row.id}
+                      onClick={() => {
+                        if (!editMode) onSelectLead(row.id);
+                      }}
+                      className={`border-b border-slate-800/60 ${
+                        editMode ? "" : "cursor-pointer hover:bg-slate-900/80"
+                      } ${dirty ? "bg-amber-500/5" : ""} ${selected.has(row.id) ? "bg-slate-900/40" : ""}`}
+                    >
+                      <td
+                        className="py-3 pl-3 pr-2 sticky left-0 bg-slate-900 z-[1]"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selected.has(row.id)}
+                          onChange={() => toggleSelected(row.id)}
+                          aria-label={`Select ${row.company_name}`}
+                          className="rounded border-slate-600 bg-slate-950"
+                        />
+                      </td>
+                      <td className="py-3 pr-3 text-slate-400">
+                        {cell("legacy_serial_no", row.legacy_serial_no != null ? String(row.legacy_serial_no) : "")}
+                      </td>
+                      <td className="py-3 pr-3 text-slate-200 font-medium">
+                        {cell("company_name", row.company_name)}
+                      </td>
+                      <td className="py-3 pr-3 text-slate-400">{cell("industry", row.industry ?? "")}</td>
+                      <td className="py-3 pr-3 text-slate-400">
+                        {cell("company_grading", row.company_grading ?? "")}
+                      </td>
+                      <td className="py-3 pr-3 text-slate-400">
+                        {cell("contact_designation", row.contact_designation ?? "")}
+                      </td>
+                      <td className="py-3 pr-3 text-slate-400">
+                        {cell("contact_name", row.contact_name ?? "")}
+                      </td>
+                      <td className="py-3 pr-3 text-slate-400">
+                        {editMode ? (
+                          cell("contact_phone", row.contact_phone ?? "")
+                        ) : row.contact_phone ? (
+                          <span className="flex items-center gap-2 min-w-0">
+                            <span className="truncate">{row.contact_phone}</span>
+                            <CallLeadButton
+                              leadId={row.id}
+                              phone={row.contact_phone}
+                              onError={onError}
+                              compact
+                            />
+                          </span>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="py-3 pr-3 text-slate-400">
+                        {cell("contact_secondary_mobile", row.contact_secondary_mobile ?? "")}
+                      </td>
+                      <td className="py-3 pr-3 text-slate-400">
+                        {editMode ? (
+                          cell("contact_primary_phone", row.contact_primary_phone ?? "")
+                        ) : row.contact_primary_phone ? (
+                          <span className="flex items-center gap-2 min-w-0">
+                            <span className="truncate">{row.contact_primary_phone}</span>
+                            <CallLeadButton
+                              leadId={row.id}
+                              phone={row.contact_primary_phone}
+                              onError={onError}
+                              compact
+                            />
+                          </span>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="py-3 pr-3 text-slate-400">
+                        {cell("contact_secondary_phone", row.contact_secondary_phone ?? "")}
+                      </td>
+                      <td className="py-3 pr-3 text-slate-400">
+                        {editMode ? (
+                          cell("contact_email", row.contact_email ?? "", { type: "email" })
+                        ) : row.contact_email ? (
+                          <a
+                            href={`mailto:${row.contact_email}`}
+                            className="text-emerald-400 hover:text-emerald-300 truncate block"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {row.contact_email}
+                          </a>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="py-3 pr-3 text-slate-400">
+                        {editMode ? (
+                          cell("contact_secondary_email", row.contact_secondary_email ?? "", {
+                            type: "email",
+                          })
+                        ) : row.contact_secondary_email ? (
+                          <a
+                            href={`mailto:${row.contact_secondary_email}`}
+                            className="text-emerald-400 hover:text-emerald-300 truncate block"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {row.contact_secondary_email}
+                          </a>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="py-3 pr-3 text-slate-400">
+                        {editMode ? (
+                          <div onClick={(e) => e.stopPropagation()}>
+                            <CountrySelect
+                              value={draft.country ?? ""}
+                              onChange={(value) => updateDraft(row.id, "country", value)}
+                            />
+                          </div>
+                        ) : (
+                          <span className="truncate block">{formatCountryLabel(row.country)}</span>
+                        )}
+                      </td>
+                      <td className="py-3 pr-3 text-slate-400">
+                        {cell("product_interest", row.product_interest ?? "")}
+                      </td>
+                      <td className="py-3 pr-3 text-slate-400">{cell("city", row.city ?? "")}</td>
+                      <td className="py-3 pr-3 text-slate-400">{cell("address", row.address ?? "")}</td>
+                      <td className="py-3 pr-3 text-slate-400">{cell("remarks", row.remarks ?? "")}</td>
+                      <td className="py-3 pr-3">
+                        <ScoreBadge score={scoreLabel(row.latest_score)} />
+                      </td>
+                      <td className="py-3 pr-3 text-slate-400">
+                        {editMode ? (
+                          cell("website_url", row.website_url ?? "")
+                        ) : row.website_url ? (
+                          <a
+                            href={row.website_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-emerald-400 hover:text-emerald-300 truncate block"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {row.website_url.replace(/^https?:\/\//i, "")}
+                          </a>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="py-3 pr-3" onClick={(e) => e.stopPropagation()}>
+                        {editMode ? (
+                          <div className="space-y-1">
+                            <input
+                              value={draft.linkedin_company_url ?? ""}
+                              onChange={(e) => updateDraft(row.id, "linkedin_company_url", e.target.value)}
+                              placeholder="LinkedIn URL"
+                              className={EDIT_INPUT}
+                            />
+                            <input
+                              value={draft.facebook_company_url ?? ""}
+                              onChange={(e) => updateDraft(row.id, "facebook_company_url", e.target.value)}
+                              placeholder="Facebook URL"
+                              className={EDIT_INPUT}
+                            />
+                            <input
+                              value={draft.instagram_company_url ?? ""}
+                              onChange={(e) => updateDraft(row.id, "instagram_company_url", e.target.value)}
+                              placeholder="Instagram URL"
+                              className={EDIT_INPUT}
+                            />
+                          </div>
+                        ) : (
+                          <SocialLinksCell
+                            companyName={row.company_name}
+                            linkedinUrl={row.linkedin_company_url}
+                            facebookUrl={row.facebook_company_url}
+                            instagramUrl={row.instagram_company_url}
+                          />
+                        )}
+                      </td>
+                      {editMode && (
+                        <td className="py-3 pr-3 whitespace-nowrap">
+                          <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              onClick={() => void saveRow(row.id)}
+                              disabled={!dirty || savingId === row.id}
+                              className="px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-xs font-medium disabled:opacity-50"
+                            >
+                              {savingId === row.id ? "Saving…" : "Save"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onSelectLead(row.id)}
+                              className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs"
+                            >
+                              Open
+                            </button>
+                          </div>
+                        </td>
+                      )}
+                      <td className="py-3 pr-3 whitespace-nowrap">
+                        <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            type="button"
+                            onClick={() => void deleteRows([row.id])}
+                            disabled={deletingId === row.id || deletingSelected}
+                            className="px-2 py-1 rounded bg-red-900/50 hover:bg-red-800 border border-red-800/50 text-xs text-red-200 disabled:opacity-50"
+                          >
+                            {deletingId === row.id ? "Deleting…" : "Delete"}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : (
           <table className="w-full table-fixed text-sm">
             <thead>
-              <tr className="text-left text-slate-500 border-b border-slate-800 bg-slate-950">
+              <tr className={`text-left text-slate-500 border-b border-slate-800 bg-slate-950 ${theadStickyClass}`}>
                 <th className="py-3 pl-3 pr-2 w-[3%]">
                   <input
                     type="checkbox"
@@ -958,14 +1491,21 @@ export function LeadsTablePage({ onError, onSelectLead }: LeadsTablePageProps) {
               })}
             </tbody>
           </table>
+          )}
+          </div>
         </div>
       )}
+      </div>
 
-      {showCsvImport && (
+      {showCsvImport && isOldClients && (
         <LeadsTableCsvImport
           onClose={() => setShowCsvImport(false)}
-          onImported={() => void loadTable()}
+          onImported={() => {
+            void loadTable();
+            void loadSectionCounts();
+          }}
           onError={onError}
+          importSource="old_clients"
         />
       )}
 

@@ -10,11 +10,24 @@ import {
 import { Call, Device } from "@twilio/voice-sdk";
 import { client, type CallInitiateResult } from "../api/client";
 
+export interface PendingCallFollowUp {
+  interactionId: number;
+  label: string;
+}
+
 interface TwilioVoiceContextValue {
   ready: boolean;
   active: boolean;
+  initError: string | null;
+  pendingFollowUp: PendingCallFollowUp | null;
+  clearPendingFollowUp: () => void;
   placeCall: (leadId: number, contactId?: number) => Promise<CallInitiateResult>;
+  placeManualCall: (
+    phone: string,
+    options?: { contactName?: string; country?: string },
+  ) => Promise<CallInitiateResult>;
   hangUp: () => void;
+  retryInit: () => Promise<void>;
 }
 
 const TwilioVoiceContext = createContext<TwilioVoiceContextValue | null>(null);
@@ -22,8 +35,15 @@ const TwilioVoiceContext = createContext<TwilioVoiceContextValue | null>(null);
 export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
   const deviceRef = useRef<Device | null>(null);
   const callRef = useRef<Call | null>(null);
+  const activePrepRef = useRef<CallInitiateResult | null>(null);
   const [ready, setReady] = useState(false);
   const [active, setActive] = useState(false);
+  const [initError, setInitError] = useState<string | null>(null);
+  const [pendingFollowUp, setPendingFollowUp] = useState<PendingCallFollowUp | null>(null);
+
+  const clearPendingFollowUp = useCallback(() => {
+    setPendingFollowUp(null);
+  }, []);
 
   const refreshToken = useCallback(async (device: Device) => {
     const { token } = await client.getVoiceToken();
@@ -31,9 +51,11 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const initDevice = useCallback(async () => {
+    setInitError(null);
     const cfg = await client.getCallConfig();
     if (!cfg.browser_ready) {
       setReady(false);
+      setInitError(cfg.setup_message ?? "Twilio browser calling is not configured");
       return;
     }
 
@@ -42,15 +64,23 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
       codecPreferences: [Call.Codec.Opus, Call.Codec.PCMU],
     });
 
-    device.on("registered", () => setReady(true));
+    device.on("registered", () => {
+      setReady(true);
+      setInitError(null);
+    });
     device.on("unregistered", () => setReady(false));
-    device.on("error", (err) => console.error("Twilio device error:", err));
+    device.on("error", (err) => {
+      console.error("Twilio device error:", err);
+      setInitError(err.message || "Twilio device error");
+      setReady(false);
+    });
     device.on("tokenWillExpire", () => {
       void refreshToken(device);
     });
 
-    await device.register();
+    deviceRef.current?.destroy();
     deviceRef.current = device;
+    await device.register();
     setReady(true);
   }, [refreshToken]);
 
@@ -59,8 +89,11 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
     void (async () => {
       try {
         await initDevice();
-      } catch {
-        if (!cancelled) setReady(false);
+      } catch (e) {
+        if (!cancelled) {
+          setReady(false);
+          setInitError(e instanceof Error ? e.message : "Failed to initialize calling");
+        }
       }
     })();
     return () => {
@@ -72,10 +105,59 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
     };
   }, [initDevice]);
 
+  const retryInit = useCallback(async () => {
+    try {
+      await initDevice();
+    } catch (e) {
+      setReady(false);
+      setInitError(e instanceof Error ? e.message : "Failed to initialize calling");
+      throw e;
+    }
+  }, [initDevice]);
+
   const hangUp = useCallback(() => {
     callRef.current?.disconnect();
     callRef.current = null;
     setActive(false);
+  }, []);
+
+  const connectPreparedCall = useCallback((activeDevice: Device, prep: CallInitiateResult) => {
+    activePrepRef.current = prep;
+
+    return activeDevice
+      .connect({
+        params: {
+          To: prep.lead_phone!,
+          interaction_id: String(prep.id),
+        },
+      })
+      .then((call) => {
+        callRef.current = call;
+        setActive(true);
+
+        const finishCall = () => {
+          if (callRef.current === call) {
+            callRef.current = null;
+            setActive(false);
+          }
+          const endedPrep = activePrepRef.current;
+          activePrepRef.current = null;
+          if (endedPrep) {
+            setPendingFollowUp({
+              interactionId: endedPrep.id,
+              label:
+                endedPrep.company_name ||
+                endedPrep.contact_name ||
+                endedPrep.subject?.replace(/^Call to /, "") ||
+                "this call",
+            });
+          }
+        };
+        call.on("disconnect", finishCall);
+        call.on("cancel", finishCall);
+
+        return prep;
+      });
   }, []);
 
   const placeCall = useCallback(
@@ -94,32 +176,50 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
         throw new Error("Lead phone number missing");
       }
 
-      const call = await activeDevice.connect({
-        params: {
-          To: prep.lead_phone,
-          interaction_id: String(prep.id),
-        },
-      });
-
-      callRef.current = call;
-      setActive(true);
-
-      const cleanup = () => {
-        if (callRef.current === call) {
-          callRef.current = null;
-          setActive(false);
-        }
-      };
-      call.on("disconnect", cleanup);
-      call.on("cancel", cleanup);
-
-      return prep;
+      return connectPreparedCall(activeDevice, prep);
     },
-    [initDevice],
+    [connectPreparedCall, initDevice],
+  );
+
+  const placeManualCall = useCallback(
+    async (phone: string, options?: { contactName?: string; country?: string }) => {
+      const device = deviceRef.current;
+      if (!device) {
+        await initDevice();
+      }
+      const activeDevice = deviceRef.current;
+      if (!activeDevice) {
+        throw new Error("Twilio calling is not ready. Check your Twilio setup in backend/.env");
+      }
+
+      const prep = await client.initiateManualCall({
+        phone,
+        contact_name: options?.contactName,
+        country: options?.country,
+      });
+      if (!prep.lead_phone) {
+        throw new Error("Phone number missing");
+      }
+
+      return connectPreparedCall(activeDevice, prep);
+    },
+    [connectPreparedCall, initDevice],
   );
 
   return (
-    <TwilioVoiceContext.Provider value={{ ready, active, placeCall, hangUp }}>
+    <TwilioVoiceContext.Provider
+      value={{
+        ready,
+        active,
+        initError,
+        pendingFollowUp,
+        clearPendingFollowUp,
+        placeCall,
+        placeManualCall,
+        hangUp,
+        retryInit,
+      }}
+    >
       {children}
     </TwilioVoiceContext.Provider>
   );

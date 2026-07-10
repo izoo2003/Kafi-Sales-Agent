@@ -101,7 +101,14 @@ def _xlsx_to_csv(raw: bytes) -> str:
         sheet = workbook.active
         rows: list[list[str]] = []
         for row in sheet.iter_rows(values_only=True):
-            rows.append(["" if value is None else str(value).strip() for value in row])
+            rows.append(
+                [
+                    ""
+                    if value is None
+                    else str(value).replace("\r", " ").replace("\n", " ").strip()
+                    for value in row
+                ]
+            )
     finally:
         workbook.close()
     return _spreadsheet_rows_to_csv(rows)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from sqlalchemy.orm import Session
 
@@ -11,46 +12,116 @@ from integrations.voice_client import mask_phone, normalize_e164, voice_client
 from modules import buyers as buyers_module
 from modules.audit import log_action
 from modules.comms_generator import get_comms
+from modules.countries import resolve_country_name
 
-_CALL_SID_RE = re.compile(r"Call SID:\s*(\S+)")
+_CALL_SID_RE = re.compile(r"(?:Call SID:|\(SID)\s*(\S+?)(?:\)|\.|$)")
 _LEAD_PHONE_RE = re.compile(r"(?:Outbound call(?:\s+initiated)?\s+to|to)\s+(\+\d+)")
 _DURATION_RE = re.compile(r"duration\s+(\d+)m\s+(\d+)s|duration\s+(\d+)s")
 _NOTES_MARKER = "\n\nNOTES:"
+_OUTCOME_MARKER = "\n\nOUTCOME:"
+_VALID_CALL_OUTCOMES = frozenset({"interested", "not_interested", "not_received_call"})
+
+
+def _split_metadata(content: str | None) -> tuple[str, str | None, str | None]:
+    base = (content or "").strip()
+    notes: str | None = None
+    outcome: str | None = None
+
+    if _NOTES_MARKER in base:
+        base, rest = base.split(_NOTES_MARKER, 1)
+        if _OUTCOME_MARKER in rest:
+            notes_part, outcome_part = rest.split(_OUTCOME_MARKER, 1)
+            notes = notes_part.strip() or None
+            outcome = outcome_part.strip() or None
+        else:
+            notes = rest.strip() or None
+    elif _OUTCOME_MARKER in base:
+        base, outcome_part = base.split(_OUTCOME_MARKER, 1)
+        outcome = outcome_part.strip() or None
+
+    return base.strip(), notes, outcome
+
+
+def _build_content(base: str, notes: str | None, outcome: str | None) -> str:
+    content = base.strip()
+    if notes:
+        content = f"{content}{_NOTES_MARKER} {notes.strip()}"
+    if outcome:
+        content = f"{content}{_OUTCOME_MARKER} {outcome.strip()}"
+    return content
+
+
+def _normalize_outcome(value: str | None) -> str | None:
+    if value is None:
+        return None
+    trimmed = value.strip().lower()
+    if not trimmed:
+        return None
+    if trimmed not in _VALID_CALL_OUTCOMES:
+        allowed = ", ".join(sorted(_VALID_CALL_OUTCOMES))
+        raise ValueError(f"Invalid call outcome. Choose one of: {allowed}")
+    return trimmed
 
 
 def parse_call_fields(content: str | None) -> dict:
     if not content:
         return {}
 
+    base, notes, outcome = _split_metadata(content)
     fields: dict = {}
-    if match := _CALL_SID_RE.search(content):
+
+    if match := _CALL_SID_RE.search(base):
         fields["call_sid"] = match.group(1).rstrip(".")
 
-    if match := _LEAD_PHONE_RE.search(content):
+    if match := _LEAD_PHONE_RE.search(base):
         fields["lead_phone"] = match.group(1)
 
-    if " — " in content:
-        tail = content.split(" — ", 1)[1].split(_NOTES_MARKER, 1)[0]
+    if " — " in base:
+        tail = base.split(" — ", 1)[1]
         status_part = tail.split(",")[0].split("(")[0].strip().rstrip(".")
         if status_part and status_part not in {"Call SID:"}:
             fields["call_status"] = status_part
 
-    if match := _DURATION_RE.search(content):
+    if match := _DURATION_RE.search(base):
         if match.group(1) and match.group(2):
             fields["call_duration_seconds"] = int(match.group(1)) * 60 + int(match.group(2))
         elif match.group(3):
             fields["call_duration_seconds"] = int(match.group(3))
 
-    if _NOTES_MARKER in content:
-        fields["notes"] = content.split(_NOTES_MARKER, 1)[1].strip()
+    if notes:
+        fields["notes"] = notes
+    if outcome:
+        fields["call_outcome"] = outcome
 
     return fields
 
 
 def _content_without_notes(content: str | None) -> str:
-    if not content:
-        return ""
-    return content.split(_NOTES_MARKER, 1)[0].strip()
+    base, _, _ = _split_metadata(content)
+    return base
+
+
+def buyer_ids_with_latest_call_outcome(db: Session, outcome: str) -> set[int]:
+    """Buyers whose most recent phone call has the given outcome label."""
+    wanted = outcome.strip().lower()
+    phone_rows = (
+        db.query(Interaction, Contact.buyer_id)
+        .join(Contact, Interaction.contact_id == Contact.id)
+        .filter(Interaction.channel == Channel.phone)
+        .order_by(Interaction.created_at.desc())
+        .all()
+    )
+    latest_by_buyer: dict[int, str | None] = {}
+    for interaction, buyer_id in phone_rows:
+        bid = int(buyer_id)
+        if bid in latest_by_buyer:
+            continue
+        latest_by_buyer[bid] = parse_call_fields(interaction.content).get("call_outcome")
+    return {
+        bid
+        for bid, value in latest_by_buyer.items()
+        if value and str(value).lower() == wanted
+    }
 
 
 def call_config() -> dict:
@@ -93,9 +164,12 @@ def voice_access_token() -> dict:
 
 
 def call_interaction_to_dict(db: Session, interaction: Interaction) -> dict:
+    from modules.call_media import get_call_media, public_call_media
+
     contact = db.get(Contact, interaction.contact_id)
     buyer = db.get(Buyer, contact.buyer_id) if contact else None
     parsed = parse_call_fields(interaction.content)
+    media = public_call_media(get_call_media(interaction), interaction_id=interaction.id)
     return {
         "id": interaction.id,
         "contact_id": interaction.contact_id,
@@ -110,6 +184,7 @@ def call_interaction_to_dict(db: Session, interaction: Interaction) -> dict:
         "status": interaction.status.value,
         "created_at": interaction.created_at,
         **parsed,
+        **media,
     }
 
 
@@ -133,6 +208,76 @@ def _primary_contact_for_call(db: Session, buyer_id: int) -> Contact | None:
         if row.phone and row.phone.strip():
             return row
     return None
+
+
+def _contact_phones_normalized(contact: Contact) -> set[str]:
+    phones: set[str] = set()
+    for raw in (
+        contact.phone,
+        contact.primary_phone,
+        contact.secondary_phone,
+        contact.secondary_mobile,
+    ):
+        normalized = normalize_e164(raw or "")
+        if normalized:
+            phones.add(normalized)
+    return phones
+
+
+def _find_contact_by_phone(db: Session, phone: str) -> Contact | None:
+    target = normalize_e164(phone)
+    if not target:
+        return None
+    for contact in buyers_module.list_contacts(db):
+        if target in _contact_phones_normalized(contact):
+            return contact
+    return None
+
+
+def _prepare_call_interaction(
+    db: Session,
+    *,
+    buyer: Buyer,
+    contact: Contact,
+    lead_phone: str,
+    subject: str,
+    content: str,
+) -> dict:
+    interaction = Interaction(
+        contact_id=contact.id,
+        channel=Channel.phone,
+        direction=Direction.outbound,
+        subject=subject,
+        content=content,
+        handled_by=HandledBy.human,
+        status=InteractionStatus.sent,
+        approved_by="dashboard",
+    )
+    db.add(interaction)
+    db.commit()
+    db.refresh(interaction)
+
+    log_action(
+        db,
+        entity_type="interaction",
+        entity_id=interaction.id,
+        action="call_prepared",
+        actor="dashboard",
+        details={
+            "buyer_id": buyer.id,
+            "contact_id": contact.id,
+            "lead_phone": lead_phone,
+        },
+    )
+
+    payload = get_comms().interaction_to_dict(db, interaction)
+    payload.update(
+        {
+            "lead_phone": lead_phone,
+            "message": f"Calling {contact.full_name} at {lead_phone}…",
+        }
+    )
+    return payload
 
 
 def initiate_lead_call(
@@ -169,41 +314,74 @@ def initiate_lead_call(
             f"Phone '{contact.phone}' is not valid E.164. Use international format: +971501234567"
         )
 
-    interaction = Interaction(
-        contact_id=contact.id,
-        channel=Channel.phone,
-        direction=Direction.outbound,
+    return _prepare_call_interaction(
+        db,
+        buyer=buyer,
+        contact=contact,
+        lead_phone=lead_phone,
         subject=f"Call to {buyer.company_name}",
         content=f"Outbound call to {lead_phone} ({contact.full_name}). Connecting from dashboard…",
-        handled_by=HandledBy.human,
-        status=InteractionStatus.sent,
-        approved_by="dashboard",
     )
-    db.add(interaction)
-    db.commit()
-    db.refresh(interaction)
 
-    log_action(
+
+def initiate_manual_call(
+    db: Session,
+    *,
+    phone: str,
+    contact_name: str | None = None,
+    country: str | None = None,
+) -> dict:
+    """Prepare a browser call to any E.164 number — links to an existing lead when possible."""
+    if not voice_client.browser_ready:
+        cfg = call_config()
+        raise ValueError(cfg.get("setup_message") or "Twilio browser calling is not configured")
+
+    lead_phone = normalize_e164(phone)
+    if not lead_phone:
+        raise ValueError(
+            "Phone number is not valid. Use international format, e.g. +971501234567"
+        )
+
+    resolved_country = resolve_country_name(country) if country else None
+    contact = _find_contact_by_phone(db, lead_phone)
+    if contact:
+        buyer = buyers_module.get_buyer(db, contact.buyer_id)
+        if not buyer:
+            raise ValueError("Contact lead not found")
+    else:
+        display_name = (contact_name or "").strip() or lead_phone
+        buyer = buyers_module.create_buyer(
+            db,
+            {
+                "company_name": display_name,
+                "country": resolved_country,
+                "source": "manual_dial",
+            },
+            commit=False,
+        )
+        contact = buyers_module.create_contact(
+            db,
+            {
+                "buyer_id": buyer.id,
+                "full_name": (contact_name or "").strip() or "Manual dial",
+                "phone": lead_phone,
+                "data_source": "manual_dial",
+                "consent_status": "unknown",
+            },
+            commit=False,
+        )
+        db.commit()
+        db.refresh(buyer)
+        db.refresh(contact)
+
+    return _prepare_call_interaction(
         db,
-        entity_type="interaction",
-        entity_id=interaction.id,
-        action="call_prepared",
-        actor="dashboard",
-        details={
-            "buyer_id": buyer_id,
-            "contact_id": contact.id,
-            "lead_phone": lead_phone,
-        },
+        buyer=buyer,
+        contact=contact,
+        lead_phone=lead_phone,
+        subject=f"Manual call to {lead_phone}",
+        content=f"Manual outbound call to {lead_phone} ({contact.full_name}). Connecting from dashboard…",
     )
-
-    payload = get_comms().interaction_to_dict(db, interaction)
-    payload.update(
-        {
-            "lead_phone": lead_phone,
-            "message": f"Calling {contact.full_name} at {lead_phone}…",
-        }
-    )
-    return payload
 
 
 def update_call_status(
@@ -219,6 +397,7 @@ def update_call_status(
         return
 
     notes = parse_call_fields(interaction.content).get("notes")
+    outcome = parse_call_fields(interaction.content).get("call_outcome")
     body = _content_without_notes(interaction.content)
 
     duration_text = ""
@@ -227,28 +406,114 @@ def update_call_status(
         mins, secs = divmod(seconds, 60)
         duration_text = f", duration {mins}m {secs}s" if mins else f", duration {secs}s"
 
-    sid_text = f" (SID {call_sid})" if call_sid else ""
+    sid_text = f" (Call SID: {call_sid})" if call_sid else ""
     if "Call SID:" in body:
-        prefix = body.split("Call SID:")[0].strip()
+        prefix = body.split("Call SID:")[0].strip().rstrip("(").strip()
     elif " — " in body:
         prefix = body.split(" — ", 1)[0].strip()
     else:
         prefix = body.strip()
 
     interaction.content = f"{prefix} — {call_status}{duration_text}{sid_text}.".strip()
-    if notes:
-        interaction.content = f"{interaction.content}{_NOTES_MARKER} {notes}"
+    interaction.content = _build_content(interaction.content, notes, outcome)
     db.commit()
 
 
-def update_call_notes(db: Session, *, interaction_id: int, notes: str) -> dict:
+def save_call_recording(
+    db: Session,
+    *,
+    interaction_id: int,
+    recording_sid: str,
+    recording_url: str,
+    recording_status: str,
+    recording_duration: str | None = None,
+) -> dict | None:
+    from modules.call_media import save_recording_from_webhook
+
+    return save_recording_from_webhook(
+        db,
+        interaction_id=interaction_id,
+        recording_sid=recording_sid,
+        recording_url=recording_url,
+        recording_status=recording_status,
+        recording_duration=recording_duration,
+    )
+
+
+def get_call_recording_file(db: Session, *, interaction_id: int) -> tuple[Path, str, str]:
+    from modules.call_media import (
+        attach_local_recording,
+        download_twilio_recording,
+        get_call_media,
+        resolve_local_recording,
+    )
+
+    interaction = db.get(Interaction, interaction_id)
+    if not interaction or interaction.channel != Channel.phone:
+        raise ValueError("Call not found")
+    media = get_call_media(interaction)
+    if not media:
+        raise ValueError("No recording for this call")
+
+    path = resolve_local_recording(media)
+    if not path and media.get("recording_url") and media.get("recording_sid"):
+        path, content_type = download_twilio_recording(
+            str(media["recording_url"]),
+            str(media["recording_sid"]),
+        )
+        attach_local_recording(
+            db,
+            interaction_id=interaction_id,
+            local_path=f"call_recordings/{path.name}",
+            content_type=content_type,
+        )
+        media = get_call_media(interaction) or media
+
+    if not path or not path.is_file():
+        raise ValueError("Recording file is not available yet")
+
+    content_type = str(media.get("content_type") or "audio/mpeg")
+    filename = path.name
+    return path, content_type, filename
+
+
+def transcribe_call(db: Session, *, interaction_id: int) -> dict:
+    from modules.call_media import transcribe_call_recording
+
+    transcribe_call_recording(db, interaction_id=interaction_id)
+    interaction = db.get(Interaction, interaction_id)
+    if not interaction:
+        raise ValueError("Call not found")
+    return call_interaction_to_dict(db, interaction)
+
+
+def update_call_followup(
+    db: Session,
+    *,
+    interaction_id: int,
+    notes: str | None = None,
+    call_outcome: str | None = None,
+) -> dict:
     interaction = db.get(Interaction, interaction_id)
     if not interaction or interaction.channel != Channel.phone:
         raise ValueError("Call not found")
 
-    base = _content_without_notes(interaction.content)
-    trimmed = notes.strip()
-    interaction.content = f"{base}{_NOTES_MARKER} {trimmed}" if trimmed else base
+    base, existing_notes, existing_outcome = _split_metadata(interaction.content)
+    new_notes = existing_notes if notes is None else notes.strip()
+    new_outcome = existing_outcome
+    if call_outcome is not None:
+        trimmed = call_outcome.strip()
+        new_outcome = None if not trimmed else _normalize_outcome(trimmed)
+
+    interaction.content = _build_content(
+        base,
+        new_notes or None,
+        new_outcome,
+    )
     db.commit()
     db.refresh(interaction)
     return call_interaction_to_dict(db, interaction)
+
+
+def update_call_notes(db: Session, *, interaction_id: int, notes: str) -> dict:
+    return update_call_followup(db, interaction_id=interaction_id, notes=notes)

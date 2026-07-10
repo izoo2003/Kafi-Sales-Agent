@@ -18,13 +18,14 @@ interface BuyerProfileProps {
   leadId: number;
   onBack: () => void;
   onError: (message: string) => void;
+  onCallFollowUpSaved?: (outcome: string | null | undefined) => void;
 }
 
 function formatCategory(category: string): string {
   return category.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-export function BuyerProfile({ leadId, onBack, onError }: BuyerProfileProps) {
+export function BuyerProfile({ leadId, onBack, onError, onCallFollowUpSaved }: BuyerProfileProps) {
   const [lead, setLead] = useState<Lead | null>(null);
   const [profile, setProfile] = useState<BuyerProfileData | null>(null);
   const [score, setScore] = useState<LeadScore | null>(null);
@@ -190,7 +191,11 @@ export function BuyerProfile({ leadId, onBack, onError }: BuyerProfileProps) {
         onContactsChange={() => setContactsVersion((v) => v + 1)}
       />
 
-      <CallHistoryPanel leadId={leadId} onError={onError} />
+      <CallHistoryPanel
+        leadId={leadId}
+        onError={onError}
+        onCallFollowUpSaved={onCallFollowUpSaved}
+      />
 
       {score && (
         <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">

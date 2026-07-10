@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api import calls, compliance, email_attachments, email_templates, inbox, interactions, leads, scheduler
 from config import settings
+from modules.lead_discovery import OLD_CLIENTS_IMPORT_PARSER
 from db.migrate import run_migrations
 from db.session import SessionLocal
 from db.seed import seed_sample_data
@@ -36,26 +37,28 @@ async def lifespan(app: FastAPI):
         raise
     print("Migrations complete.", flush=True)
 
-    from integrations.mail_client import mail_client
-    from integrations.outlook_client import outlook_client
+    try:
+        import twilio  # noqa: F401
+        from integrations.voice_client import voice_client
+        from modules.llm_client import llm_client
 
-    if outlook_client.is_configured:
-        if outlook_client._use_oauth():
-            print(f"Outlook mailbox configured (OAuth): {settings.mailbox_email}", flush=True)
-        else:
-            print(
-                f"Outlook mailbox configured for {settings.mailbox_email} — "
-                "using app password (may fail; OAuth recommended for @outlook.com)",
-                flush=True,
-            )
-    else:
+        llm_client.reset()
+        gemini_chain = llm_client.model_chain()
+        print(f"Gemini model chain: {', '.join(gemini_chain)}", flush=True)
+
+        if voice_client.browser_ready:
+            voice_client.create_access_token()
+            print("Twilio browser calling ready.", flush=True)
+        elif voice_client.is_configured:
+            print(f"Twilio partially configured: {voice_client.setup_hints()['missing']}", flush=True)
+    except ImportError:
         print(
-            "Outlook mailbox NOT configured — set MAILBOX_EMAIL + MAILBOX_REFRESH_TOKEN "
-            "in backend/.env and run: python scripts/get_outlook_refresh_token.py",
+            "WARNING: twilio package not installed — browser calling disabled. "
+            "Run: pip install -r requirements.txt",
             flush=True,
         )
-    if mail_client.is_configured:
-        print("Outbound email (Approve & Send) ready via Outlook.", flush=True)
+    except Exception as exc:
+        print(f"WARNING: Twilio calling check failed: {exc}", flush=True)
 
     db = SessionLocal()
     try:
@@ -97,6 +100,9 @@ app.include_router(inbox.router, prefix="/api")
 app.include_router(calls.webhooks_router, prefix="/api")
 
 
+OLD_CLIENTS_IMPORT_PARSER = "old_clients_v2"
+
+
 @app.get("/api/health")
 def health():
     from integrations.mail_client import mail_client
@@ -106,6 +112,8 @@ def health():
     return {
         "status": "ok",
         "service": "kafi-sales-agent",
+        "old_clients_import_parser": OLD_CLIENTS_IMPORT_PARSER,
+        "api_port": settings.api_port,
         "outlook_configured": outlook_client.is_configured,
         "mailbox_configured": outlook_client.is_configured,
         "outbound_email_configured": mail_client.is_configured,

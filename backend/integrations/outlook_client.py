@@ -38,19 +38,13 @@ def _xoauth2_bytes(email: str, access_token: str) -> bytes:
 
 
 def _password_auth_help() -> str:
-    return (
-        "Outlook rejected password/app-password login. Microsoft no longer allows this for "
-        "@outlook.com accounts — you must use OAuth. Steps: "
-        "1) Register an app at portal.azure.com (Personal Microsoft accounts only). "
-        "2) Run: python scripts/get_outlook_refresh_token.py "
-        "3) Add MAILBOX_CLIENT_ID and MAILBOX_REFRESH_TOKEN to backend/.env"
-    )
+    return "Outlook mailbox login failed. Check MAILBOX_EMAIL and credentials in backend/.env."
 
 
 class OutlookClient:
     @property
     def is_configured(self) -> bool:
-        if not settings.mailbox_email:
+        if not settings.mailbox_enabled or not settings.mailbox_email:
             return False
         if self._use_oauth():
             return True
@@ -68,7 +62,7 @@ class OutlookClient:
 
     def _acquire_access_token(self) -> str:
         if not self._use_oauth():
-            raise RuntimeError("OAuth is not configured for this mailbox")
+            raise RuntimeError("Mailbox authentication is not configured")
 
         try:
             from msal import ConfidentialClientApplication, PublicClientApplication
@@ -91,10 +85,7 @@ class OutlookClient:
         )
         if not result or "access_token" not in result:
             detail = (result or {}).get("error_description") or (result or {}).get("error")
-            raise RuntimeError(
-                detail
-                or "OAuth token refresh failed — re-run python scripts/get_outlook_refresh_token.py"
-            )
+            raise RuntimeError(detail or "Mailbox token refresh failed")
         return result["access_token"]
 
     def _connect_imap(self):
@@ -130,8 +121,7 @@ class OutlookClient:
     def _mailbox(self):
         if not self.is_configured:
             raise RuntimeError(
-                "Mailbox is not configured. Set MAILBOX_EMAIL plus either "
-                "MAILBOX_REFRESH_TOKEN (OAuth) or MAILBOX_PASSWORD in backend/.env"
+                "Mailbox is not enabled. Set MAILBOX_ENABLED=true and MAILBOX_EMAIL in backend/.env"
             )
         return self._connect_imap()
 
@@ -231,7 +221,7 @@ class OutlookClient:
             code, resp = server.docmd("AUTH", "XOAUTH2 " + auth_b64)
             if code != 235:
                 detail = resp.decode() if isinstance(resp, bytes) else str(resp)
-                raise RuntimeError(f"SMTP OAuth failed: {detail}")
+                raise RuntimeError(f"SMTP login failed: {detail}")
             return
         if not settings.mailbox_password:
             raise RuntimeError("Mailbox password is not configured")
@@ -251,7 +241,7 @@ class OutlookClient:
         if not self.is_configured:
             return {
                 "status": "not_configured",
-                "message": "Mailbox is not configured in backend/.env",
+                "message": "Mailbox is not enabled. Set MAILBOX_ENABLED=true in backend/.env",
             }
         if not to:
             return {"status": "error", "message": "Recipient email is missing"}

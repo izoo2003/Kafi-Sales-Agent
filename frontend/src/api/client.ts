@@ -8,7 +8,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 /** External quotation agent (separate app). */
 export const QUOTATION_AGENT_URL =
   import.meta.env.VITE_QUOTATION_AGENT_URL ??
-  "https://bank-recon-demo.vercel.app/quotations";
+  "https://bank-recon-demo.vercel.app/cnf";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -199,6 +199,15 @@ export interface CallHistoryItem {
   call_duration_seconds?: number | null;
   lead_phone?: string | null;
   notes?: string | null;
+  call_outcome?: string | null;
+  recording_available?: boolean;
+  recording_sid?: string | null;
+  recording_duration_seconds?: number | null;
+  recording_url?: string | null;
+  download_url?: string | null;
+  transcript?: string | null;
+  transcript_status?: string | null;
+  transcript_error?: string | null;
 }
 
 export interface ApproveDraftResult {
@@ -357,6 +366,17 @@ export interface DiscoveryCandidate {
   linkedin_url: string;
   country: string | null;
   industry: string | null;
+  legacy_serial_no?: number | null;
+  company_grading?: string | null;
+  designation?: string | null;
+  secondary_mobile?: string | null;
+  primary_phone?: string | null;
+  secondary_phone?: string | null;
+  secondary_email?: string | null;
+  product_interest?: string | null;
+  city?: string | null;
+  address?: string | null;
+  remarks?: string | null;
   source: string;
   source_detail: string;
   match_reason: string;
@@ -386,13 +406,17 @@ export interface DiscoverLeadsRequest {
   limit?: number;
   use_web_search?: boolean;
   use_website_links?: boolean;
+  skip_enrichment?: boolean;
 }
+
+export const MAX_DISCOVERY_BATCH = 15;
 
 export interface DiscoverLeadsResponse {
   candidates: DiscoveryCandidate[];
   sources_used: string[];
   messages: string[];
   search_query: string | null;
+  import_parser?: string | null;
 }
 
 export interface DiscoverImportRequest {
@@ -407,10 +431,22 @@ export interface DiscoverImportRequest {
     linkedin_url?: string;
     country?: string;
     industry?: string;
+    legacy_serial_no?: number | null;
+    company_grading?: string;
+    designation?: string;
+    secondary_mobile?: string;
+    primary_phone?: string;
+    secondary_phone?: string;
+    secondary_email?: string;
+    product_interest?: string;
+    city?: string;
+    address?: string;
+    remarks?: string;
     source?: string;
   }>;
   auto_onboard?: boolean;
   replace_duplicates?: boolean;
+  skip_enrichment?: boolean;
 }
 
 export interface DiscoverImportResponse {
@@ -449,6 +485,12 @@ export interface LeadTableRow {
   facebook_company_url: string | null;
   instagram_company_url: string | null;
   source: string | null;
+  legacy_serial_no: number | null;
+  company_grading: string | null;
+  product_interest: string | null;
+  city: string | null;
+  address: string | null;
+  remarks: string | null;
   created_at: string;
   latest_score: string | null;
   score_reasoning: string | null;
@@ -457,6 +499,11 @@ export interface LeadTableRow {
   contact_name: string | null;
   contact_email: string | null;
   contact_phone: string | null;
+  contact_designation: string | null;
+  contact_secondary_mobile: string | null;
+  contact_primary_phone: string | null;
+  contact_secondary_phone: string | null;
+  contact_secondary_email: string | null;
   market_role: string | null;
   market_role_reasoning: string | null;
   producer_tier: string | null;
@@ -472,10 +519,21 @@ export interface LeadTableRowUpdate {
   linkedin_company_url?: string | null;
   facebook_company_url?: string | null;
   instagram_company_url?: string | null;
+  legacy_serial_no?: number | null;
+  company_grading?: string | null;
+  product_interest?: string | null;
+  city?: string | null;
+  address?: string | null;
+  remarks?: string | null;
   contact_id?: number;
   contact_name?: string;
   contact_email?: string;
   contact_phone?: string;
+  contact_designation?: string | null;
+  contact_secondary_mobile?: string | null;
+  contact_primary_phone?: string | null;
+  contact_secondary_phone?: string | null;
+  contact_secondary_email?: string | null;
 }
 
 export interface LeadTableResponse {
@@ -497,11 +555,15 @@ export interface LeadTableQuery {
   country?: string;
   industry?: string;
   source?: string;
+  exclude_source?: string;
+  call_outcome?: string;
   market_role?: string;
   q?: string;
   sort_by?: string;
   sort_dir?: "asc" | "desc";
 }
+
+export type LeadTableSectionScope = Pick<LeadTableQuery, "source" | "exclude_source">;
 
 export const client = {
   health: () => request<{ status: string }>("/health"),
@@ -514,6 +576,8 @@ export const client = {
     if (params.country) search.set("country", params.country);
     if (params.industry) search.set("industry", params.industry);
     if (params.source) search.set("source", params.source);
+    if (params.exclude_source) search.set("exclude_source", params.exclude_source);
+    if (params.call_outcome) search.set("call_outcome", params.call_outcome);
     if (params.market_role) search.set("market_role", params.market_role);
     if (params.q) search.set("q", params.q);
     if (params.sort_by) search.set("sort_by", params.sort_by);
@@ -528,10 +592,26 @@ export const client = {
     }),
   deleteLeadTableRow: (leadId: number) =>
     request<void>(`/leads/table/${leadId}`, { method: "DELETE" }),
-  dedupeLeadsTable: () =>
-    request<LeadTableDedupeResponse>("/leads/table/dedupe", { method: "POST" }),
-  cleanupSparseCsvLeads: () =>
-    request<LeadTableCleanupResponse>("/leads/table/cleanup-sparse", { method: "POST" }),
+  dedupeLeadsTable: (params: LeadTableSectionScope = {}) => {
+    const search = new URLSearchParams();
+    if (params.source) search.set("source", params.source);
+    if (params.exclude_source) search.set("exclude_source", params.exclude_source);
+    const query = search.toString();
+    return request<LeadTableDedupeResponse>(
+      `/leads/table/dedupe${query ? `?${query}` : ""}`,
+      { method: "POST" },
+    );
+  },
+  cleanupSparseCsvLeads: (params: LeadTableSectionScope = {}) => {
+    const search = new URLSearchParams();
+    if (params.source) search.set("source", params.source);
+    if (params.exclude_source) search.set("exclude_source", params.exclude_source);
+    const query = search.toString();
+    return request<LeadTableCleanupResponse>(
+      `/leads/table/cleanup-sparse${query ? `?${query}` : ""}`,
+      { method: "POST" },
+    );
+  },
   createLead: (data: LeadCreate) =>
     request<Lead>("/leads", { method: "POST", body: JSON.stringify(data) }),
   getLead: (id: number) => request<Lead>(`/leads/${id}`),
@@ -579,12 +659,24 @@ export const client = {
       body: JSON.stringify(data),
     }),
 
-  discoverLeadsFromCsv: async (file: File, defaultCountry?: string, forLeadsTable = false) => {
+  enrichDiscoveryCandidate: (candidate: DiscoveryCandidate) =>
+    request<DiscoveryCandidate>("/leads/discover/enrich", {
+      method: "POST",
+      body: JSON.stringify(candidate),
+    }),
+
+  discoverLeadsFromCsv: async (
+    file: File,
+    defaultCountry?: string,
+    forLeadsTable = false,
+    importSource?: string,
+  ) => {
     const form = new FormData();
     form.append("file", file);
     const params = new URLSearchParams();
     if (defaultCountry) params.set("default_country", defaultCountry);
     if (forLeadsTable) params.set("for_leads_table", "true");
+    if (importSource) params.set("import_source", importSource);
     const query = params.toString();
     const res = await fetch(`${API_BASE}/leads/discover/csv${query ? `?${query}` : ""}`, {
       method: "POST",
@@ -761,11 +853,35 @@ export const client = {
       method: "PATCH",
       body: JSON.stringify({ notes }),
     }),
+  updateCallFollowUp: (
+    interactionId: number,
+    data: { notes?: string; call_outcome?: string | null },
+  ) =>
+    request<CallHistoryItem>(`/calls/${interactionId}/notes`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  getCallRecordingUrl: (interactionId: number, download = false) =>
+    `${API_BASE}/calls/${interactionId}/recording${download ? "?download=1" : ""}`,
+  transcribeCall: (interactionId: number, wait = false) =>
+    request<CallHistoryItem>(
+      `/calls/${interactionId}/transcribe${wait ? "?wait=true" : ""}`,
+      { method: "POST" },
+    ),
   initiateLeadCall: (
     leadId: number,
     data: { contact_id?: number } = {},
   ) =>
     request<CallInitiateResult>(`/leads/${leadId}/call`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  initiateManualCall: (data: {
+    phone: string;
+    contact_name?: string;
+    country?: string;
+  }) =>
+    request<CallInitiateResult>("/calls/dial", {
       method: "POST",
       body: JSON.stringify(data),
     }),

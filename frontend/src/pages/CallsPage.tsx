@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   client,
   type CallConfig,
@@ -6,10 +6,17 @@ import {
   type LeadTableRow,
 } from "../api/client";
 import { CallLeadButton } from "../components/CallLeadButton";
+import { CallManualDialer } from "../components/CallManualDialer";
+import { CallRemarksForm } from "../components/CallRemarksForm";
+import { CallRecordingPanel } from "../components/CallRecordingPanel";
+import { CountrySelect } from "../components/CountrySelect";
+import { type CallOutcome, callOutcomeBadge, callOutcomeLabel } from "../utils/callOutcomes";
+import { countryMatches } from "../data/countries";
 
 interface CallsPageProps {
   onError: (message: string) => void;
   onSelectLead?: (leadId: number) => void;
+  onCallFollowUpSaved?: (outcome: string | null | undefined) => void;
 }
 
 const POLL_INTERVAL_MS = 15_000;
@@ -39,15 +46,17 @@ function statusBadge(status: string | null | undefined): string {
   return "bg-slate-700/50 text-slate-300 border-slate-600";
 }
 
-export function CallsPage({ onError, onSelectLead }: CallsPageProps) {
+export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsPageProps) {
   const [config, setConfig] = useState<CallConfig | null>(null);
   const [history, setHistory] = useState<CallHistoryItem[]>([]);
   const [dialableLeads, setDialableLeads] = useState<LeadTableRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [selectedCallId, setSelectedCallId] = useState<number | null>(null);
-  const [notesDraft, setNotesDraft] = useState("");
-  const [savingNotes, setSavingNotes] = useState(false);
+  const [remarksDraft, setRemarksDraft] = useState("");
+  const [outcomeDraft, setOutcomeDraft] = useState<CallOutcome | "">("");
+  const [savingFollowUp, setSavingFollowUp] = useState(false);
+  const [countryFilter, setCountryFilter] = useState<string>("");
   const pollRef = useRef<number | null>(null);
 
   const loadData = useCallback(
@@ -91,19 +100,47 @@ export function CallsPage({ onError, onSelectLead }: CallsPageProps) {
 
   const selectedCall = history.find((c) => c.id === selectedCallId) ?? null;
 
-  async function saveNotes() {
-    if (!selectedCallId) return;
-    setSavingNotes(true);
-    try {
-      const updated = await client.updateCallNotes(selectedCallId, notesDraft);
-      setHistory((prev) => prev.map((c) => (c.id === selectedCallId ? updated : c)));
-      setNotice("Notes saved.");
-      setTimeout(() => setNotice(null), 3000);
-    } catch (e) {
-      onError(e instanceof Error ? e.message : "Failed to save notes");
-    } finally {
-      setSavingNotes(false);
+  const dialableCountries = useMemo(() => {
+    const unique = new Set<string>();
+    for (const lead of dialableLeads) {
+      const country = lead.country?.trim();
+      if (country) unique.add(country);
     }
+    return [...unique].sort((a, b) => a.localeCompare(b));
+  }, [dialableLeads]);
+
+  const filteredDialableLeads = useMemo(() => {
+    if (!countryFilter) return dialableLeads;
+    return dialableLeads.filter((lead) => countryMatches(lead.country, countryFilter));
+  }, [dialableLeads, countryFilter]);
+
+  async function saveFollowUp() {
+    if (!selectedCallId) return;
+    setSavingFollowUp(true);
+    try {
+      const updated = await client.updateCallFollowUp(selectedCallId, {
+        notes: remarksDraft,
+        call_outcome: outcomeDraft || null,
+      });
+      setHistory((prev) => prev.map((c) => (c.id === selectedCallId ? updated : c)));
+      onCallFollowUpSaved?.(updated.call_outcome);
+      if (updated.call_outcome === "interested") {
+        setNotice("Client added to Interested clients list.");
+      } else {
+        setNotice("Call remarks saved.");
+      }
+      setTimeout(() => setNotice(null), 4000);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to save call remarks");
+    } finally {
+      setSavingFollowUp(false);
+    }
+  }
+
+  function selectCall(call: CallHistoryItem) {
+    setSelectedCallId(call.id);
+    setRemarksDraft(call.notes ?? "");
+    setOutcomeDraft((call.call_outcome as CallOutcome | undefined) ?? "");
   }
 
   if (!loading && config && !config.configured) {
@@ -121,7 +158,7 @@ export function CallsPage({ onError, onSelectLead }: CallsPageProps) {
             <br />
             2. Create API Key + TwiML App (see backend/.env.example)
             <br />
-            3. <code className="text-amber-100">ngrok http 8000</code> for local dev
+            3. <code className="text-amber-100">ngrok http 8003</code> for local dev (match API_PORT)
             <br />
             4. Restart backend
           </p>
@@ -171,16 +208,57 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 min-h-[480px]">
-        <div className="lg:col-span-1 rounded-xl border border-slate-800 bg-slate-900 flex flex-col overflow-hidden">
-          <div className="px-4 py-3 border-b border-slate-800">
-            <h3 className="text-sm font-medium text-slate-300">Quick dial</h3>
-            <p className="text-xs text-slate-500 mt-1">Uses your browser mic &amp; speakers</p>
+        <div className="lg:col-span-1 flex flex-col gap-4 overflow-hidden">
+          <CallManualDialer
+            onError={onError}
+            onSuccess={(result) => {
+              setNotice(result.message ?? "Connected — speak through your browser.");
+              void loadData({ silent: true });
+            }}
+          />
+
+          <div className="rounded-xl border border-slate-800 bg-slate-900 flex flex-col overflow-hidden flex-1 min-h-0">
+          <div className="px-4 py-3 border-b border-slate-800 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-medium text-slate-300">Quick dial</h3>
+                <p className="text-xs text-slate-500 mt-1">Uses your browser mic &amp; speakers</p>
+              </div>
+              {countryFilter && (
+                <button
+                  type="button"
+                  onClick={() => setCountryFilter("")}
+                  className="shrink-0 text-xs text-sky-400 hover:text-sky-300"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            <CountrySelect
+              value={countryFilter}
+              onChange={setCountryFilter}
+              allowEmpty
+              emptyLabel={`All countries (${dialableLeads.length})`}
+            />
+            {countryFilter && (
+              <p className="text-xs text-slate-500">
+                {filteredDialableLeads.length} lead
+                {filteredDialableLeads.length === 1 ? "" : "s"} in {countryFilter}
+                {dialableCountries.length > 0 &&
+                  !dialableCountries.some((c) => countryMatches(c, countryFilter)) &&
+                  " (no leads with this country yet)"}
+              </p>
+            )}
           </div>
           <div className="flex-1 overflow-y-auto divide-y divide-slate-800/80">
-            {dialableLeads.length === 0 ? (
-              <p className="p-4 text-sm text-slate-500">No leads with phone numbers yet.</p>
+            {filteredDialableLeads.length === 0 ? (
+              <p className="p-4 text-sm text-slate-500">
+                {dialableLeads.length === 0
+                  ? "No leads with phone numbers yet."
+                  : `No leads with phone numbers in ${countryFilter}.`}
+              </p>
             ) : (
-              dialableLeads.slice(0, 40).map((lead) => (
+              filteredDialableLeads.slice(0, 40).map((lead) => (
                 <div key={lead.id} className="px-4 py-3 flex items-center justify-between gap-2">
                   <button
                     type="button"
@@ -190,6 +268,7 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
                     <p className="text-sm text-slate-200 truncate">{lead.company_name}</p>
                     <p className="text-xs text-slate-500 truncate">
                       {lead.contact_name ?? "Contact"} · {lead.contact_phone}
+                      {lead.country ? ` · ${lead.country}` : ""}
                     </p>
                   </button>
                   <CallLeadButton
@@ -206,6 +285,7 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
               ))
             )}
           </div>
+          </div>
         </div>
 
         <div className="lg:col-span-1 rounded-xl border border-slate-800 bg-slate-900 flex flex-col overflow-hidden">
@@ -220,10 +300,7 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
                 <button
                   key={call.id}
                   type="button"
-                  onClick={() => {
-                    setSelectedCallId(call.id);
-                    setNotesDraft(call.notes ?? "");
-                  }}
+                  onClick={() => selectCall(call)}
                   className={`w-full text-left px-4 py-3 hover:bg-slate-800/50 transition ${
                     selectedCallId === call.id ? "bg-slate-800/70" : ""
                   }`}
@@ -235,13 +312,22 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
                       </p>
                       <p className="text-xs text-slate-500">{formatDate(call.created_at)}</p>
                     </div>
-                    {call.call_status && (
-                      <span
-                        className={`shrink-0 text-xs px-2 py-0.5 rounded border ${statusBadge(call.call_status)}`}
-                      >
-                        {call.call_status}
-                      </span>
-                    )}
+                    <div className="shrink-0 flex flex-col items-end gap-1">
+                      {call.call_outcome && (
+                        <span
+                          className={`text-xs px-2 py-0.5 rounded border ${callOutcomeBadge(call.call_outcome)}`}
+                        >
+                          {callOutcomeLabel(call.call_outcome)}
+                        </span>
+                      )}
+                      {call.call_status && (
+                        <span
+                          className={`text-xs px-2 py-0.5 rounded border ${statusBadge(call.call_status)}`}
+                        >
+                          {call.call_status}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </button>
               ))
@@ -252,7 +338,9 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
         <div className="lg:col-span-1 rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-4">
           <h3 className="text-sm font-medium text-slate-300">Call detail</h3>
           {!selectedCall ? (
-            <p className="text-sm text-slate-500">Select a call to view details and add notes.</p>
+            <p className="text-sm text-slate-500">
+              Select a call to add remarks and label the client outcome.
+            </p>
           ) : (
             <>
               <dl className="space-y-2 text-sm">
@@ -292,31 +380,45 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
                       : ""}
                   </dd>
                 </div>
-                {selectedCall.call_sid && (
+                <div>
+                  <dt className="text-slate-500 text-xs">Outcome</dt>
+                  <dd className="text-slate-200">
+                    {selectedCall.call_outcome ? (
+                      <span
+                        className={`inline-flex text-xs px-2 py-0.5 rounded border ${callOutcomeBadge(selectedCall.call_outcome)}`}
+                      >
+                        {callOutcomeLabel(selectedCall.call_outcome)}
+                      </span>
+                    ) : (
+                      "Not labeled yet"
+                    )}
+                  </dd>
+                </div>
+                {selectedCall.notes && (
                   <div>
-                    <dt className="text-slate-500 text-xs">Twilio SID</dt>
-                    <dd className="text-slate-400 text-xs font-mono break-all">{selectedCall.call_sid}</dd>
+                    <dt className="text-slate-500 text-xs">Saved remarks</dt>
+                    <dd className="text-slate-300 text-sm whitespace-pre-wrap">{selectedCall.notes}</dd>
                   </div>
                 )}
               </dl>
-              <div className="space-y-2">
-                <label className="text-xs text-slate-500">Post-call notes</label>
-                <textarea
-                  value={notesDraft}
-                  onChange={(e) => setNotesDraft(e.target.value)}
-                  rows={5}
-                  placeholder="Products discussed, MOQ, follow-up date…"
-                  className="w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
-                />
-                <button
-                  type="button"
-                  disabled={savingNotes}
-                  onClick={() => void saveNotes()}
-                  className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm disabled:opacity-50"
-                >
-                  {savingNotes ? "Saving…" : "Save notes"}
-                </button>
-              </div>
+              <CallRecordingPanel
+                call={selectedCall}
+                onError={onError}
+                onUpdated={(updated) => {
+                  setHistory((prev) =>
+                    prev.map((c) => (c.id === updated.id ? updated : c)),
+                  );
+                }}
+              />
+              <CallRemarksForm
+                remarks={remarksDraft}
+                outcome={outcomeDraft}
+                onRemarksChange={setRemarksDraft}
+                onOutcomeChange={setOutcomeDraft}
+                onSave={() => void saveFollowUp()}
+                saving={savingFollowUp}
+                saveLabel="Save remarks"
+              />
             </>
           )}
         </div>
@@ -324,7 +426,8 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
 
       <p className="text-xs text-slate-600">
         How it works: click Call → allow microphone → talk to the client directly from your browser.
-        They see your Twilio number as caller ID. All calls are logged here and on the lead profile.
+        They see your Twilio number as caller ID. Calls are recorded automatically — play, download,
+        and read closed captions (CC) in the call detail panel after the call ends.
       </p>
     </section>
   );

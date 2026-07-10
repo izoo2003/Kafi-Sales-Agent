@@ -99,7 +99,8 @@ class VoiceClient:
             incoming_allow=False,
         )
         token.add_grant(grant)
-        return token.to_jwt()
+        jwt = token.to_jwt()
+        return jwt.decode("utf-8") if isinstance(jwt, bytes) else str(jwt)
 
     def client_dial_twiml(self, lead_phone: str, interaction_id: int) -> str:
         """TwiML for browser-initiated outbound calls — dials the lead directly."""
@@ -108,10 +109,17 @@ class VoiceClient:
         status_url = self.webhook_url(
             f"/api/webhooks/twilio/voice/status?interaction_id={interaction_id}"
         )
+        recording_url = self.webhook_url(
+            f"/api/webhooks/twilio/voice/recording?interaction_id={interaction_id}"
+        )
         return (
             '<?xml version="1.0" encoding="UTF-8"?>'
             "<Response>"
             f'<Dial callerId="{caller_id}" answerOnBridge="true" '
+            f'record="record-from-answer" '
+            f'recordingStatusCallback="{recording_url}" '
+            f'recordingStatusCallbackMethod="POST" '
+            f'recordingStatusCallbackEvent="completed" '
             f'action="{status_url}" method="POST">{lead}</Dial>'
             "</Response>"
         )

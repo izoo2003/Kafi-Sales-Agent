@@ -29,7 +29,8 @@ class Settings(BaseSettings):
     gmail_inbox_since: str | None = None  # legacy alias — use INBOX_SINCE instead
 
     # Outlook shared inbox via IMAP (receive) + SMTP (send) — integrations/outlook_client.py
-    # Standard Outlook/Office 365 servers are the defaults; only email + password are required.
+    # Set MAILBOX_ENABLED=true when ready to use Inbox / Approve & Send.
+    mailbox_enabled: bool = False
     mailbox_imap_host: str = "outlook.office365.com"
     mailbox_imap_port: int = 993
     mailbox_smtp_host: str = "smtp.office365.com"
@@ -47,7 +48,7 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     llm_api_key: str | None = None  # legacy alias for gemini_api_key
     gemini_api_keys: str | None = None  # optional comma-separated extra keys
-    gemini_model: str = "gemini-2.5-flash-lite"
+    gemini_model: str = "gemini-3.1-flash-lite"
     gemini_fallback_models: str | None = None
     gemini_max_output_tokens: int = 512
 

@@ -192,6 +192,8 @@ def list_leads_table(
     country: str | None = None,
     industry: str | None = None,
     source: str | None = None,
+    exclude_source: str | None = None,
+    call_outcome: str | None = None,
     market_role: str | None = None,
     q: str | None = None,
     sort_by: str = "created_at",
@@ -244,6 +246,12 @@ def list_leads_table(
                 "facebook_company_url": buyer.facebook_company_url,
                 "instagram_company_url": buyer.instagram_company_url,
                 "source": buyer.source,
+                "legacy_serial_no": buyer.legacy_serial_no,
+                "company_grading": buyer.company_grading,
+                "product_interest": buyer.product_interest,
+                "city": buyer.city,
+                "address": buyer.address,
+                "remarks": buyer.remarks,
                 "created_at": buyer.created_at,
                 "latest_score": latest_score,
                 "score_reasoning": latest.reasoning if latest else None,
@@ -252,6 +260,11 @@ def list_leads_table(
                 "contact_name": contact.full_name if contact else None,
                 "contact_email": contact.email if contact else None,
                 "contact_phone": contact.phone if contact else None,
+                "contact_designation": contact.designation if contact else None,
+                "contact_secondary_mobile": contact.secondary_mobile if contact else None,
+                "contact_primary_phone": contact.primary_phone if contact else None,
+                "contact_secondary_phone": contact.secondary_phone if contact else None,
+                "contact_secondary_email": contact.secondary_email if contact else None,
                 "market_role": buyer.market_role.value if buyer.market_role else "unknown",
                 "market_role_reasoning": buyer.market_role_reasoning,
                 "producer_tier": buyer.producer_tier.value if buyer.producer_tier else None,
@@ -263,6 +276,30 @@ def list_leads_table(
                 "producer_tier_reasoning": buyer.producer_tier_reasoning,
             }
         )
+
+    if source:
+        rows = [row for row in rows if (row["source"] or "").lower() == source.lower()]
+
+    if exclude_source:
+        excluded = {
+            part.strip().lower()
+            for part in exclude_source.split(",")
+            if part.strip()
+        }
+        if excluded:
+            rows = [
+                row
+                for row in rows
+                if (row["source"] or "").lower() not in excluded
+            ]
+
+    if call_outcome:
+        from modules.calls import buyer_ids_with_latest_call_outcome
+
+        matched_buyer_ids = buyer_ids_with_latest_call_outcome(db, call_outcome)
+        rows = [row for row in rows if int(row["id"]) in matched_buyer_ids]
+
+    section_total = len(rows)
 
     query = (q or "").strip().lower()
     if query:
@@ -276,6 +313,13 @@ def list_leads_table(
             or query in (row["contact_name"] or "").lower()
             or query in (row["market_role"] or "").lower()
             or query in (row["market_role_reasoning"] or "").lower()
+            or query in (row.get("company_grading") or "").lower()
+            or query in (row.get("product_interest") or "").lower()
+            or query in (row.get("city") or "").lower()
+            or query in (row.get("remarks") or "").lower()
+            or query in (row.get("contact_phone") or "").lower()
+            or query in (row.get("contact_primary_phone") or "").lower()
+            or query in (row.get("contact_secondary_email") or "").lower()
         ]
 
     if score:
@@ -289,9 +333,6 @@ def list_leads_table(
 
     if industry:
         rows = [row for row in rows if (row["industry"] or "").lower() == industry.lower()]
-
-    if source:
-        rows = [row for row in rows if (row["source"] or "").lower() == source.lower()]
 
     if market_role:
         rows = [row for row in rows if (row["market_role"] or "unknown") == market_role]
@@ -312,7 +353,7 @@ def list_leads_table(
     rows.sort(key=sort_key, reverse=reverse)
 
     return {
-        "total": len(buyers),
+        "total": section_total,
         "filtered_count": len(rows),
         "rows": rows,
     }
@@ -337,6 +378,12 @@ def get_lead_table_row(db: Session, buyer_id: int) -> dict[str, object] | None:
         "facebook_company_url": buyer.facebook_company_url,
         "instagram_company_url": buyer.instagram_company_url,
         "source": buyer.source,
+        "legacy_serial_no": buyer.legacy_serial_no,
+        "company_grading": buyer.company_grading,
+        "product_interest": buyer.product_interest,
+        "city": buyer.city,
+        "address": buyer.address,
+        "remarks": buyer.remarks,
         "created_at": buyer.created_at,
         "latest_score": latest.score.value if latest else None,
         "score_reasoning": latest.reasoning if latest else None,
@@ -345,6 +392,11 @@ def get_lead_table_row(db: Session, buyer_id: int) -> dict[str, object] | None:
         "contact_name": contact.full_name if contact else None,
         "contact_email": contact.email if contact else None,
         "contact_phone": contact.phone if contact else None,
+        "contact_designation": contact.designation if contact else None,
+        "contact_secondary_mobile": contact.secondary_mobile if contact else None,
+        "contact_primary_phone": contact.primary_phone if contact else None,
+        "contact_secondary_phone": contact.secondary_phone if contact else None,
+        "contact_secondary_email": contact.secondary_email if contact else None,
         "market_role": buyer.market_role.value if buyer.market_role else "unknown",
         "market_role_reasoning": buyer.market_role_reasoning,
         "producer_tier": buyer.producer_tier.value if buyer.producer_tier else None,
@@ -370,6 +422,12 @@ def update_lead_table_row(db: Session, buyer_id: int, data: dict) -> dict[str, o
             "linkedin_company_url",
             "facebook_company_url",
             "instagram_company_url",
+            "legacy_serial_no",
+            "company_grading",
+            "product_interest",
+            "city",
+            "address",
+            "remarks",
         )
         if key in data
     }
@@ -377,7 +435,17 @@ def update_lead_table_row(db: Session, buyer_id: int, data: dict) -> dict[str, o
         if not buyers_module.update_buyer(db, buyer_id, buyer_fields):
             return None
 
-    contact_fields_present = any(key in data for key in ("contact_name", "contact_email", "contact_phone"))
+    contact_keys = (
+        "contact_name",
+        "contact_email",
+        "contact_phone",
+        "contact_designation",
+        "contact_secondary_mobile",
+        "contact_primary_phone",
+        "contact_secondary_phone",
+        "contact_secondary_email",
+    )
+    contact_fields_present = any(key in data for key in contact_keys)
     if contact_fields_present:
         buyers_module.upsert_primary_contact(
             db,
@@ -386,6 +454,11 @@ def update_lead_table_row(db: Session, buyer_id: int, data: dict) -> dict[str, o
             full_name=data.get("contact_name"),
             email=data.get("contact_email"),
             phone=data.get("contact_phone"),
+            designation=data.get("contact_designation"),
+            secondary_mobile=data.get("contact_secondary_mobile"),
+            primary_phone=data.get("contact_primary_phone"),
+            secondary_phone=data.get("contact_secondary_phone"),
+            secondary_email=data.get("contact_secondary_email"),
         )
 
     row = get_lead_table_row(db, buyer_id)
@@ -400,14 +473,46 @@ def update_lead_table_row(db: Session, buyer_id: int, data: dict) -> dict[str, o
     return row
 
 
-def dedupe_leads_table(db: Session) -> dict[str, object]:
-    """Remove duplicate leads, keeping the richest record in each cluster."""
+def _filter_buyers_by_section(
+    buyers: list[Buyer],
+    *,
+    source: str | None = None,
+    exclude_source: str | None = None,
+) -> list[Buyer]:
+    excluded = {
+        part.strip().lower()
+        for part in (exclude_source or "").split(",")
+        if part.strip()
+    }
+    filtered: list[Buyer] = []
+    for buyer in buyers:
+        buyer_source = (buyer.source or "").lower()
+        if source and buyer_source != source.lower():
+            continue
+        if excluded and buyer_source in excluded:
+            continue
+        filtered.append(buyer)
+    return filtered
+
+
+def dedupe_leads_table(
+    db: Session,
+    *,
+    source: str | None = None,
+    exclude_source: str | None = None,
+) -> dict[str, object]:
+    """Remove duplicate leads within a section, keeping the richest record in each cluster."""
     from collections import defaultdict
 
     from modules.audit import log_action
     from modules.lead_discovery import _domain, _normalize_name
 
-    buyers = buyers_module.list_buyers(db)
+    all_buyers = buyers_module.list_buyers(db)
+    buyers = _filter_buyers_by_section(
+        all_buyers,
+        source=source,
+        exclude_source=exclude_source,
+    )
     if len(buyers) < 2:
         return {"removed_count": 0, "kept_count": len(buyers), "groups": []}
 
@@ -477,7 +582,12 @@ def dedupe_leads_table(db: Session) -> dict[str, object]:
         entity_type="buyer",
         entity_id=0,
         action="table_deduped",
-        details={"removed_count": removed_count, "groups": len(groups)},
+        details={
+            "removed_count": removed_count,
+            "groups": len(groups),
+            "source": source,
+            "exclude_source": exclude_source,
+        },
     )
 
     return {
@@ -487,13 +597,33 @@ def dedupe_leads_table(db: Session) -> dict[str, object]:
     }
 
 
-def cleanup_sparse_csv_leads(db: Session) -> dict[str, object]:
-    """Remove CSV-imported leads that have almost no scraped details."""
+_SPARSE_IMPORT_SOURCES = frozenset({"csv", "old_clients"})
+
+
+def cleanup_sparse_csv_leads(
+    db: Session,
+    *,
+    source: str | None = None,
+    exclude_source: str | None = None,
+) -> dict[str, object]:
+    """Remove sparse CSV/old-client imports that have almost no scraped details."""
     from modules.audit import log_action
 
     removed: list[dict[str, object]] = []
+    excluded = {
+        part.strip().lower()
+        for part in (exclude_source or "").split(",")
+        if part.strip()
+    }
     for buyer in buyers_module.list_buyers(db):
-        if (buyer.source or "").lower() != "csv":
+        buyer_source = (buyer.source or "").lower()
+        if source:
+            if buyer_source != source.lower():
+                continue
+        elif excluded:
+            if buyer_source in excluded:
+                continue
+        elif buyer_source not in _SPARSE_IMPORT_SOURCES:
             continue
         if not buyers_module.is_sparse_buyer(db, buyer):
             continue
@@ -507,7 +637,11 @@ def cleanup_sparse_csv_leads(db: Session) -> dict[str, object]:
         entity_type="buyer",
         entity_id=0,
         action="sparse_csv_cleanup",
-        details={"removed_count": len(removed)},
+        details={
+            "removed_count": len(removed),
+            "source": source,
+            "exclude_source": exclude_source,
+        },
     )
 
     return {
@@ -516,7 +650,7 @@ def cleanup_sparse_csv_leads(db: Session) -> dict[str, object]:
     }
 
 
-def delete_lead_table_row(db: Session, buyer_id: int) -> bool:
+def delete_lead_table_row(db: Session, buyer_id: int, *, commit: bool = True) -> bool:
     from modules.audit import log_action
 
     buyer = buyers_module.get_buyer(db, buyer_id)
@@ -524,14 +658,15 @@ def delete_lead_table_row(db: Session, buyer_id: int) -> bool:
         return False
 
     company_name = buyer.company_name
-    if not buyers_module.delete_buyer(db, buyer_id):
+    if not buyers_module.delete_buyer(db, buyer_id, commit=commit):
         return False
 
-    log_action(
-        db,
-        entity_type="buyer",
-        entity_id=buyer_id,
-        action="deleted",
-        details={"company_name": company_name},
-    )
+    if commit:
+        log_action(
+            db,
+            entity_type="buyer",
+            entity_id=buyer_id,
+            action="deleted",
+            details={"company_name": company_name},
+        )
     return True

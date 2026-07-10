@@ -76,9 +76,27 @@ def buyer_data_score(db: Session, buyer: Buyer) -> int:
         points += 2
     if buyer.instagram_company_url:
         points += 2
+    if buyer.company_grading:
+        points += 1
+    if buyer.product_interest:
+        points += 2
+    if buyer.city:
+        points += 1
+    if buyer.address:
+        points += 1
+    if buyer.remarks:
+        points += 1
     if contact and is_valid_email(contact.email):
         points += 15
     if contact and contact.phone:
+        points += 5
+    if contact and contact.primary_phone:
+        points += 3
+    if contact and contact.secondary_mobile:
+        points += 2
+    if contact and contact.secondary_phone:
+        points += 2
+    if contact and is_valid_email(contact.secondary_email):
         points += 5
     if latest_score:
         points += 5
@@ -99,13 +117,25 @@ def find_buyer_by_name_or_domain(
     *,
     company_name: str,
     website_url: str | None = None,
+    source: str | None = None,
+    exclude_source: str | None = None,
 ) -> Buyer | None:
     name_key = normalize_buyer_key(company_name)
     domain = buyer_website_domain(website_url)
     match_by_name: Buyer | None = None
     match_by_domain: Buyer | None = None
+    excluded = {
+        part.strip().lower()
+        for part in (exclude_source or "").split(",")
+        if part.strip()
+    }
 
     for buyer in list_buyers(db):
+        buyer_source = (buyer.source or "").lower()
+        if source and buyer_source != source.lower():
+            continue
+        if excluded and buyer_source in excluded:
+            continue
         if normalize_buyer_key(buyer.company_name) == name_key:
             match_by_name = buyer
         if domain and buyer_website_domain(buyer.website_url) == domain:
@@ -129,11 +159,14 @@ def get_buyer(db: Session, buyer_id: int) -> Buyer | None:
     return db.get(Buyer, buyer_id)
 
 
-def create_buyer(db: Session, data: dict) -> Buyer:
+def create_buyer(db: Session, data: dict, *, commit: bool = True) -> Buyer:
     buyer = Buyer(**data)
     db.add(buyer)
-    db.commit()
-    db.refresh(buyer)
+    if commit:
+        db.commit()
+        db.refresh(buyer)
+    else:
+        db.flush()
     return buyer
 
 
@@ -154,13 +187,16 @@ def get_contact(db: Session, contact_id: int) -> Contact | None:
     return db.get(Contact, contact_id)
 
 
-def create_contact(db: Session, data: dict) -> Contact:
+def create_contact(db: Session, data: dict, *, commit: bool = True) -> Contact:
     consent = data.pop("consent_status", "unknown")
     data["consent_status"] = ConsentStatus(consent)
     contact = Contact(**data)
     db.add(contact)
-    db.commit()
-    db.refresh(contact)
+    if commit:
+        db.commit()
+        db.refresh(contact)
+    else:
+        db.flush()
     return contact
 
 
@@ -178,6 +214,12 @@ def update_buyer(db: Session, buyer_id: int, data: dict) -> Buyer | None:
             "facebook_company_url",
             "instagram_company_url",
             "source",
+            "legacy_serial_no",
+            "company_grading",
+            "product_interest",
+            "city",
+            "address",
+            "remarks",
         }:
             setattr(buyer, key, value)
     db.commit()
@@ -198,6 +240,10 @@ def update_contact(db: Session, contact_id: int, data: dict) -> Contact | None:
             "email",
             "phone",
             "designation",
+            "secondary_mobile",
+            "primary_phone",
+            "secondary_phone",
+            "secondary_email",
             "preferred_language",
             "date_of_birth",
             "nationality",
@@ -231,7 +277,19 @@ def upsert_primary_contact(
     full_name: str | None = None,
     email: str | None = None,
     phone: str | None = None,
+    designation: str | None = None,
+    secondary_mobile: str | None = None,
+    primary_phone: str | None = None,
+    secondary_phone: str | None = None,
+    secondary_email: str | None = None,
 ) -> Contact | None:
+    contact_extras = {
+        "designation": designation,
+        "secondary_mobile": secondary_mobile,
+        "primary_phone": primary_phone,
+        "secondary_phone": secondary_phone,
+        "secondary_email": secondary_email,
+    }
     if contact_id:
         contact = db.get(Contact, contact_id)
         if contact and contact.buyer_id == buyer_id:
@@ -241,27 +299,32 @@ def upsert_primary_contact(
                 contact.email = email or None
             if phone is not None:
                 contact.phone = phone or None
+            for key, value in contact_extras.items():
+                if value is not None:
+                    setattr(contact, key, value or None)
             db.commit()
             db.refresh(contact)
             return contact
 
-    if not (full_name or email or phone):
+    has_extra = any(value for value in contact_extras.values())
+    if not (full_name or email or phone or has_extra):
         return None
 
-    return create_contact(
-        db,
-        {
-            "buyer_id": buyer_id,
-            "full_name": full_name or "General contact",
-            "email": email or None,
-            "phone": phone or None,
-            "data_source": "table_edit",
-            "consent_status": "unknown",
-        },
-    )
+    payload = {
+        "buyer_id": buyer_id,
+        "full_name": full_name or "General contact",
+        "email": email or None,
+        "phone": phone or None,
+        "data_source": "table_edit",
+        "consent_status": "unknown",
+    }
+    for key, value in contact_extras.items():
+        if value is not None:
+            payload[key] = value or None
+    return create_contact(db, payload)
 
 
-def delete_buyer(db: Session, buyer_id: int) -> bool:
+def delete_buyer(db: Session, buyer_id: int, *, commit: bool = True) -> bool:
     buyer = get_buyer(db, buyer_id)
     if not buyer:
         return False
@@ -287,5 +350,8 @@ def delete_buyer(db: Session, buyer_id: int) -> bool:
         synchronize_session=False
     )
     db.delete(buyer)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return True

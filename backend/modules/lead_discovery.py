@@ -248,6 +248,7 @@ _CONTACT_PATHS = (
 )
 _NOT_FOUND = "Not found"
 MAX_DISCOVERY_INDUSTRIES = 3
+OLD_CLIENTS_IMPORT_PARSER = "old_clients_v2"
 
 
 @dataclass
@@ -263,6 +264,17 @@ class DiscoveryCandidate:
     linkedin_url: str = _NOT_FOUND
     country: str | None = None
     industry: str | None = None
+    legacy_serial_no: int | None = None
+    company_grading: str | None = None
+    designation: str | None = None
+    secondary_mobile: str | None = None
+    primary_phone: str | None = None
+    secondary_phone: str | None = None
+    secondary_email: str | None = None
+    product_interest: str | None = None
+    city: str | None = None
+    address: str | None = None
+    remarks: str | None = None
     source: str = "manual"
     source_detail: str = ""
     match_reason: str = ""
@@ -283,6 +295,17 @@ class DiscoveryCandidate:
             "linkedin_url": self.linkedin_url,
             "country": self.country,
             "industry": self.industry,
+            "legacy_serial_no": self.legacy_serial_no,
+            "company_grading": self.company_grading,
+            "designation": self.designation,
+            "secondary_mobile": self.secondary_mobile,
+            "primary_phone": self.primary_phone,
+            "secondary_phone": self.secondary_phone,
+            "secondary_email": self.secondary_email,
+            "product_interest": self.product_interest,
+            "city": self.city,
+            "address": self.address,
+            "remarks": self.remarks,
             "source": self.source,
             "source_detail": self.source_detail,
             "match_reason": self.match_reason,
@@ -345,10 +368,33 @@ def _value_or_none(value: str | None) -> str | None:
     return value
 
 
-def _existing_buyer_keys(db: Session) -> tuple[set[str], set[str]]:
+def _import_scope_for_source(import_source: str | None) -> dict[str, str | None]:
+    """Keep old-client imports separate from the main leads table."""
+    normalized = (import_source or "").strip().lower()
+    if normalized == "old_clients":
+        return {"source": "old_clients", "exclude_source": None}
+    return {"source": None, "exclude_source": "old_clients"}
+
+
+def _existing_buyer_keys(
+    db: Session,
+    *,
+    source: str | None = None,
+    exclude_source: str | None = None,
+) -> tuple[set[str], set[str]]:
     names: set[str] = set()
     domains: set[str] = set()
+    excluded = {
+        part.strip().lower()
+        for part in (exclude_source or "").split(",")
+        if part.strip()
+    }
     for buyer in buyers_module.list_buyers(db):
+        buyer_source = (buyer.source or "").lower()
+        if source and buyer_source != source.lower():
+            continue
+        if excluded and buyer_source in excluded:
+            continue
         names.add(_normalize_name(buyer.company_name))
         domain = _domain(buyer.website_url)
         if domain:
@@ -1244,7 +1290,7 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
     # On a site that only loosely matches, its Facebook/Instagram/LinkedIn could
     # belong to someone else — better to leave those cells blank. A user-supplied
     # (CSV/manual) website is trusted even if its domain doesn't echo the name.
-    site_is_trusted = candidate.source in ("csv", "manual") or _website_matches_company(
+    site_is_trusted = candidate.source in ("csv", "old_clients", "manual") or _website_matches_company(
         candidate.company_name, homepage
     )
     if site_is_trusted:
@@ -1590,6 +1636,49 @@ def _resolve_seed_context(
     return industries, categories, website_url
 
 
+def discovery_candidate_from_dict(data: dict[str, Any]) -> DiscoveryCandidate:
+    return DiscoveryCandidate(
+        candidate_id=data.get("candidate_id") or "",
+        company_name=data["company_name"],
+        website_url=data.get("website_url"),
+        contact_name=data.get("contact_name"),
+        email=data.get("email") or _NOT_FOUND,
+        phone=data.get("phone") or _NOT_FOUND,
+        facebook_url=data.get("facebook_url") or _NOT_FOUND,
+        instagram_url=data.get("instagram_url") or _NOT_FOUND,
+        linkedin_url=data.get("linkedin_url") or _NOT_FOUND,
+        country=data.get("country"),
+        industry=data.get("industry"),
+        legacy_serial_no=data.get("legacy_serial_no"),
+        company_grading=data.get("company_grading"),
+        designation=data.get("designation"),
+        secondary_mobile=data.get("secondary_mobile"),
+        primary_phone=data.get("primary_phone"),
+        secondary_phone=data.get("secondary_phone"),
+        secondary_email=data.get("secondary_email"),
+        product_interest=data.get("product_interest"),
+        city=data.get("city"),
+        address=data.get("address"),
+        remarks=data.get("remarks"),
+        source=data.get("source") or "manual",
+        source_detail=data.get("source_detail") or "",
+        match_reason=data.get("match_reason") or "",
+        already_exists=bool(data.get("already_exists")),
+        is_valid_business=data.get("is_valid_business", True),
+        invalid_reason=data.get("invalid_reason"),
+    )
+
+
+def enrich_discovery_candidate(candidate: DiscoveryCandidate) -> DiscoveryCandidate:
+    """Scrape contact details for one discovery candidate (quality over speed)."""
+    _enrich_candidate_contact(candidate, keep_row=True)
+    valid, invalid_reason = _validate_business_candidate(candidate)
+    if not valid:
+        candidate.is_valid_business = False
+        candidate.invalid_reason = invalid_reason
+    return candidate
+
+
 def discover_leads(
     db: Session,
     *,
@@ -1602,9 +1691,10 @@ def discover_leads(
     limit: int = 15,
     use_web_search: bool = True,
     use_website_links: bool = True,
+    skip_enrichment: bool = False,
 ) -> DiscoveryResult:
     categories = categories or []
-    limit = max(1, min(limit, 30))
+    limit = max(1, min(limit, 15))
     result = DiscoveryResult()
 
     normalized_industries = _normalize_industries(industries, industry)
@@ -1686,8 +1776,12 @@ def discover_leads(
             result.messages.append("No partner/distributor links found on the seed website.")
 
     all_candidates = _dedupe_candidates(all_candidates)[:limit]
-    _enrich_candidates(all_candidates)
-    existing_names, existing_domains = _existing_buyer_keys(db)
+    if not skip_enrichment:
+        _enrich_candidates(all_candidates)
+    existing_names, existing_domains = _existing_buyer_keys(
+        db,
+        **_import_scope_for_source(None),
+    )
     _mark_existing(all_candidates, existing_names, existing_domains)
     result.candidates = all_candidates
 
@@ -1696,8 +1790,30 @@ def discover_leads(
     return result
 
 
+def _normalize_csv_header(field: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", field.strip().lower()).strip("_")
+
+
+def _clean_spreadsheet_scalar(value: str) -> str:
+    """Normalize Excel-exported numbers like '82559646661.0' and whitespace."""
+    text = (value or "").strip()
+    if re.fullmatch(r"\d+\.0+", text):
+        return text.split(".", 1)[0]
+    return text
+
+
+def _parse_optional_int(value: str) -> int | None:
+    cleaned = _clean_spreadsheet_scalar(value)
+    if not cleaned:
+        return None
+    try:
+        return int(float(cleaned))
+    except ValueError:
+        return None
+
+
 def parse_csv_candidates(content: str, default_country: str | None = None) -> list[DiscoveryCandidate]:
-    """Parse CSV with flexible headers (matches leads table export columns)."""
+    """Parse CSV with flexible headers (matches leads table export + old-client Excel columns)."""
     if not content.strip():
         return []
 
@@ -1712,9 +1828,9 @@ def parse_csv_candidates(content: str, default_country: str | None = None) -> li
         return []
 
     def col(*names: str) -> str | None:
+        wanted = set(names)
         for field in reader.fieldnames or []:
-            normalized = field.strip().lower().replace(" ", "_").replace("-", "_")
-            if normalized in names:
+            if _normalize_csv_header(field) in wanted:
                 return field
         return None
 
@@ -1735,7 +1851,14 @@ def parse_csv_candidates(content: str, default_country: str | None = None) -> li
     )
     website_col = col("website_url", "website", "url", "web", "site", "homepage")
     country_col = col("country", "market", "region", "nation", "location")
-    industry_col = col("industry", "sector", "type", "business_type", "category")
+    industry_col = col(
+        "industry",
+        "sector",
+        "type",
+        "business_type",
+        "busniess_type",
+        "category",
+    )
     contact_col = col(
         "contact_name",
         "contact",
@@ -1746,11 +1869,61 @@ def parse_csv_candidates(content: str, default_country: str | None = None) -> li
         "attn",
         "attention",
     )
-    email_col = col("contact_email", "email", "e_mail", "e-mail", "mail")
-    phone_col = col("contact_phone", "phone", "telephone", "mobile", "tel", "cell")
+    email_col = col(
+        "contact_email",
+        "email",
+        "e_mail",
+        "e-mail",
+        "mail",
+        "primary_email",
+        "primary_e_mail",
+    )
+    phone_col = col(
+        "contact_phone",
+        "phone",
+        "telephone",
+        "mobile",
+        "tel",
+        "cell",
+        "primary_mobile_no",
+        "primary_mobile",
+        "primary_mobile_number",
+    )
     linkedin_col = col("linkedin_company_url", "linkedin", "linkedin_url")
     facebook_col = col("facebook_company_url", "facebook", "facebook_url")
     instagram_col = col("instagram_company_url", "instagram", "instagram_url")
+    serial_col = col("s_no", "serial_no", "serial", "legacy_serial_no", "no", "sr_no")
+    grading_col = col("companies_grading", "company_grading", "grading", "grade")
+    designation_col = col("designation", "title", "job_title", "position")
+    secondary_mobile_col = col(
+        "secondary_mobile_no",
+        "secondary_mobile",
+        "secondary_mobile_number",
+        "alt_mobile",
+    )
+    primary_phone_col = col(
+        "primary_phone_no",
+        "primary_phone",
+        "primary_telephone",
+        "office_phone",
+        "landline",
+    )
+    secondary_phone_col = col(
+        "secondary_phone_no",
+        "secondary_phone",
+        "secondary_telephone",
+        "alt_phone",
+    )
+    secondary_email_col = col(
+        "secondary_email",
+        "secondary_e_mail",
+        "alt_email",
+        "alternate_email",
+    )
+    product_col = col("product", "products", "product_interest", "product_focus")
+    city_col = col("city", "town")
+    address_col = col("address", "street_address", "full_address")
+    remarks_col = col("remarks", "remark", "notes", "note", "comment", "comments")
 
     if not name_col and reader.fieldnames:
         name_col = reader.fieldnames[0]
@@ -1761,7 +1934,7 @@ def parse_csv_candidates(content: str, default_country: str | None = None) -> li
     def csv_value(row: dict[str, str], column: str | None) -> str:
         if not column:
             return ""
-        return (row.get(column) or "").strip()
+        return _clean_spreadsheet_scalar(row.get(column) or "")
 
     candidates: list[DiscoveryCandidate] = []
     for row in reader:
@@ -1777,6 +1950,10 @@ def parse_csv_candidates(content: str, default_country: str | None = None) -> li
         linkedin = csv_value(row, linkedin_col)
         facebook = csv_value(row, facebook_col)
         instagram = csv_value(row, instagram_col)
+        secondary_mobile = csv_value(row, secondary_mobile_col) or None
+        primary_phone = csv_value(row, primary_phone_col) or None
+        secondary_phone = csv_value(row, secondary_phone_col) or None
+        secondary_email = csv_value(row, secondary_email_col) or None
         candidates.append(
             DiscoveryCandidate(
                 candidate_id=str(uuid.uuid4()),
@@ -1790,6 +1967,17 @@ def parse_csv_candidates(content: str, default_country: str | None = None) -> li
                 instagram_url=instagram or _NOT_FOUND,
                 country=country or default_country,
                 industry=industry or None,
+                legacy_serial_no=_parse_optional_int(csv_value(row, serial_col)),
+                company_grading=csv_value(row, grading_col) or None,
+                designation=csv_value(row, designation_col) or None,
+                secondary_mobile=secondary_mobile,
+                primary_phone=primary_phone,
+                secondary_phone=secondary_phone,
+                secondary_email=secondary_email,
+                product_interest=csv_value(row, product_col) or None,
+                city=csv_value(row, city_col) or None,
+                address=csv_value(row, address_col) or None,
+                remarks=csv_value(row, remarks_col) or None,
                 source="csv",
                 source_detail="CSV import",
                 match_reason="Imported from CSV",
@@ -1808,6 +1996,9 @@ def _field_or_not_found(raw: dict[str, Any], *keys: str) -> str:
 
 def _import_raw_to_candidate(raw: dict[str, Any]) -> DiscoveryCandidate:
     name = (raw.get("company_name") or "").strip()
+    legacy_serial = raw.get("legacy_serial_no")
+    if legacy_serial is not None and not isinstance(legacy_serial, int):
+        legacy_serial = _parse_optional_int(str(legacy_serial))
     return DiscoveryCandidate(
         candidate_id=str(uuid.uuid4()),
         company_name=name,
@@ -1820,6 +2011,20 @@ def _import_raw_to_candidate(raw: dict[str, Any]) -> DiscoveryCandidate:
         instagram_url=_field_or_not_found(raw, "instagram_url", "instagram_company_url"),
         country=raw.get("country") or None,
         industry=raw.get("industry") or None,
+        legacy_serial_no=legacy_serial,
+        company_grading=(raw.get("company_grading") or "").strip() or None,
+        designation=(raw.get("designation") or raw.get("contact_designation") or "").strip() or None,
+        secondary_mobile=(raw.get("secondary_mobile") or raw.get("contact_secondary_mobile") or "").strip()
+        or None,
+        primary_phone=(raw.get("primary_phone") or raw.get("contact_primary_phone") or "").strip() or None,
+        secondary_phone=(raw.get("secondary_phone") or raw.get("contact_secondary_phone") or "").strip()
+        or None,
+        secondary_email=(raw.get("secondary_email") or raw.get("contact_secondary_email") or "").strip()
+        or None,
+        product_interest=(raw.get("product_interest") or "").strip() or None,
+        city=(raw.get("city") or "").strip() or None,
+        address=(raw.get("address") or "").strip() or None,
+        remarks=(raw.get("remarks") or "").strip() or None,
         source=raw.get("source") or "csv",
         source_detail="CSV import",
         match_reason="Imported from CSV",
@@ -1833,8 +2038,27 @@ def _sync_candidate_to_raw(candidate: DiscoveryCandidate, raw: dict[str, Any]) -
         enriched["website_url"] = candidate.website_url
     if candidate.country:
         enriched["country"] = candidate.country
+    if candidate.industry:
+        enriched["industry"] = candidate.industry
     if candidate.contact_name:
         enriched["contact_name"] = candidate.contact_name
+    if candidate.legacy_serial_no is not None:
+        enriched["legacy_serial_no"] = candidate.legacy_serial_no
+    for attr in (
+        "company_grading",
+        "designation",
+        "secondary_mobile",
+        "primary_phone",
+        "secondary_phone",
+        "secondary_email",
+        "product_interest",
+        "city",
+        "address",
+        "remarks",
+    ):
+        value = getattr(candidate, attr)
+        if value:
+            enriched[attr] = value
 
     for attr, key in (
         ("email", "email"),
@@ -1891,6 +2115,7 @@ def discover_from_csv(
     default_country: str | None = None,
     *,
     for_leads_table: bool = False,
+    import_source: str | None = None,
 ) -> DiscoveryResult:
     result = DiscoveryResult(sources_used=["csv"])
     try:
@@ -1903,7 +2128,11 @@ def discover_from_csv(
         result.messages.append("No rows found in CSV.")
         return result
 
-    existing_names, existing_domains = _existing_buyer_keys(db)
+    scope_source = import_source if import_source else None
+    existing_names, existing_domains = _existing_buyer_keys(
+        db,
+        **_import_scope_for_source(scope_source),
+    )
     invalid_count = _flag_invalid_candidates(candidates)
     if invalid_count:
         result.messages.append(
@@ -1912,13 +2141,13 @@ def discover_from_csv(
     if for_leads_table:
         result.messages.append(
             f"Loaded {len(candidates)} row(s) from file. "
-            "Website scraping and scoring run when you click Import (about 6s per row)."
+            "Use Import only to save mapped fields as-is, or Research & score later from the table."
         )
         without_website = sum(1 for c in candidates if not _homepage_url(c.website_url))
         if without_website and not web_search.any_combined_provider_available():
             result.messages.append(
-                f"{without_website} row(s) have no website — set SERPAPI_API_KEY (and install ddgs "
-                "for DuckDuckGo) to auto-find sites on import."
+                f"{without_website} row(s) have no website — research later needs SERPAPI_API_KEY "
+                "(and ddgs for DuckDuckGo)."
             )
     else:
         _enrich_candidates(candidates)
@@ -1933,6 +2162,7 @@ def import_candidates(
     *,
     auto_onboard: bool = False,
     replace_duplicates: bool = False,
+    skip_enrichment: bool = False,
 ) -> dict[str, Any]:
     from modules import leads as leads_module
     from modules.audit import log_action
@@ -1941,7 +2171,14 @@ def import_candidates(
     skipped: list[dict[str, str]] = []
     replaced: list[dict[str, Any]] = []
     onboard_results: list[dict[str, Any]] = []
-    existing_names, existing_domains = _existing_buyer_keys(db)
+    batch_source = next(
+        ((raw.get("source") or "").strip() for raw in candidates if (raw.get("source") or "").strip()),
+        "",
+    )
+    existing_names, existing_domains = _existing_buyer_keys(
+        db,
+        **_import_scope_for_source(batch_source),
+    )
 
     def _import_data_score(raw: dict[str, Any]) -> int:
         points = 0
@@ -1951,6 +2188,16 @@ def import_candidates(
             points += 2
         if raw.get("industry"):
             points += 2
+        if raw.get("company_grading"):
+            points += 1
+        if raw.get("product_interest"):
+            points += 2
+        if raw.get("city"):
+            points += 1
+        if raw.get("address"):
+            points += 1
+        if raw.get("remarks"):
+            points += 1
         if _value_or_none(raw.get("linkedin_url")):
             points += 3
         if _value_or_none(raw.get("facebook_url")):
@@ -1961,131 +2208,202 @@ def import_candidates(
             points += 15
         if _value_or_none(raw.get("phone")):
             points += 5
+        if raw.get("primary_phone"):
+            points += 3
+        if raw.get("secondary_mobile"):
+            points += 2
+        if raw.get("secondary_phone"):
+            points += 2
+        if raw.get("secondary_email"):
+            points += 5
         return points
 
-    for raw in candidates:
-        name = (raw.get("company_name") or "").strip()
-        if not name:
-            skipped.append({"company_name": name or "(empty)", "reason": "Missing company name"})
-            continue
+    persist_each_row = not skip_enrichment
 
-        candidate = _import_raw_to_candidate(raw)
-        if _needs_import_enrichment(raw):
-            _enrich_candidate_contact(candidate, keep_row=True)
-
-        valid, invalid_reason = _validate_business_candidate(candidate)
-        if not valid:
-            skipped.append(
-                {
-                    "company_name": name,
-                    "reason": f"Not a valid business — {invalid_reason}",
-                }
-            )
-            continue
-
-        raw = _sync_candidate_to_raw(candidate, raw)
-        name = (raw.get("company_name") or "").strip()
-
-        name_key = _normalize_name(name)
-        domain = _domain(raw.get("website_url"))
-        duplicate = name_key in existing_names or (domain and domain in existing_domains)
-        if duplicate:
-            existing = buyers_module.find_buyer_by_name_or_domain(
-                db,
-                company_name=name,
-                website_url=raw.get("website_url"),
-            )
-            should_replace = False
-            if replace_duplicates and existing:
-                existing_score = buyers_module.buyer_data_score(db, existing)
-                import_score = _import_data_score(raw)
-                should_replace = buyers_module.is_sparse_buyer(db, existing) or import_score > existing_score
-
-            if should_replace and existing:
-                leads_module.delete_lead_table_row(db, existing.id)
-                existing_names.discard(_normalize_name(existing.company_name))
-                existing_domain = _domain(existing.website_url)
-                if existing_domain:
-                    existing_domains.discard(existing_domain)
-                replaced.append(
-                    {
-                        "company_name": name,
-                        "replaced_id": existing.id,
-                        "reason": "Replaced sparse duplicate with fresh CSV data",
-                    }
-                )
-            else:
-                skipped.append({"company_name": name, "reason": "Already in leads"})
+    try:
+        for raw in candidates:
+            name = (raw.get("company_name") or "").strip()
+            if not name:
+                skipped.append({"company_name": name or "(empty)", "reason": "Missing company name"})
                 continue
 
-        buyer = buyers_module.create_buyer(
-            db,
-            {
-                "company_name": name,
-                "website_url": raw.get("website_url") or None,
-                "country": raw.get("country") or None,
-                "industry": raw.get("industry") or None,
-                "linkedin_company_url": _value_or_none(raw.get("linkedin_url")),
-                "facebook_company_url": _value_or_none(raw.get("facebook_url")),
-                "instagram_company_url": _value_or_none(raw.get("instagram_url")),
-                "source": raw.get("source") or "discovery",
-            },
-        )
-        existing_names.add(name_key)
-        if domain:
-            existing_domains.add(domain)
-        created.append(buyer)
-        log_action(
-            db,
-            entity_type="buyer",
-            entity_id=buyer.id,
-            action="discovered_import",
-            details={
-                "source": raw.get("source"),
-                "email": _value_or_none(raw.get("email")),
-                "phone": _value_or_none(raw.get("phone")),
-                "facebook_url": _value_or_none(raw.get("facebook_url")),
-                "instagram_url": _value_or_none(raw.get("instagram_url")),
-                "linkedin_url": _value_or_none(raw.get("linkedin_url")),
-            },
-        )
+            candidate = _import_raw_to_candidate(raw)
+            if not skip_enrichment and _needs_import_enrichment(raw):
+                _enrich_candidate_contact(candidate, keep_row=True)
 
-        email = _value_or_none(raw.get("email"))
-        phone = _value_or_none(raw.get("phone"))
-        contact_name = (raw.get("contact_name") or "").strip() or "General contact"
-        if email or phone or contact_name != "General contact":
-            buyers_module.create_contact(
+            if skip_enrichment:
+                valid, invalid_reason = _validate_business_name_only(candidate.company_name)
+            else:
+                valid, invalid_reason = _validate_business_candidate(candidate)
+            if not valid:
+                skipped.append(
+                    {
+                        "company_name": name,
+                        "reason": f"Not a valid business — {invalid_reason}",
+                    }
+                )
+                continue
+
+            raw = _sync_candidate_to_raw(candidate, raw)
+            name = (raw.get("company_name") or "").strip()
+
+            name_key = _normalize_name(name)
+            domain = _domain(raw.get("website_url"))
+            duplicate = name_key in existing_names or (domain and domain in existing_domains)
+            if duplicate:
+                scope = _import_scope_for_source(raw.get("source"))
+                existing = buyers_module.find_buyer_by_name_or_domain(
+                    db,
+                    company_name=name,
+                    website_url=raw.get("website_url"),
+                    **scope,
+                )
+                should_replace = False
+                if replace_duplicates and existing:
+                    existing_score = buyers_module.buyer_data_score(db, existing)
+                    import_score = _import_data_score(raw)
+                    should_replace = (
+                        buyers_module.is_sparse_buyer(db, existing) or import_score > existing_score
+                    )
+
+                if should_replace and existing:
+                    leads_module.delete_lead_table_row(
+                        db, existing.id, commit=persist_each_row
+                    )
+                    existing_names.discard(_normalize_name(existing.company_name))
+                    existing_domain = _domain(existing.website_url)
+                    if existing_domain:
+                        existing_domains.discard(existing_domain)
+                    replaced.append(
+                        {
+                            "company_name": name,
+                            "replaced_id": existing.id,
+                            "reason": "Replaced sparse duplicate with fresh CSV data",
+                        }
+                    )
+                else:
+                    skipped.append({"company_name": name, "reason": "Already in leads"})
+                    continue
+
+            buyer = buyers_module.create_buyer(
                 db,
                 {
-                    "buyer_id": buyer.id,
-                    "full_name": contact_name,
-                    "email": email,
-                    "phone": phone,
-                    "linkedin_profile_url": _value_or_none(raw.get("linkedin_url")),
-                    "data_source": "discovery",
-                    "consent_status": "unknown",
+                    "company_name": name,
+                    "website_url": raw.get("website_url") or None,
+                    "country": raw.get("country") or None,
+                    "industry": raw.get("industry") or None,
+                    "linkedin_company_url": _value_or_none(raw.get("linkedin_url")),
+                    "facebook_company_url": _value_or_none(raw.get("facebook_url")),
+                    "instagram_company_url": _value_or_none(raw.get("instagram_url")),
+                    "source": raw.get("source") or "discovery",
+                    "legacy_serial_no": raw.get("legacy_serial_no"),
+                    "company_grading": (raw.get("company_grading") or None),
+                    "product_interest": (raw.get("product_interest") or None),
+                    "city": (raw.get("city") or None),
+                    "address": (raw.get("address") or None),
+                    "remarks": (raw.get("remarks") or None),
+                },
+                commit=persist_each_row,
+            )
+            existing_names.add(name_key)
+            if domain:
+                existing_domains.add(domain)
+            created.append(buyer)
+            if persist_each_row:
+                log_action(
+                    db,
+                    entity_type="buyer",
+                    entity_id=buyer.id,
+                    action="discovered_import",
+                    details={
+                        "source": raw.get("source"),
+                        "email": _value_or_none(raw.get("email")),
+                        "phone": _value_or_none(raw.get("phone")),
+                        "facebook_url": _value_or_none(raw.get("facebook_url")),
+                        "instagram_url": _value_or_none(raw.get("instagram_url")),
+                        "linkedin_url": _value_or_none(raw.get("linkedin_url")),
+                        "skip_enrichment": skip_enrichment,
+                    },
+                )
+
+            email = _value_or_none(raw.get("email"))
+            phone = _value_or_none(raw.get("phone"))
+            contact_name = (raw.get("contact_name") or "").strip() or "General contact"
+            designation = (raw.get("designation") or "").strip() or None
+            secondary_mobile = (raw.get("secondary_mobile") or "").strip() or None
+            primary_phone = (raw.get("primary_phone") or "").strip() or None
+            secondary_phone = (raw.get("secondary_phone") or "").strip() or None
+            secondary_email = (raw.get("secondary_email") or "").strip() or None
+            has_contact_details = any(
+                [
+                    email,
+                    phone,
+                    contact_name != "General contact",
+                    designation,
+                    secondary_mobile,
+                    primary_phone,
+                    secondary_phone,
+                    secondary_email,
+                ]
+            )
+            if has_contact_details:
+                buyers_module.create_contact(
+                    db,
+                    {
+                        "buyer_id": buyer.id,
+                        "full_name": contact_name,
+                        "email": email,
+                        "phone": phone,
+                        "designation": designation,
+                        "secondary_mobile": secondary_mobile,
+                        "primary_phone": primary_phone,
+                        "secondary_phone": secondary_phone,
+                        "secondary_email": secondary_email,
+                        "linkedin_profile_url": _value_or_none(raw.get("linkedin_url")),
+                        "data_source": "discovery",
+                        "consent_status": "unknown",
+                    },
+                    commit=persist_each_row,
+                )
+
+            if auto_onboard:
+                try:
+                    onboard = leads_module.onboard_buyer(db, buyer.id)
+                    onboard_results.append(
+                        {
+                            "buyer_id": buyer.id,
+                            "company_name": buyer.company_name,
+                            "score": onboard.get("score"),
+                            "reasoning": onboard.get("reasoning"),
+                        }
+                    )
+                except Exception as exc:
+                    onboard_results.append(
+                        {
+                            "buyer_id": buyer.id,
+                            "company_name": buyer.company_name,
+                            "error": str(exc),
+                        }
+                    )
+
+        if skip_enrichment:
+            db.commit()
+            log_action(
+                db,
+                entity_type="buyer",
+                entity_id=0,
+                action="bulk_discovered_import",
+                details={
+                    "created_count": len(created),
+                    "skipped_count": len(skipped),
+                    "replaced_count": len(replaced),
+                    "skip_enrichment": True,
                 },
             )
-
-        if auto_onboard:
-            try:
-                onboard = leads_module.onboard_buyer(db, buyer.id)
-                onboard_results.append(
-                    {
-                        "buyer_id": buyer.id,
-                        "company_name": buyer.company_name,
-                        "score": onboard.get("score"),
-                        "reasoning": onboard.get("reasoning"),
-                    }
-                )
-            except Exception as exc:
-                onboard_results.append(
-                    {
-                        "buyer_id": buyer.id,
-                        "company_name": buyer.company_name,
-                        "error": str(exc),
-                    }
-                )
+    except Exception:
+        if skip_enrichment:
+            db.rollback()
+        raise
 
     return {
         "created_count": len(created),

@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from api.deps import get_db
@@ -9,8 +9,10 @@ from api.schemas import (
     CallInitiateRequest,
     CallInitiateResponse,
     CallNotesRequest,
+    ManualCallRequest,
     VoiceTokenRead,
 )
+from db.session import SessionLocal
 from integrations.voice_client import voice_client
 from modules import calls as calls_module
 
@@ -27,6 +29,17 @@ async def _twilio_form(request: Request) -> dict[str, str]:
     return params
 
 
+def _transcribe_in_background(interaction_id: int) -> None:
+    db = SessionLocal()
+    try:
+        calls_module.transcribe_call(db, interaction_id=interaction_id)
+    except Exception:
+        # Status/error already stored on the interaction when possible.
+        pass
+    finally:
+        db.close()
+
+
 @router.get("/calls/config", response_model=CallConfigRead)
 def get_call_config():
     cfg = calls_module.call_config()
@@ -39,6 +52,8 @@ def get_voice_token():
         result = calls_module.voice_access_token()
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, f"Voice token failed: {exc}") from exc
     return VoiceTokenRead(**result)
 
 
@@ -65,10 +80,75 @@ def update_call_notes(
     db: Session = Depends(get_db),
 ):
     try:
-        result = calls_module.update_call_notes(db, interaction_id=interaction_id, notes=payload.notes)
+        result = calls_module.update_call_followup(
+            db,
+            interaction_id=interaction_id,
+            notes=payload.notes,
+            call_outcome=payload.call_outcome,
+        )
+    except ValueError as exc:
+        raise HTTPException(400 if "Invalid call outcome" in str(exc) else 404, str(exc)) from exc
+    return CallHistoryItem(**result)
+
+
+@router.get("/calls/{interaction_id}/recording")
+def get_call_recording(
+    interaction_id: int,
+    download: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    try:
+        path, content_type, filename = calls_module.get_call_recording_file(
+            db, interaction_id=interaction_id
+        )
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
-    return CallHistoryItem(**result)
+
+    headers = {}
+    if download:
+        headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    else:
+        headers["Content-Disposition"] = f'inline; filename="{filename}"'
+
+    return FileResponse(
+        path,
+        media_type=content_type,
+        filename=filename if download else None,
+        headers=headers,
+    )
+
+
+@router.post("/calls/{interaction_id}/transcribe", response_model=CallHistoryItem)
+def transcribe_call(
+    interaction_id: int,
+    background_tasks: BackgroundTasks,
+    wait: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    """Generate or refresh closed captions for a recorded call."""
+    from db.models import Channel, Interaction
+
+    interaction = db.get(Interaction, interaction_id)
+    if not interaction or interaction.channel != Channel.phone:
+        raise HTTPException(404, "Call not found")
+
+    current = calls_module.call_interaction_to_dict(db, interaction)
+    if not current.get("recording_available"):
+        raise HTTPException(400, "No recording available for this call yet")
+
+    if wait:
+        try:
+            result = calls_module.transcribe_call(db, interaction_id=interaction_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(502, str(exc)) from exc
+        return CallHistoryItem(**result)
+
+    background_tasks.add_task(_transcribe_in_background, interaction_id)
+    current["transcript_status"] = "processing"
+    current["transcript_error"] = None
+    return CallHistoryItem(**current)
 
 
 @router.post("/leads/{lead_id}/call", response_model=CallInitiateResponse)
@@ -86,6 +166,23 @@ def initiate_lead_call(
             db,
             buyer_id=lead_id,
             contact_id=payload.contact_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return CallInitiateResponse(**result)
+
+
+@router.post("/calls/dial", response_model=CallInitiateResponse)
+def initiate_manual_call(
+    payload: ManualCallRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        result = calls_module.initiate_manual_call(
+            db,
+            phone=payload.phone,
+            contact_name=payload.contact_name,
+            country=payload.country,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -147,4 +244,42 @@ async def twilio_call_status(request: Request, db: Session = Depends(get_db)):
         call_duration=duration,
         call_sid=call_sid,
     )
+    return {"ok": True}
+
+
+@webhooks_router.post("/voice/recording")
+async def twilio_call_recording(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Twilio posts here when a Dial recording is ready."""
+    form = await _twilio_form(request)
+    interaction_id = request.query_params.get("interaction_id")
+    if not interaction_id:
+        return {"ok": True}
+
+    try:
+        iid = int(interaction_id)
+    except ValueError:
+        return {"ok": True}
+
+    recording_sid = str(form.get("RecordingSid") or "")
+    recording_url = str(form.get("RecordingUrl") or "")
+    recording_status = str(form.get("RecordingStatus") or "completed")
+    recording_duration = str(form.get("RecordingDuration") or "") or None
+
+    if not recording_sid or not recording_url:
+        return {"ok": True}
+
+    media = calls_module.save_call_recording(
+        db,
+        interaction_id=iid,
+        recording_sid=recording_sid,
+        recording_url=recording_url,
+        recording_status=recording_status,
+        recording_duration=recording_duration,
+    )
+    if media and media.get("local_path") and media.get("transcript_status") == "pending":
+        background_tasks.add_task(_transcribe_in_background, iid)
     return {"ok": True}

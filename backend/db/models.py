@@ -112,6 +112,12 @@ class Buyer(Base):
     facebook_company_url: Mapped[Optional[str]] = mapped_column(String(512))
     instagram_company_url: Mapped[Optional[str]] = mapped_column(String(512))
     source: Mapped[Optional[str]] = mapped_column(String(100))
+    legacy_serial_no: Mapped[Optional[int]] = mapped_column(Integer)
+    company_grading: Mapped[Optional[str]] = mapped_column(String(50))
+    product_interest: Mapped[Optional[str]] = mapped_column(String(512))
+    city: Mapped[Optional[str]] = mapped_column(String(255))
+    address: Mapped[Optional[str]] = mapped_column(Text)
+    remarks: Mapped[Optional[str]] = mapped_column(Text)
     market_role: Mapped[MarketRole] = mapped_column(
         Enum(MarketRole), default=MarketRole.unknown, nullable=False
     )
@@ -173,6 +179,10 @@ class Contact(Base):
     designation: Mapped[Optional[str]] = mapped_column(String(255))
     email: Mapped[Optional[str]] = mapped_column(String(255))
     phone: Mapped[Optional[str]] = mapped_column(String(50))
+    secondary_mobile: Mapped[Optional[str]] = mapped_column(String(50))
+    primary_phone: Mapped[Optional[str]] = mapped_column(String(50))
+    secondary_phone: Mapped[Optional[str]] = mapped_column(String(50))
+    secondary_email: Mapped[Optional[str]] = mapped_column(String(255))
     linkedin_profile_url: Mapped[Optional[str]] = mapped_column(String(512))
     nationality: Mapped[Optional[str]] = mapped_column(String(100))
     date_of_birth: Mapped[Optional[date]] = mapped_column(Date)

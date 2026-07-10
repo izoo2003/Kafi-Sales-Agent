@@ -4,8 +4,8 @@ Set GEMINI_API_KEY in backend/.env to enable. Falls back gracefully to
 rule-based outputs when the key is absent or the SDK is unavailable.
 
 Cost controls:
-- Defaults to gemini-2.5-flash-lite (cheapest current text model).
-- On rate-limit (429), tries cheaper fallback models on the SAME key.
+- Defaults to gemini-3.1-flash-lite (cheapest GA model for new API keys).
+- On rate-limit (429) or unavailable model (404), tries fallback models.
 - Caps max output tokens to keep responses short.
 
 Model switching vs extra keys:
@@ -27,11 +27,39 @@ from config import settings
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
 
 # Cheapest → slightly more capable. All Flash-family, low cost.
-DEFAULT_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_FALLBACK_MODELS = (
-    "gemini-2.0-flash",
     "gemini-2.5-flash",
+    "gemini-3.5-flash",
+    "gemini-2.0-flash",
 )
+
+# Google retires models for new API keys — map old IDs to current replacements.
+RETIRED_MODEL_ALIASES: dict[str, str] = {
+    "gemini-2.5-flash-lite": "gemini-3.1-flash-lite",
+    "gemini-2.5-flash-lite-preview-09-2025": "gemini-3.1-flash-lite",
+    "gemini-2.0-flash-lite": "gemini-3.1-flash-lite",
+    "gemini-1.5-flash": "gemini-3.1-flash-lite",
+    "gemini-1.5-flash-8b": "gemini-3.1-flash-lite",
+}
+
+
+def _resolve_model_name(model: str) -> str:
+    name = (model or "").strip()
+    if not name:
+        return DEFAULT_MODEL
+    return RETIRED_MODEL_ALIASES.get(name, name)
+
+
+def _build_model_chain() -> list[str]:
+    primary_model = _resolve_model_name(settings.gemini_model or DEFAULT_MODEL)
+    fallbacks = _parse_csv_env(settings.gemini_fallback_models) or list(DEFAULT_FALLBACK_MODELS)
+    chain: list[str] = []
+    for model in [primary_model, *fallbacks]:
+        resolved = _resolve_model_name(model)
+        if resolved and resolved not in chain:
+            chain.append(resolved)
+    return chain or [DEFAULT_MODEL]
 
 
 def _load_prompt(filename: str) -> str:
@@ -62,6 +90,24 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     )
 
 
+def _is_retryable_model_error(exc: Exception) -> bool:
+    """Rate limits and retired/unavailable model IDs — try the next model in chain."""
+    text = str(exc).lower()
+    if _is_rate_limit_error(exc):
+        return True
+    return any(
+        marker in text
+        for marker in (
+            "404",
+            "not_found",
+            "no longer available",
+            "is not found",
+            "was not found",
+            "model not found",
+        )
+    )
+
+
 def _apply_prompt_template(template: str, **values: str) -> str:
     """Fill {name} placeholders without str.format (safe when content or template contains JSON braces)."""
     result = template
@@ -71,18 +117,22 @@ def _apply_prompt_template(template: str, **values: str) -> str:
 
 
 class LLMClient:
-    """Centralized LLM interface — cheapest model first, fallback on 429."""
+    """Centralized LLM interface — cheapest model first, fallback on 429/404."""
 
     def __init__(self) -> None:
         self._clients: list[Any] = []
-        self._model_chain: list[str] = []
         self._max_output_tokens: int = 512
-        self._initialised = False
+        self._clients_initialised = False
+
+    def reset(self) -> None:
+        """Drop cached clients so the next request reloads settings from .env."""
+        self._clients = []
+        self._clients_initialised = False
 
     def _get_clients(self) -> list[Any]:
-        if self._initialised:
+        if self._clients_initialised:
             return self._clients
-        self._initialised = True
+        self._clients_initialised = True
 
         keys = _parse_csv_env(settings.gemini_api_keys)
         primary = settings.gemini_api_key or settings.llm_api_key
@@ -99,17 +149,13 @@ class LLMClient:
         except Exception:
             self._clients = []
 
-        primary_model = (settings.gemini_model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
-        fallbacks = _parse_csv_env(settings.gemini_fallback_models) or list(DEFAULT_FALLBACK_MODELS)
-        chain: list[str] = []
-        for model in [primary_model, *fallbacks]:
-            if model and model not in chain:
-                chain.append(model)
-        self._model_chain = chain
-
         self._max_output_tokens = max(128, int(settings.gemini_max_output_tokens or 512))
 
         return self._clients
+
+    def model_chain(self) -> list[str]:
+        """Always read fresh from settings (avoids stale model cache after .env changes)."""
+        return _build_model_chain()
 
     @property
     def enabled(self) -> bool:
@@ -119,8 +165,8 @@ class LLMClient:
     @property
     def active_model(self) -> str:
         """Primary (cheapest) model configured for this client."""
-        self._get_clients()
-        return self._model_chain[0] if self._model_chain else DEFAULT_MODEL
+        chain = self.model_chain()
+        return chain[0] if chain else DEFAULT_MODEL
 
     # ------------------------------------------------------------------
     # Core generation
@@ -133,11 +179,13 @@ class LLMClient:
         prompt: str,
         *,
         system: str | None = None,
+        contents: Any | None = None,
+        max_output_tokens: int | None = None,
     ) -> str:
         from google.genai import types as genai_types  # type: ignore[import]
 
         config_kwargs: dict[str, Any] = {
-            "max_output_tokens": self._max_output_tokens,
+            "max_output_tokens": max_output_tokens or self._max_output_tokens,
         }
         if system:
             config_kwargs["system_instruction"] = system
@@ -145,7 +193,7 @@ class LLMClient:
 
         response = client.models.generate_content(
             model=model,
-            contents=prompt,
+            contents=contents if contents is not None else prompt,
             config=config,
         )
         return response.text or ""
@@ -159,25 +207,86 @@ class LLMClient:
             )
 
         last_error: Exception | None = None
-        rate_limited = False
+        retryable = False
+        chain = self.model_chain()
 
         for client in clients:
-            for model in self._model_chain:
+            for model in chain:
                 try:
                     return self._generate_with_model(client, model, prompt, system=system)
                 except Exception as exc:
                     last_error = exc
-                    if _is_rate_limit_error(exc):
-                        rate_limited = True
+                    if _is_retryable_model_error(exc):
+                        retryable = True
                         continue
                     raise RuntimeError(f"Gemini generation failed ({model}): {exc}") from exc
 
-        if rate_limited:
+        if retryable:
             raise RuntimeError(
-                "Gemini rate limit reached on all configured models. "
-                "Wait for quota reset or enable billing on your Google AI project."
+                "Gemini failed on all configured models (rate limit or unavailable model). "
+                "Wait for quota reset or update GEMINI_MODEL in backend/.env."
             ) from last_error
         raise RuntimeError(f"Gemini generation failed: {last_error}") from last_error
+
+    def transcribe_audio(
+        self,
+        audio_bytes: bytes,
+        *,
+        mime_type: str = "audio/mpeg",
+        hint: str | None = None,
+    ) -> str:
+        """Speech-to-text via Gemini multimodal audio understanding."""
+        clients = self._get_clients()
+        if not clients:
+            raise NotImplementedError(
+                "LLM is not configured. Add GEMINI_API_KEY to backend/.env to enable transcription."
+            )
+
+        from google.genai import types as genai_types  # type: ignore[import]
+
+        prompt = (
+            "Transcribe this phone call recording word for word as closed captions.\n"
+            "Rules:\n"
+            "- Capture the entire conversation accurately.\n"
+            "- Label speakers as Agent: and Client: when you can tell them apart.\n"
+            "- If a word is unclear, use [inaudible].\n"
+            "- Do not summarize. Output only the transcript dialogue.\n"
+            "- Keep natural punctuation and paragraph breaks between turns.\n"
+        )
+        if hint:
+            prompt += f"\nContext: {hint}\n"
+
+        contents = [
+            genai_types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+            prompt,
+        ]
+
+        last_error: Exception | None = None
+        retryable = False
+        chain = self.model_chain()
+        for client in clients:
+            for model in chain:
+                try:
+                    return self._generate_with_model(
+                        client,
+                        model,
+                        prompt,
+                        contents=contents,
+                        max_output_tokens=max(2048, self._max_output_tokens),
+                    ).strip()
+                except Exception as exc:
+                    last_error = exc
+                    if _is_retryable_model_error(exc):
+                        retryable = True
+                        continue
+                    raise RuntimeError(f"Gemini transcription failed ({model}): {exc}") from exc
+
+        if retryable:
+            raise RuntimeError(
+                "Gemini transcription failed on all configured models. "
+                "Update GEMINI_MODEL in backend/.env or try again shortly."
+            ) from last_error
+        raise RuntimeError(f"Gemini transcription failed: {last_error}") from last_error
 
     def generate_json(self, prompt: str, *, system: str | None = None) -> dict[str, Any]:
         """Return a parsed JSON dict. Strips markdown fences if present."""

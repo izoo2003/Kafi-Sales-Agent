@@ -351,6 +351,12 @@ class LeadTableRowRead(BaseModel):
     facebook_company_url: Optional[str] = None
     instagram_company_url: Optional[str] = None
     source: Optional[str] = None
+    legacy_serial_no: Optional[int] = None
+    company_grading: Optional[str] = None
+    product_interest: Optional[str] = None
+    city: Optional[str] = None
+    address: Optional[str] = None
+    remarks: Optional[str] = None
     created_at: datetime
     latest_score: Optional[str] = None
     score_reasoning: Optional[str] = None
@@ -359,6 +365,11 @@ class LeadTableRowRead(BaseModel):
     contact_name: Optional[str] = None
     contact_email: Optional[str] = None
     contact_phone: Optional[str] = None
+    contact_designation: Optional[str] = None
+    contact_secondary_mobile: Optional[str] = None
+    contact_primary_phone: Optional[str] = None
+    contact_secondary_phone: Optional[str] = None
+    contact_secondary_email: Optional[str] = None
     market_role: Optional[str] = "unknown"
     market_role_reasoning: Optional[str] = None
     producer_tier: Optional[str] = None
@@ -374,10 +385,21 @@ class LeadTableRowUpdate(BaseModel):
     linkedin_company_url: Optional[str] = None
     facebook_company_url: Optional[str] = None
     instagram_company_url: Optional[str] = None
+    legacy_serial_no: Optional[int] = None
+    company_grading: Optional[str] = None
+    product_interest: Optional[str] = None
+    city: Optional[str] = None
+    address: Optional[str] = None
+    remarks: Optional[str] = None
     contact_id: Optional[int] = None
     contact_name: Optional[str] = None
     contact_email: Optional[str] = None
     contact_phone: Optional[str] = None
+    contact_designation: Optional[str] = None
+    contact_secondary_mobile: Optional[str] = None
+    contact_primary_phone: Optional[str] = None
+    contact_secondary_phone: Optional[str] = None
+    contact_secondary_email: Optional[str] = None
 
 
 class LeadTableResponse(BaseModel):
@@ -445,9 +467,10 @@ class DiscoverLeadsRequest(BaseModel):
     industry: Optional[str] = None
     industries: list[str] = Field(default_factory=list, max_length=3)
     categories: list[str] = Field(default_factory=list)
-    limit: int = Field(default=15, ge=1, le=30)
+    limit: int = Field(default=15, ge=1, le=15)
     use_web_search: bool = True
     use_website_links: bool = True
+    skip_enrichment: bool = False
 
 
 class DiscoveryCandidateRead(BaseModel):
@@ -462,6 +485,17 @@ class DiscoveryCandidateRead(BaseModel):
     linkedin_url: str = "Not found"
     country: Optional[str] = None
     industry: Optional[str] = None
+    legacy_serial_no: Optional[int] = None
+    company_grading: Optional[str] = None
+    designation: Optional[str] = None
+    secondary_mobile: Optional[str] = None
+    primary_phone: Optional[str] = None
+    secondary_phone: Optional[str] = None
+    secondary_email: Optional[str] = None
+    product_interest: Optional[str] = None
+    city: Optional[str] = None
+    address: Optional[str] = None
+    remarks: Optional[str] = None
     source: str
     source_detail: str = ""
     match_reason: str = ""
@@ -475,6 +509,7 @@ class DiscoverLeadsResponse(BaseModel):
     sources_used: list[str] = Field(default_factory=list)
     messages: list[str] = Field(default_factory=list)
     search_query: Optional[str] = None
+    import_parser: Optional[str] = None
 
 
 class DiscoverImportCandidate(BaseModel):
@@ -488,6 +523,17 @@ class DiscoverImportCandidate(BaseModel):
     linkedin_url: Optional[str] = None
     country: Optional[str] = None
     industry: Optional[str] = None
+    legacy_serial_no: Optional[int] = None
+    company_grading: Optional[str] = None
+    designation: Optional[str] = None
+    secondary_mobile: Optional[str] = None
+    primary_phone: Optional[str] = None
+    secondary_phone: Optional[str] = None
+    secondary_email: Optional[str] = None
+    product_interest: Optional[str] = None
+    city: Optional[str] = None
+    address: Optional[str] = None
+    remarks: Optional[str] = None
     source: Optional[str] = "discovery"
 
 
@@ -495,6 +541,7 @@ class DiscoverImportRequest(BaseModel):
     candidates: list[DiscoverImportCandidate] = Field(min_length=1)
     auto_onboard: bool = False
     replace_duplicates: bool = False
+    skip_enrichment: bool = False
 
 
 class LeadTableDedupeGroup(BaseModel):
@@ -543,6 +590,12 @@ class CallInitiateRequest(BaseModel):
     contact_id: Optional[int] = None
 
 
+class ManualCallRequest(BaseModel):
+    phone: str
+    contact_name: Optional[str] = None
+    country: Optional[str] = None
+
+
 class CallInitiateResponse(InteractionRead):
     call_sid: Optional[str] = None
     call_status: Optional[str] = None
@@ -568,10 +621,20 @@ class CallHistoryItem(BaseModel):
     call_duration_seconds: Optional[int] = None
     lead_phone: Optional[str] = None
     notes: Optional[str] = None
+    call_outcome: Optional[str] = None
+    recording_available: bool = False
+    recording_sid: Optional[str] = None
+    recording_duration_seconds: Optional[int] = None
+    recording_url: Optional[str] = None
+    download_url: Optional[str] = None
+    transcript: Optional[str] = None
+    transcript_status: Optional[str] = None
+    transcript_error: Optional[str] = None
 
 
 class CallNotesRequest(BaseModel):
     notes: str = ""
+    call_outcome: Optional[str] = None
 
 
 # ── Inbox (Outlook) ───────────────────────────────────────────────────────────

@@ -254,3 +254,17 @@ export function formatCountryLabel(value: string | null | undefined): string {
   if (match) return `${match.flag} ${match.name}`;
   return value;
 }
+
+/** Match a stored country value against a selected canonical country name. */
+export function countryMatches(
+  stored: string | null | undefined,
+  selected: string,
+): boolean {
+  if (!stored || !selected) return false;
+  const storedCountry = findCountry(stored);
+  const selectedCountry = findCountry(selected);
+  if (storedCountry && selectedCountry) {
+    return storedCountry.code === selectedCountry.code;
+  }
+  return stored.trim().toLowerCase() === selected.trim().toLowerCase();
+}
