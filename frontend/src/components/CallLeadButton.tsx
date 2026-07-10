@@ -82,12 +82,12 @@ export function CallLeadButton({
 
   return (
     <span className="inline-flex items-center gap-1.5 flex-wrap" onClick={(e) => e.stopPropagation()}>
-      {showInitError && !compact && (
+      {showInitError && !compact && voice && (
         <span className="text-xs text-red-300" title={voice.initError ?? undefined}>
           Calling unavailable
         </span>
       )}
-      {canUseTwilio ? (
+      {canUseTwilio && voice ? (
         <>
           <button
             type="button"

@@ -26,14 +26,15 @@ from config import settings
 
 
 def main() -> None:
-    print(f"Starting server at http://{settings.api_host}:{settings.api_port}")
-    print(f"API docs: http://127.0.0.1:{settings.api_port}/docs")
+    port = int(os.environ.get("PORT", settings.api_port))
+    print(f"Starting server at http://{settings.api_host}:{port}")
+    print(f"API docs: http://127.0.0.1:{port}/docs")
     print("Database migrations run automatically on app startup.")
 
     uvicorn.run(
         "main:app",
         host=settings.api_host,
-        port=settings.api_port,
+        port=port,
         reload=settings.api_debug,
     )
 
