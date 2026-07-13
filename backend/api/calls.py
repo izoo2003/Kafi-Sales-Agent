@@ -16,7 +16,22 @@ from db.session import SessionLocal
 from integrations.voice_client import voice_client
 from modules import calls as calls_module
 
+from config import settings
+
 router = APIRouter(tags=["calls"])
+
+
+def _twilio_webhook_url(request: Request) -> str:
+    """URL Twilio signed — use public base behind ngrok/Railway, not internal http://."""
+    base = (settings.twilio_webhook_base_url or "").rstrip("/")
+    if base:
+        path = request.url.path
+        query = request.url.query
+        return f"{base}{path}" + (f"?{query}" if query else "")
+    url = str(request.url)
+    if request.headers.get("x-forwarded-proto") == "https" and url.startswith("http://"):
+        return "https://" + url[7:]
+    return url
 
 
 async def _twilio_form(request: Request) -> dict[str, str]:
@@ -24,7 +39,7 @@ async def _twilio_form(request: Request) -> dict[str, str]:
     params = {str(k): str(v) for k, v in form.items()}
     if voice_client.is_configured:
         signature = request.headers.get("X-Twilio-Signature", "")
-        if not voice_client.validate_webhook(str(request.url), params, signature):
+        if not voice_client.validate_webhook(_twilio_webhook_url(request), params, signature):
             raise HTTPException(403, "Invalid Twilio signature")
     return params
 

@@ -126,9 +126,22 @@ export function DiscoverLeadsPanel({
     [candidates],
   );
 
+  const [regionSearch, setRegionSearch] = useState("");
+
+  const filteredRegionOptions = useMemo(() => {
+    const query = regionSearch.trim().toLowerCase();
+    if (!query) return regionOptions;
+    return regionOptions.filter(
+      (region) =>
+        region.label.toLowerCase().includes(query) ||
+        region.code.toLowerCase().includes(query) ||
+        region.group.toLowerCase().includes(query),
+    );
+  }, [regionOptions, regionSearch]);
+
   const groupedRegions = useMemo(
-    () => groupRegions(regionOptions),
-    [regionOptions],
+    () => groupRegions(filteredRegionOptions),
+    [filteredRegionOptions],
   );
 
   const selectedRegionLabels = useMemo(
@@ -420,8 +433,19 @@ export function DiscoverLeadsPanel({
           {regionsLoading ? (
             <p className="mt-2 text-sm text-slate-500">Loading regions…</p>
           ) : (
-            <div className="mt-2 max-h-48 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-3 space-y-3">
-              {groupedRegions.map(([group, regions]) => (
+            <div className="mt-2 space-y-2">
+              <input
+                type="search"
+                value={regionSearch}
+                onChange={(e) => setRegionSearch(e.target.value)}
+                placeholder="Search countries…"
+                className="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-emerald-600/50"
+              />
+              <div className="max-h-64 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-3 space-y-3">
+              {groupedRegions.length === 0 ? (
+                <p className="text-sm text-slate-500">No countries match your search.</p>
+              ) : (
+              groupedRegions.map(([group, regions]) => (
                 <div key={group}>
                   <p className="text-[11px] font-medium text-slate-500 mb-1.5">{group}</p>
                   <div className="flex flex-wrap gap-2">
@@ -452,7 +476,9 @@ export function DiscoverLeadsPanel({
                     })}
                   </div>
                 </div>
-              ))}
+              ))
+              )}
+              </div>
             </div>
           )}
         </div>
