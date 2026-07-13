@@ -2,40 +2,25 @@ import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   client,
-  type BulkEmailDraftResponse,
   type EmailAttachment,
   type EmailTemplate,
   type EmailTemplatePreview,
+  type LeadTableRow,
 } from "../api/client";
 import { EmailAttachmentsField } from "./EmailAttachmentsField";
-import {
-  DEFAULT_TEMPLATE_BODY,
-  DEFAULT_TEMPLATE_SUBJECT,
-  PLACEHOLDER_HINTS,
-} from "../utils/emailTemplateDefaults";
 
 type ComposeTab = "manual" | "template";
 
-interface BulkEmailModalProps {
-  buyerIds: number[];
-  sampleBuyerId: number | null;
-  sampleCompanyName?: string | null;
+interface LeadEmailComposeModalProps {
+  row: LeadTableRow;
   onClose: () => void;
   onError: (message: string) => void;
-  onCreated: (result: BulkEmailDraftResponse) => void;
+  onDraftCreated: (message: string) => void;
 }
 
-const DEFAULT_MANUAL_SUBJECT = DEFAULT_TEMPLATE_SUBJECT;
-const DEFAULT_MANUAL_BODY = DEFAULT_TEMPLATE_BODY;
-
-function MailIcon({ className = "" }: { className?: string }) {
+function MailIcon({ className = "h-4 w-4" }: { className?: string }) {
   return (
-    <svg
-      className={`h-5 w-5 shrink-0 ${className}`.trim()}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path
         d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5v-11Z"
         stroke="currentColor"
@@ -52,31 +37,31 @@ function MailIcon({ className = "" }: { className?: string }) {
   );
 }
 
-export function BulkEmailModal({
-  buyerIds,
-  sampleBuyerId,
-  sampleCompanyName,
+export function LeadEmailComposeModal({
+  row,
   onClose,
   onError,
-  onCreated,
-}: BulkEmailModalProps) {
+  onDraftCreated,
+}: LeadEmailComposeModalProps) {
   const [tab, setTab] = useState<ComposeTab>("manual");
-  const [sending, setSending] = useState(false);
-
-  const [manualSubject, setManualSubject] = useState(DEFAULT_MANUAL_SUBJECT);
-  const [manualBody, setManualBody] = useState(DEFAULT_MANUAL_BODY);
-  const [manualAttachments, setManualAttachments] = useState<EmailAttachment[]>([]);
-  const [manualPreview, setManualPreview] = useState<EmailTemplatePreview | null>(null);
-  const [loadingManualPreview, setLoadingManualPreview] = useState(false);
-
   const [templates, setTemplates] = useState<EmailTemplate[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(true);
   const [templateId, setTemplateId] = useState("");
-  const [templatePreview, setTemplatePreview] = useState<EmailTemplatePreview | null>(null);
-  const [loadingTemplatePreview, setLoadingTemplatePreview] = useState(false);
-  const [extraAttachments, setExtraAttachments] = useState<EmailAttachment[]>([]);
+  const [preview, setPreview] = useState<EmailTemplatePreview | null>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [sending, setSending] = useState(false);
 
-  const previewLabel = sampleCompanyName || "first selected lead";
+  const [manualSubject, setManualSubject] = useState(
+    `Kafi Commodities — for ${row.company_name}`,
+  );
+  const [manualBody, setManualBody] = useState(
+    `Dear ${row.contact_name || "Sir/Madam"},\n\n` +
+      `I hope this message finds you well. We at Kafi Commodities would like to connect with ${row.company_name} regarding our ESSENCE product range.\n\n` +
+      `Please let us know if you would like specifications or pricing.\n\n` +
+      `Best regards,\nKafi Commodities Export Team`,
+  );
+  const [manualAttachments, setManualAttachments] = useState<EmailAttachment[]>([]);
+  const [extraAttachments, setExtraAttachments] = useState<EmailAttachment[]>([]);
 
   const refreshTemplates = useCallback(async () => {
     setLoadingTemplates(true);
@@ -99,54 +84,48 @@ export function BulkEmailModal({
   }, [refreshTemplates]);
 
   useEffect(() => {
-    if (!sampleBuyerId || !manualSubject.trim() || !manualBody.trim()) {
-      setManualPreview(null);
+    if (!templateId) {
+      setPreview(null);
       return;
     }
-    setLoadingManualPreview(true);
+    setLoadingPreview(true);
     client
-      .previewEmailText(sampleBuyerId, manualSubject, manualBody)
-      .then(setManualPreview)
-      .catch(() => setManualPreview(null))
-      .finally(() => setLoadingManualPreview(false));
-  }, [sampleBuyerId, manualSubject, manualBody]);
+      .previewEmailTemplate(Number(templateId), row.id)
+      .then(setPreview)
+      .catch(() => setPreview(null))
+      .finally(() => setLoadingPreview(false));
+  }, [templateId, row.id]);
 
-  useEffect(() => {
-    if (!templateId || !sampleBuyerId) {
-      setTemplatePreview(null);
-      return;
-    }
-    setLoadingTemplatePreview(true);
-    client
-      .previewEmailTemplate(Number(templateId), sampleBuyerId)
-      .then(setTemplatePreview)
-      .catch(() => setTemplatePreview(null))
-      .finally(() => setLoadingTemplatePreview(false));
-  }, [templateId, sampleBuyerId]);
-
-  async function handleSendManual() {
-    if (!manualSubject.trim() || !manualBody.trim()) {
-      onError("Subject and message are required");
-      return;
-    }
+  async function handleCreateManualDraft() {
     setSending(true);
     try {
-      const result = await client.createBulkManualEmailDrafts(
-        buyerIds,
-        manualSubject,
-        manualBody,
-        manualAttachments,
-      );
-      onCreated(result);
+      const result = await client.createManualEmailDraft({
+        buyer_id: row.id,
+        subject: manualSubject,
+        body: manualBody,
+        contact_id: row.contact_id,
+        attachments: manualAttachments,
+        send: true,
+      });
+      if (result.sent) {
+        onDraftCreated(
+          `Email sent to ${row.company_name}. Check Email Activity for the delivery notification.`,
+        );
+      } else {
+        onDraftCreated(
+          result.send_message ||
+            `Send did not complete for ${row.company_name}. See Email Activity for details.`,
+        );
+      }
       onClose();
     } catch (e) {
-      onError(e instanceof Error ? e.message : "Bulk send failed");
+      onError(e instanceof Error ? e.message : "Failed to send email");
     } finally {
       setSending(false);
     }
   }
 
-  async function handleSendTemplate() {
+  async function handleCreateTemplateDraft() {
     if (!templateId) {
       onError("Select a template first");
       return;
@@ -155,17 +134,32 @@ export function BulkEmailModal({
     try {
       const result = await client.createBulkEmailDrafts(
         Number(templateId),
-        buyerIds,
+        [row.id],
         extraAttachments,
+        true,
       );
-      onCreated(result);
-      onClose();
+      if ((result.sent_count ?? 0) > 0) {
+        onDraftCreated(
+          `Email sent to ${row.company_name}. Check Email Activity for the notification.`,
+        );
+        onClose();
+      } else if (result.created_count > 0 && (result.failed_count ?? 0) > 0) {
+        onError(
+          result.created[0]?.send_message ||
+            "Send failed — see Email Activity for details.",
+        );
+      } else {
+        const reason = result.skipped[0]?.reason ?? "Could not send email";
+        onError(reason);
+      }
     } catch (e) {
-      onError(e instanceof Error ? e.message : "Bulk send failed");
+      onError(e instanceof Error ? e.message : "Failed to send email");
     } finally {
       setSending(false);
     }
   }
+
+  const toEmail = row.contact_email || "—";
 
   return createPortal(
     <div
@@ -180,20 +174,18 @@ export function BulkEmailModal({
         onMouseDown={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="bulk-compose-email-title"
+        aria-labelledby="compose-email-title"
       >
         <div className="p-5 border-b border-slate-800 flex items-start justify-between gap-3 shrink-0">
           <div className="min-w-0">
-            <h3
-              id="bulk-compose-email-title"
-              className="text-lg font-medium text-slate-100 flex items-center gap-2"
-            >
-              <MailIcon className="h-5 w-5 shrink-0 text-emerald-400" />
-              Compose bulk email
+            <h3 id="compose-email-title" className="text-lg font-medium text-slate-100 flex items-center gap-2">
+              <MailIcon className="h-5 w-5 text-emerald-400" />
+              Compose email
             </h3>
-            <p className="text-sm text-slate-500 mt-1">
-              {buyerIds.length} lead{buyerIds.length === 1 ? "" : "s"} selected — each recipient
-              gets a personalized email. Name and company placeholders are filled per lead.
+            <p className="text-sm text-slate-500 mt-1 truncate">
+              To: <span className="text-slate-300">{toEmail}</span>
+              {" · "}
+              {row.company_name}
             </p>
           </div>
           <button
@@ -210,7 +202,10 @@ export function BulkEmailModal({
           <div className="inline-flex rounded-lg border border-slate-700 bg-slate-950 p-1">
             <button
               type="button"
-              onClick={() => setTab("manual")}
+              onClick={(e) => {
+                e.stopPropagation();
+                setTab("manual");
+              }}
               className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
                 tab === "manual"
                   ? "bg-emerald-600 text-white"
@@ -221,7 +216,10 @@ export function BulkEmailModal({
             </button>
             <button
               type="button"
-              onClick={() => setTab("template")}
+              onClick={(e) => {
+                e.stopPropagation();
+                setTab("template");
+              }}
               className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
                 tab === "template"
                   ? "bg-emerald-600 text-white"
@@ -244,75 +242,31 @@ export function BulkEmailModal({
                   className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm"
                 />
               </label>
-              <div>
+              <label className="block">
                 <span className="text-sm text-slate-400">Message</span>
-                <div className="flex flex-wrap gap-1.5 mt-2 mb-2">
-                  {PLACEHOLDER_HINTS.map((token) => (
-                    <button
-                      key={token}
-                      type="button"
-                      onClick={() =>
-                        setManualBody((body) => `${body}${body.endsWith("\n") ? "" : "\n"}${token}`)
-                      }
-                      className="px-2 py-0.5 rounded border border-slate-700 bg-slate-800 text-xs text-slate-300 hover:bg-slate-700"
-                    >
-                      {token}
-                    </button>
-                  ))}
-                </div>
                 <textarea
                   rows={12}
                   value={manualBody}
                   onChange={(e) => setManualBody(e.target.value)}
-                  className="w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm"
+                  className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm"
                 />
-              </div>
+              </label>
               <EmailAttachmentsField
                 attachments={manualAttachments}
                 onChange={setManualAttachments}
                 label="Attachments"
-                hint="Same files attached to every email in this batch."
+                hint="Optional files for this draft."
               />
-
-              {sampleBuyerId && (
-                <div className="rounded-lg border border-slate-800 bg-slate-950 p-4 space-y-2">
-                  <p className="text-xs uppercase tracking-wide text-slate-500">
-                    Preview for {previewLabel}
-                  </p>
-                  {loadingManualPreview ? (
-                    <p className="text-sm text-slate-400">Loading preview…</p>
-                  ) : manualPreview ? (
-                    <>
-                      <p className="text-sm font-medium text-slate-200">
-                        Subject: {manualPreview.subject}
-                      </p>
-                      <p className="text-sm text-slate-400">
-                        To: {manualPreview.contact_email || "—"}
-                      </p>
-                      <pre className="text-sm text-slate-300 whitespace-pre-wrap font-sans">
-                        {manualPreview.body}
-                      </pre>
-                    </>
-                  ) : (
-                    <p className="text-sm text-slate-500">
-                      No preview — first selected lead may not have an email contact.
-                    </p>
-                  )}
-                </div>
-              )}
-
               <p className="text-xs text-slate-500">
-                Use placeholders like [company_name] and [contact_name] — each lead receives their
-                own personalized version. Sends via Outlook; track progress in{" "}
+                Sends immediately via your configured Outlook mailbox. Results appear in{" "}
                 <strong className="text-slate-400">Email Activity</strong>.
               </p>
             </>
           ) : (
             <>
               <p className="text-xs text-slate-500">
-                Choose a saved template, preview it for the first selected lead, then send. Each
-                recipient gets their own personalized names. Manage templates in{" "}
-                <strong className="text-slate-400">Email templates</strong>.
+                Choose a saved template, preview it for this lead, then send. Manage templates in
+                the <strong className="text-slate-400">Email templates</strong> sidebar section.
               </p>
 
               {loadingTemplates ? (
@@ -346,23 +300,23 @@ export function BulkEmailModal({
                 </ul>
               )}
 
-              {templateId && sampleBuyerId && (
+              {templateId && (
                 <div className="rounded-lg border border-slate-800 bg-slate-950 p-4 space-y-2">
                   <p className="text-xs uppercase tracking-wide text-slate-500">
-                    Preview for {previewLabel} (each lead gets their own names)
+                    Preview for {row.company_name}
                   </p>
-                  {loadingTemplatePreview ? (
+                  {loadingPreview ? (
                     <p className="text-sm text-slate-400">Loading preview…</p>
-                  ) : templatePreview ? (
+                  ) : preview ? (
                     <>
                       <p className="text-sm font-medium text-slate-200">
-                        Subject: {templatePreview.subject}
+                        Subject: {preview.subject}
                       </p>
                       <p className="text-sm text-slate-400">
-                        To: {templatePreview.contact_email || "—"}
+                        To: {preview.contact_email || toEmail}
                       </p>
                       <pre className="text-sm text-slate-300 whitespace-pre-wrap font-sans">
-                        {templatePreview.body}
+                        {preview.body}
                       </pre>
                     </>
                   ) : (
@@ -374,8 +328,8 @@ export function BulkEmailModal({
               <EmailAttachmentsField
                 attachments={extraAttachments}
                 onChange={setExtraAttachments}
-                label="Extra attachments for this batch"
-                hint="Added on top of any files saved on the template. All selected leads get the same attachments."
+                label="Extra attachments for this draft"
+                hint="Added on top of any files saved on the selected template."
               />
             </>
           )}
@@ -392,25 +346,79 @@ export function BulkEmailModal({
           {tab === "manual" ? (
             <button
               type="button"
-              onClick={() => void handleSendManual()}
+              onClick={() => void handleCreateManualDraft()}
               disabled={sending || !manualSubject.trim() || !manualBody.trim()}
               className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium disabled:opacity-50"
             >
-              {sending ? "Sending…" : `Send ${buyerIds.length} email(s)`}
+              {sending ? "Sending…" : "Send email"}
             </button>
           ) : (
             <button
               type="button"
-              onClick={() => void handleSendTemplate()}
-              disabled={sending || !templateId || templates.length === 0}
+              onClick={() => void handleCreateTemplateDraft()}
+              disabled={sending || !templateId}
               className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium disabled:opacity-50"
             >
-              {sending ? "Sending…" : `Send ${buyerIds.length} email(s)`}
+              {sending ? "Sending…" : "Send from template"}
             </button>
           )}
         </div>
       </div>
     </div>,
     document.body,
+  );
+}
+
+interface EmailComposeButtonProps {
+  row: LeadTableRow;
+  email?: string | null;
+  onError: (message: string) => void;
+  onDraftCreated: (message: string) => void;
+}
+
+/** Shows the email address plus a mail icon that opens the compose window. */
+export function EmailComposeButton({
+  row,
+  email,
+  onError,
+  onDraftCreated,
+}: EmailComposeButtonProps) {
+  const [open, setOpen] = useState(false);
+  const display = (email ?? row.contact_email ?? "").trim();
+  if (!display) return <>—</>;
+
+  return (
+    <>
+      <span
+        className="flex items-center gap-1.5 min-w-0"
+        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <span className="truncate text-slate-300">{display}</span>
+        <button
+          type="button"
+          title={`Compose email to ${display}`}
+          aria-label={`Compose email to ${display}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpen(true);
+          }}
+          className="shrink-0 inline-flex h-7 w-7 items-center justify-center rounded-md text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10 transition-colors"
+        >
+          <MailIcon />
+        </button>
+      </span>
+      {open && (
+        <LeadEmailComposeModal
+          row={row}
+          onClose={() => setOpen(false)}
+          onError={onError}
+          onDraftCreated={(message) => {
+            onDraftCreated(message);
+            setOpen(false);
+          }}
+        />
+      )}
+    </>
   );
 }

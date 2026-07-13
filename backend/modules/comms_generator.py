@@ -258,6 +258,7 @@ class CommsGenerator:
         content: str | None = None,
         approved_by: str = "sales_rep",
         send: bool = True,
+        record_activity: bool = True,
     ) -> tuple[Interaction, dict | None]:
         draft = db.get(Interaction, interaction_id)
         if not draft:
@@ -276,6 +277,19 @@ class CommsGenerator:
         if send and draft.channel == Channel.email:
             contact = db.get(Contact, draft.contact_id)
             if not contact or not contact.email:
+                if record_activity:
+                    from modules import email_activity
+
+                    buyer = db.get(Buyer, contact.buyer_id) if contact else None
+                    email_activity.record_event(
+                        db,
+                        event_type="invalid_recipient",
+                        title=f"Invalid recipient — {buyer.company_name if buyer else 'lead'}",
+                        message="Contact has no email address — cannot send.",
+                        buyer_id=contact.buyer_id if contact else None,
+                        contact_id=draft.contact_id,
+                        interaction_id=draft.id,
+                    )
                 raise ValueError("Contact has no email address — cannot send")
 
             send_result = mail_client.send_approved(
@@ -288,6 +302,21 @@ class CommsGenerator:
                 draft.status = InteractionStatus.sent
                 db.commit()
                 db.refresh(draft)
+
+            if record_activity:
+                from modules import email_activity
+
+                buyer = db.get(Buyer, contact.buyer_id)
+                email_activity.record_send_result(
+                    db,
+                    send_result=send_result,
+                    company_name=buyer.company_name if buyer else "Unknown",
+                    to_email=contact.email,
+                    buyer_id=contact.buyer_id,
+                    contact_id=contact.id,
+                    interaction_id=draft.id,
+                    subject=draft.subject,
+                )
 
         return draft, send_result
 
@@ -339,6 +368,57 @@ class CommsGenerator:
         db.refresh(draft)
         return draft
 
+    def create_manual_email_draft(
+        self,
+        db: Session,
+        *,
+        buyer_id: int,
+        subject: str,
+        body: str,
+        contact_id: int | None = None,
+        attachments: list[dict] | None = None,
+    ) -> Interaction:
+        from modules import buyers as buyers_module
+
+        buyer = db.get(Buyer, buyer_id)
+        if not buyer:
+            raise ValueError(f"Buyer {buyer_id} not found")
+
+        subject_clean = (subject or "").strip()
+        body_clean = (body or "").strip()
+        if not subject_clean:
+            raise ValueError("Subject is required")
+        if not body_clean:
+            raise ValueError("Email body is required")
+
+        contact: Contact | None = None
+        if contact_id is not None:
+            contact = db.get(Contact, contact_id)
+            if not contact or contact.buyer_id != buyer_id:
+                raise ValueError("Contact not found for this lead")
+            if not (contact.email or "").strip():
+                raise ValueError("Selected contact has no email address")
+        else:
+            contact = buyers_module.primary_contact_with_email(db, buyer_id)
+            if not contact:
+                raise ValueError(f"No contact with email for {buyer.company_name}")
+
+        draft = Interaction(
+            contact_id=contact.id,
+            channel=Channel.email,
+            direction=Direction.outbound,
+            subject=subject_clean,
+            content=body_clean,
+            language=contact.preferred_language or "en",
+            handled_by=HandledBy.human,
+            status=InteractionStatus.draft,
+            attachments=copy_attachments(resolve_attachment_list(attachments)),
+        )
+        db.add(draft)
+        db.commit()
+        db.refresh(draft)
+        return draft
+
     def generate_draft_from_template(
         self,
         db: Session,
@@ -385,6 +465,174 @@ class CommsGenerator:
         db.refresh(draft)
         return draft
 
+    def create_bulk_manual_drafts(
+        self,
+        db: Session,
+        *,
+        buyer_ids: list[int],
+        subject: str,
+        body: str,
+        attachments: list[dict] | None = None,
+        send: bool = False,
+    ) -> dict:
+        import time
+
+        from config import settings
+        from modules import buyers as buyers_module, email_activity
+        from modules.email_templates import render_template_text
+
+        subject_clean = (subject or "").strip()
+        body_clean = (body or "").strip()
+        if not subject_clean:
+            raise ValueError("Subject is required")
+        if not body_clean:
+            raise ValueError("Email body is required")
+
+        created: list[dict] = []
+        skipped: list[dict] = []
+        sent_count = 0
+        failed_count = 0
+        is_bulk_batch = send and len(buyer_ids) > 1
+        record_each = send and not is_bulk_batch
+
+        if is_bulk_batch:
+            email_activity.record_event(
+                db,
+                event_type="bulk_started",
+                title=f"Bulk send started ({len(buyer_ids)} leads)",
+                message="Sending personalized manual emails. Per-message updates are summarized when the batch finishes.",
+                details={"buyer_ids": buyer_ids, "mode": "manual"},
+            )
+
+        for index, buyer_id in enumerate(buyer_ids):
+            buyer = db.get(Buyer, buyer_id)
+            if not buyer:
+                skipped.append({"buyer_id": buyer_id, "reason": "lead not found"})
+                continue
+            try:
+                contact = buyers_module.primary_contact_with_email(db, buyer_id)
+                if not contact:
+                    raise ValueError(f"No contact with email for {buyer.company_name}")
+
+                subject_rendered = render_template_text(subject_clean, buyer=buyer, contact=contact)
+                body_rendered = render_template_text(body_clean, buyer=buyer, contact=contact)
+
+                draft = Interaction(
+                    contact_id=contact.id,
+                    channel=Channel.email,
+                    direction=Direction.outbound,
+                    subject=subject_rendered,
+                    content=body_rendered,
+                    language=contact.preferred_language or "en",
+                    handled_by=HandledBy.human,
+                    status=InteractionStatus.draft,
+                    attachments=copy_attachments(resolve_attachment_list(attachments)),
+                )
+                db.add(draft)
+                db.commit()
+                db.refresh(draft)
+
+                item = {
+                    "buyer_id": buyer_id,
+                    "company_name": buyer.company_name,
+                    "interaction_id": draft.id,
+                    "contact_id": draft.contact_id,
+                    "sent": False,
+                    "send_status": None,
+                    "send_message": None,
+                }
+                if send:
+                    _approved, send_result = self.approve_draft(
+                        db,
+                        draft.id,
+                        approved_by="dashboard_user",
+                        send=True,
+                        record_activity=record_each,
+                    )
+                    status = (send_result or {}).get("status")
+                    item["sent"] = status == "sent"
+                    item["send_status"] = status
+                    item["send_message"] = (send_result or {}).get("message")
+                    if status == "sent":
+                        sent_count += 1
+                    else:
+                        failed_count += 1
+                    if index < len(buyer_ids) - 1 and settings.bulk_email_message_delay_seconds > 0:
+                        time.sleep(settings.bulk_email_message_delay_seconds)
+                created.append(item)
+            except ValueError as exc:
+                reason = str(exc)
+                skipped.append(
+                    {
+                        "buyer_id": buyer_id,
+                        "company_name": buyer.company_name if buyer else None,
+                        "reason": reason,
+                    }
+                )
+                if record_each:
+                    event_type = (
+                        "skipped_no_email"
+                        if "email" in reason.lower()
+                        else "send_failed"
+                    )
+                    email_activity.record_event(
+                        db,
+                        event_type=event_type,
+                        title=f"Skipped — {buyer.company_name if buyer else buyer_id}",
+                        message=reason,
+                        buyer_id=buyer_id,
+                        details={"reason": reason},
+                    )
+
+        if is_bulk_batch:
+            if failed_count > 0 and sent_count > 0:
+                event_type = "bulk_partial"
+                title = f"Bulk send partial — {sent_count} sent, {failed_count} failed"
+            elif failed_count > 0 and sent_count == 0 and len(skipped) == len(buyer_ids):
+                event_type = "bulk_partial"
+                title = f"Bulk send finished — all {len(skipped)} skipped"
+            elif failed_count > 0 and sent_count == 0:
+                event_type = "send_failed"
+                title = f"Bulk send failed — 0 of {len(buyer_ids)} sent"
+            else:
+                event_type = "bulk_completed"
+                title = f"Bulk send completed — {sent_count} sent"
+            email_activity.record_event(
+                db,
+                event_type=event_type,
+                title=title,
+                message=(
+                    f"{sent_count} sent, {failed_count} failed, {len(skipped)} skipped "
+                    f"out of {len(buyer_ids)} selected."
+                ),
+                details={
+                    "sent_count": sent_count,
+                    "failed_count": failed_count,
+                    "skipped_count": len(skipped),
+                    "selected_count": len(buyer_ids),
+                    "mode": "manual",
+                    "skipped": skipped[:20],
+                    "failures": [
+                        {
+                            "company_name": row.get("company_name"),
+                            "send_status": row.get("send_status"),
+                            "send_message": row.get("send_message"),
+                        }
+                        for row in created
+                        if not row.get("sent")
+                    ][:20],
+                },
+            )
+
+        return {
+            "created_count": len(created),
+            "skipped_count": len(skipped),
+            "sent_count": sent_count,
+            "failed_count": failed_count,
+            "created": created,
+            "skipped": skipped,
+        }
+
     def create_bulk_drafts_from_template(
         self,
         db: Session,
@@ -392,11 +640,32 @@ class CommsGenerator:
         buyer_ids: list[int],
         template_id: int,
         extra_attachments: list[dict] | None = None,
+        send: bool = False,
     ) -> dict:
+        import time
+
+        from config import settings
+        from modules import email_activity
+
         created: list[dict] = []
         skipped: list[dict] = []
+        sent_count = 0
+        failed_count = 0
+        # Multi-lead bulk: one start + one summary only (no per-email spam).
+        is_bulk_batch = send and len(buyer_ids) > 1
+        # Single-lead template send: keep normal per-email activity events.
+        record_each = send and not is_bulk_batch
 
-        for buyer_id in buyer_ids:
+        if is_bulk_batch:
+            email_activity.record_event(
+                db,
+                event_type="bulk_started",
+                title=f"Bulk send started ({len(buyer_ids)} leads)",
+                message="Sending personalized emails from the selected template. Per-message updates are summarized when the batch finishes.",
+                details={"buyer_ids": buyer_ids, "template_id": template_id},
+            )
+
+        for index, buyer_id in enumerate(buyer_ids):
             buyer = db.get(Buyer, buyer_id)
             if not buyer:
                 skipped.append({"buyer_id": buyer_id, "reason": "lead not found"})
@@ -408,26 +677,103 @@ class CommsGenerator:
                     template_id=template_id,
                     extra_attachments=extra_attachments,
                 )
-                created.append(
-                    {
-                        "buyer_id": buyer_id,
-                        "company_name": buyer.company_name,
-                        "interaction_id": draft.id,
-                        "contact_id": draft.contact_id,
-                    }
-                )
+                item = {
+                    "buyer_id": buyer_id,
+                    "company_name": buyer.company_name,
+                    "interaction_id": draft.id,
+                    "contact_id": draft.contact_id,
+                    "sent": False,
+                    "send_status": None,
+                    "send_message": None,
+                }
+                if send:
+                    _approved, send_result = self.approve_draft(
+                        db,
+                        draft.id,
+                        approved_by="dashboard_user",
+                        send=True,
+                        record_activity=record_each,
+                    )
+                    status = (send_result or {}).get("status")
+                    item["sent"] = status == "sent"
+                    item["send_status"] = status
+                    item["send_message"] = (send_result or {}).get("message")
+                    if status == "sent":
+                        sent_count += 1
+                    else:
+                        failed_count += 1
+                    if index < len(buyer_ids) - 1 and settings.bulk_email_message_delay_seconds > 0:
+                        time.sleep(settings.bulk_email_message_delay_seconds)
+                created.append(item)
             except ValueError as exc:
+                reason = str(exc)
                 skipped.append(
                     {
                         "buyer_id": buyer_id,
                         "company_name": buyer.company_name,
-                        "reason": str(exc),
+                        "reason": reason,
                     }
                 )
+                if record_each:
+                    event_type = (
+                        "skipped_no_email"
+                        if "email" in reason.lower()
+                        else "send_failed"
+                    )
+                    email_activity.record_event(
+                        db,
+                        event_type=event_type,
+                        title=f"Skipped — {buyer.company_name}",
+                        message=reason,
+                        buyer_id=buyer_id,
+                        details={"reason": reason},
+                    )
+
+        if is_bulk_batch:
+            if failed_count > 0 and sent_count > 0:
+                event_type = "bulk_partial"
+                title = f"Bulk send partial — {sent_count} sent, {failed_count} failed"
+            elif failed_count > 0 and sent_count == 0 and len(skipped) == len(buyer_ids):
+                event_type = "bulk_partial"
+                title = f"Bulk send finished — all {len(skipped)} skipped"
+            elif failed_count > 0 and sent_count == 0:
+                event_type = "send_failed"
+                title = f"Bulk send failed — 0 of {len(buyer_ids)} sent"
+            else:
+                event_type = "bulk_completed"
+                title = f"Bulk send completed — {sent_count} sent"
+            email_activity.record_event(
+                db,
+                event_type=event_type,
+                title=title,
+                message=(
+                    f"{sent_count} sent, {failed_count} failed, {len(skipped)} skipped "
+                    f"out of {len(buyer_ids)} selected."
+                ),
+                details={
+                    "sent_count": sent_count,
+                    "failed_count": failed_count,
+                    "skipped_count": len(skipped),
+                    "selected_count": len(buyer_ids),
+                    "template_id": template_id,
+                    "skipped": skipped[:20],
+                    "failures": [
+                        {
+                            "company_name": row.get("company_name"),
+                            "send_status": row.get("send_status"),
+                            "send_message": row.get("send_message"),
+                        }
+                        for row in created
+                        if not row.get("sent")
+                    ][:20],
+                },
+            )
 
         return {
             "created_count": len(created),
             "skipped_count": len(skipped),
+            "sent_count": sent_count,
+            "failed_count": failed_count,
             "created": created,
             "skipped": skipped,
         }
@@ -454,6 +800,18 @@ class CommsGenerator:
         results: list[dict] = []
         sent_count = 0
         failed_count = 0
+        is_bulk_batch = send and len(interaction_ids) > 1
+
+        if is_bulk_batch:
+            from modules import email_activity
+
+            email_activity.record_event(
+                db,
+                event_type="bulk_started",
+                title=f"Bulk send started ({len(interaction_ids)} emails)",
+                message="Sending selected emails. Per-message updates are summarized when the batch finishes.",
+                details={"interaction_ids": interaction_ids},
+            )
 
         for index, interaction_id in enumerate(interaction_ids):
             if index > 0 and send and delay > 0:
@@ -464,6 +822,7 @@ class CommsGenerator:
                     interaction_id,
                     approved_by=approved_by,
                     send=send,
+                    record_activity=not is_bulk_batch,
                 )
                 sent = draft.status == InteractionStatus.sent
                 if sent:
@@ -489,6 +848,33 @@ class CommsGenerator:
                         "send_message": str(exc),
                     }
                 )
+
+        if is_bulk_batch:
+            from modules import email_activity
+
+            if failed_count > 0 and sent_count > 0:
+                event_type = "bulk_partial"
+                title = f"Bulk send partial — {sent_count} sent, {failed_count} failed"
+            elif failed_count > 0 and sent_count == 0:
+                event_type = "send_failed"
+                title = f"Bulk send failed — 0 of {len(interaction_ids)} sent"
+            else:
+                event_type = "bulk_completed"
+                title = f"Bulk send completed — {sent_count} sent"
+            email_activity.record_event(
+                db,
+                event_type=event_type,
+                title=title,
+                message=(
+                    f"{sent_count} sent, {failed_count} failed "
+                    f"out of {len(interaction_ids)} selected."
+                ),
+                details={
+                    "sent_count": sent_count,
+                    "failed_count": failed_count,
+                    "selected_count": len(interaction_ids),
+                },
+            )
 
         return {
             "processed": len(results),

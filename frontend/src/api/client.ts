@@ -264,17 +264,60 @@ export interface EmailTemplatePreview {
 export interface BulkEmailDraftResponse {
   created_count: number;
   skipped_count: number;
+  sent_count?: number;
+  failed_count?: number;
   created: Array<{
     buyer_id: number;
     company_name: string;
     interaction_id: number;
     contact_id: number;
+    sent?: boolean;
+    send_status?: string | null;
+    send_message?: string | null;
   }>;
   skipped: Array<{
     buyer_id: number;
     company_name?: string | null;
     reason: string;
   }>;
+}
+
+export interface ManualEmailSendResult {
+  interaction: DraftInteraction;
+  sent: boolean;
+  send_status: string | null;
+  send_message: string | null;
+}
+
+export interface EmailActivityEvent {
+  id: number;
+  event_type: string;
+  event_label: string;
+  severity: string;
+  title: string;
+  message: string;
+  buyer_id: number | null;
+  contact_id: number | null;
+  interaction_id: number | null;
+  details: Record<string, unknown>;
+  read_at: string | null;
+  created_at: string | null;
+}
+
+export interface EmailActivityListResponse {
+  total: number;
+  unread_count: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  rows: EmailActivityEvent[];
+}
+
+export interface EmailActivityCatalogItem {
+  event_type: string;
+  label: string;
+  description: string;
+  severity: string;
 }
 
 export interface BulkApproveResponse {
@@ -327,13 +370,6 @@ export interface ProductType {
   type_key: string;
   name: string;
   category: string;
-}
-
-export interface QuotationEligibleLead extends Lead {
-  latest_score: string;
-  score_reasoning: string;
-  contact_email: string;
-  contact_name?: string | null;
 }
 
 export interface OnboardResult {
@@ -572,6 +608,11 @@ export interface LeadTableResponse {
   rows: LeadTableRow[];
 }
 
+export interface LeadTableIdsResponse {
+  filtered_count: number;
+  ids: number[];
+}
+
 export interface DraftListResponse {
   total: number;
   page: number;
@@ -627,6 +668,21 @@ export const client = {
     const query = search.toString();
     return request<LeadTableResponse>(`/leads/table${query ? `?${query}` : ""}`);
   },
+  listLeadsTableIds: (params: Omit<LeadTableQuery, "page" | "page_size"> = {}) => {
+    const search = new URLSearchParams();
+    if (params.score) search.set("score", params.score);
+    if (params.country) search.set("country", params.country);
+    if (params.industry) search.set("industry", params.industry);
+    if (params.source) search.set("source", params.source);
+    if (params.exclude_source) search.set("exclude_source", params.exclude_source);
+    if (params.call_outcome) search.set("call_outcome", params.call_outcome);
+    if (params.market_role) search.set("market_role", params.market_role);
+    if (params.q) search.set("q", params.q);
+    if (params.sort_by) search.set("sort_by", params.sort_by);
+    if (params.sort_dir) search.set("sort_dir", params.sort_dir);
+    const query = search.toString();
+    return request<LeadTableIdsResponse>(`/leads/table/ids${query ? `?${query}` : ""}`);
+  },
   updateLeadTableRow: (leadId: number, data: LeadTableRowUpdate) =>
     request<LeadTableRow>(`/leads/table/${leadId}`, {
       method: "PATCH",
@@ -665,23 +721,8 @@ export const client = {
     request<LeadScore>(`/leads/${id}/score`, { method: "POST" }),
   onboardLead: (id: number) =>
     request<OnboardResult>(`/leads/${id}/onboard`, { method: "POST" }),
-  listQuotationEligibleLeads: () =>
-    request<QuotationEligibleLead[]>("/leads/quotation-eligible"),
   listLeadContacts: (leadId: number) =>
     request<Contact[]>(`/leads/${leadId}/contacts`),
-  createProductInterestEmail: (
-    leadId: number,
-    data: {
-      contact_id?: number;
-      products: Array<{ name: string; category?: string }>;
-      attachments?: EmailAttachment[];
-    },
-  ) =>
-    request<DraftInteraction>(`/leads/${leadId}/product-interest-email`, {
-      method: "POST",
-      body: JSON.stringify(data),
-    }),
-
   createContact: (data: ContactCreate) =>
     request<Contact>("/leads/contacts", { method: "POST", body: JSON.stringify(data) }),
   updateContact: (contactId: number, data: ContactUpdate) =>
@@ -774,6 +815,7 @@ export const client = {
     templateId: number,
     buyerIds: number[],
     attachments: EmailAttachment[] = [],
+    send = true,
   ) =>
     request<BulkEmailDraftResponse>("/interactions/bulk-email-drafts", {
       method: "POST",
@@ -781,6 +823,63 @@ export const client = {
         template_id: templateId,
         buyer_ids: buyerIds,
         attachments,
+        send,
+      }),
+    }),
+  createBulkManualEmailDrafts: (
+    buyerIds: number[],
+    subject: string,
+    body: string,
+    attachments: EmailAttachment[] = [],
+    send = true,
+  ) =>
+    request<BulkEmailDraftResponse>("/interactions/bulk-manual-email-drafts", {
+      method: "POST",
+      body: JSON.stringify({
+        buyer_ids: buyerIds,
+        subject,
+        body,
+        attachments,
+        send,
+      }),
+    }),
+  createManualEmailDraft: (data: {
+    buyer_id: number;
+    subject: string;
+    body: string;
+    contact_id?: number | null;
+    attachments?: EmailAttachment[];
+    send?: boolean;
+  }) =>
+    request<ManualEmailSendResult>("/interactions/manual-email-draft", {
+      method: "POST",
+      body: JSON.stringify({
+        buyer_id: data.buyer_id,
+        subject: data.subject,
+        body: data.body,
+        contact_id: data.contact_id ?? undefined,
+        attachments: data.attachments ?? [],
+        send: data.send ?? true,
+      }),
+    }),
+  listEmailActivity: (params: { page?: number; page_size?: number; unread_only?: boolean } = {}) => {
+    const search = new URLSearchParams();
+    if (params.page) search.set("page", String(params.page));
+    if (params.page_size) search.set("page_size", String(params.page_size));
+    if (params.unread_only) search.set("unread_only", "true");
+    const query = search.toString();
+    return request<EmailActivityListResponse>(`/email-activity${query ? `?${query}` : ""}`);
+  },
+  getEmailActivityUnreadCount: () =>
+    request<{ unread_count: number }>("/email-activity/unread-count"),
+  listEmailActivityCatalog: () =>
+    request<EmailActivityCatalogItem[]>("/email-activity/catalog"),
+  markEmailActivityRead: (data: { event_ids?: number[]; mark_all?: boolean }) =>
+    request<{ updated: number }>("/email-activity/mark-read", {
+      method: "POST",
+      body: JSON.stringify({
+        event_ids: data.event_ids ?? [],
+        mark_all: data.mark_all ?? false,
       }),
     }),
   bulkApproveDrafts: (interactionIds: number[], send = true) =>
@@ -846,6 +945,11 @@ export const client = {
     request<void>(`/email-templates/${id}`, { method: "DELETE" }),
   previewEmailTemplate: (templateId: number, buyerId: number) =>
     request<EmailTemplatePreview>(`/email-templates/${templateId}/preview/${buyerId}`),
+  previewEmailText: (buyerId: number, subject: string, body: string) =>
+    request<EmailTemplatePreview>("/email-templates/preview-text", {
+      method: "POST",
+      body: JSON.stringify({ buyer_id: buyerId, subject, body }),
+    }),
 
   uploadEmailAttachment: async (file: File) => {
     const form = new FormData();

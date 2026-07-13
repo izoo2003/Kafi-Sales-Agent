@@ -239,6 +239,22 @@ class EmailDraftRequest(BaseModel):
     attachments: list[EmailAttachmentRead] = Field(default_factory=list)
 
 
+class ManualEmailDraftRequest(BaseModel):
+    buyer_id: int
+    subject: str
+    body: str
+    contact_id: Optional[int] = None
+    attachments: list[EmailAttachmentRead] = Field(default_factory=list)
+    send: bool = True
+
+
+class ManualEmailSendResponse(BaseModel):
+    interaction: InteractionRead
+    sent: bool
+    send_status: Optional[str] = None
+    send_message: Optional[str] = None
+
+
 class EmailTemplateCreate(BaseModel):
     name: str
     subject: str
@@ -272,10 +288,25 @@ class EmailTemplatePreviewRead(BaseModel):
     contact_email: str
 
 
+class EmailTextPreviewRequest(BaseModel):
+    buyer_id: int
+    subject: str
+    body: str
+
+
+class BulkManualEmailDraftRequest(BaseModel):
+    buyer_ids: list[int] = Field(min_length=1)
+    subject: str
+    body: str
+    attachments: list[EmailAttachmentRead] = Field(default_factory=list)
+    send: bool = True
+
+
 class BulkEmailDraftRequest(BaseModel):
     template_id: int
     buyer_ids: list[int] = Field(min_length=1)
     attachments: list[EmailAttachmentRead] = Field(default_factory=list)
+    send: bool = True
 
 
 class BulkEmailDraftResultItem(BaseModel):
@@ -283,6 +314,9 @@ class BulkEmailDraftResultItem(BaseModel):
     company_name: str
     interaction_id: int
     contact_id: int
+    sent: bool = False
+    send_status: Optional[str] = None
+    send_message: Optional[str] = None
 
 
 class BulkEmailSkippedItem(BaseModel):
@@ -294,6 +328,8 @@ class BulkEmailSkippedItem(BaseModel):
 class BulkEmailDraftResponse(BaseModel):
     created_count: int
     skipped_count: int
+    sent_count: int = 0
+    failed_count: int = 0
     created: list[BulkEmailDraftResultItem]
     skipped: list[BulkEmailSkippedItem]
 
@@ -411,12 +447,53 @@ class LeadTableResponse(BaseModel):
     rows: list[LeadTableRowRead]
 
 
+class LeadTableIdsResponse(BaseModel):
+    filtered_count: int
+    ids: list[int]
+
+
 class DraftListResponse(BaseModel):
     total: int
     page: int = 1
     page_size: int = 20
     total_pages: int = 1
     rows: list[InteractionRead]
+
+
+class EmailActivityEventRead(BaseModel):
+    id: int
+    event_type: str
+    event_label: str
+    severity: str
+    title: str
+    message: str
+    buyer_id: Optional[int] = None
+    contact_id: Optional[int] = None
+    interaction_id: Optional[int] = None
+    details: dict[str, Any] = Field(default_factory=dict)
+    read_at: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class EmailActivityListResponse(BaseModel):
+    total: int
+    unread_count: int
+    page: int = 1
+    page_size: int = 30
+    total_pages: int = 1
+    rows: list[EmailActivityEventRead]
+
+
+class EmailActivityMarkReadRequest(BaseModel):
+    event_ids: list[int] = Field(default_factory=list)
+    mark_all: bool = False
+
+
+class EmailActivityCatalogItem(BaseModel):
+    event_type: str
+    label: str
+    description: str
+    severity: str
 
 
 class LeadTableFiltersRead(BaseModel):

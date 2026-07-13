@@ -8,12 +8,15 @@ from api.schemas import (
     BulkEmailDraftRequest,
     BulkEmailDraftResponse,
     BulkEmailSettingsRead,
+    BulkManualEmailDraftRequest,
     DraftListResponse,
     EmailDraftRequest,
     InteractionApprove,
     InteractionApproveResponse,
     InteractionAttachmentsUpdate,
     InteractionRead,
+    ManualEmailDraftRequest,
+    ManualEmailSendResponse,
 )
 from config import settings
 from db.models import InteractionStatus
@@ -68,6 +71,52 @@ def create_email_draft(payload: EmailDraftRequest, db: Session = Depends(get_db)
     return _interaction_read(db, draft)
 
 
+@router.post("/manual-email-draft", response_model=ManualEmailSendResponse, status_code=201)
+def create_manual_email_draft(payload: ManualEmailDraftRequest, db: Session = Depends(get_db)):
+    try:
+        draft = comms.create_manual_email_draft(
+            db,
+            buyer_id=payload.buyer_id,
+            subject=payload.subject,
+            body=payload.body,
+            contact_id=payload.contact_id,
+            attachments=[a.model_dump() for a in payload.attachments],
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    send_result = None
+    if payload.send:
+        try:
+            draft, send_result = comms.approve_draft(
+                db,
+                draft.id,
+                approved_by="dashboard_user",
+                send=True,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    log_action(
+        db,
+        entity_type="interaction",
+        entity_id=draft.id,
+        action="manual_email_sent" if payload.send else "manual_email_draft_created",
+        details={
+            "buyer_id": payload.buyer_id,
+            "contact_id": draft.contact_id,
+            "send": payload.send,
+            "send_status": (send_result or {}).get("status"),
+        },
+    )
+    return ManualEmailSendResponse(
+        interaction=_interaction_read(db, draft),
+        sent=(send_result or {}).get("status") == "sent",
+        send_status=(send_result or {}).get("status"),
+        send_message=(send_result or {}).get("message"),
+    )
+
+
 @router.get("/bulk-email-settings", response_model=BulkEmailSettingsRead)
 def get_bulk_email_settings():
     return BulkEmailSettingsRead(
@@ -83,6 +132,38 @@ def get_bulk_email_settings():
     )
 
 
+@router.post("/bulk-manual-email-drafts", response_model=BulkEmailDraftResponse, status_code=201)
+def create_bulk_manual_email_drafts(
+    payload: BulkManualEmailDraftRequest, db: Session = Depends(get_db)
+):
+    try:
+        result = comms.create_bulk_manual_drafts(
+            db,
+            buyer_ids=payload.buyer_ids,
+            subject=payload.subject,
+            body=payload.body,
+            attachments=[a.model_dump() for a in payload.attachments],
+            send=payload.send,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    log_action(
+        db,
+        entity_type="interaction",
+        entity_id=0,
+        action="bulk_emails_sent" if payload.send else "bulk_drafts_created",
+        details={
+            "mode": "manual",
+            "created_count": result["created_count"],
+            "skipped_count": result["skipped_count"],
+            "sent_count": result.get("sent_count", 0),
+            "failed_count": result.get("failed_count", 0),
+            "send": payload.send,
+        },
+    )
+    return BulkEmailDraftResponse(**result)
+
+
 @router.post("/bulk-email-drafts", response_model=BulkEmailDraftResponse, status_code=201)
 def create_bulk_email_drafts(payload: BulkEmailDraftRequest, db: Session = Depends(get_db)):
     result = comms.create_bulk_drafts_from_template(
@@ -90,16 +171,20 @@ def create_bulk_email_drafts(payload: BulkEmailDraftRequest, db: Session = Depen
         buyer_ids=payload.buyer_ids,
         template_id=payload.template_id,
         extra_attachments=[a.model_dump() for a in payload.attachments],
+        send=payload.send,
     )
     log_action(
         db,
         entity_type="interaction",
         entity_id=0,
-        action="bulk_drafts_created",
+        action="bulk_emails_sent" if payload.send else "bulk_drafts_created",
         details={
             "template_id": payload.template_id,
             "created_count": result["created_count"],
             "skipped_count": result["skipped_count"],
+            "sent_count": result.get("sent_count", 0),
+            "failed_count": result.get("failed_count", 0),
+            "send": payload.send,
         },
     )
     return BulkEmailDraftResponse(**result)

@@ -349,3 +349,23 @@ class AuditLog(Base):
     actor: Mapped[Optional[str]] = mapped_column(String(255))
     details: Mapped[Optional[dict]] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EmailActivityEvent(Base):
+    """Real-time outbound email activity notifications (sent, failed, bulk, etc.)."""
+
+    __tablename__ = "email_activity_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False, default="info")
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    buyer_id: Mapped[Optional[int]] = mapped_column(ForeignKey("buyers.id"), nullable=True)
+    contact_id: Mapped[Optional[int]] = mapped_column(ForeignKey("contacts.id"), nullable=True)
+    interaction_id: Mapped[Optional[int]] = mapped_column(ForeignKey("interactions.id"), nullable=True)
+    details: Mapped[Optional[dict]] = mapped_column(JSONB)
+    read_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )

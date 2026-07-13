@@ -15,6 +15,7 @@ import { BulkEmailModal } from "../components/BulkEmailModal";
 import { LeadsTableCsvImport } from "../components/LeadsTableCsvImport";
 import { SocialLinksCell } from "../components/SocialLinksCell";
 import { CallLeadButton } from "../components/CallLeadButton";
+import { EmailComposeButton } from "../components/EmailComposeLink";
 import { Pagination } from "../components/Pagination";
 import { exportLeadsTableCsv } from "../utils/exportCsv";
 
@@ -59,6 +60,14 @@ function scoreLabel(score: string | null): string {
 
 function sectionTableScope(section: LeadsTableSection): { source?: string; exclude_source?: string } {
   if (section === "old_clients") return { source: "old_clients" };
+  return { exclude_source: "old_clients" };
+}
+
+function sectionTableParams(
+  section: LeadsTableSection,
+): { source?: string; exclude_source?: string; call_outcome?: string } {
+  if (section === "old_clients") return { source: "old_clients" };
+  if (section === "interested_clients") return { call_outcome: "interested" };
   return { exclude_source: "old_clients" };
 }
 
@@ -197,6 +206,8 @@ export function LeadsTablePage({
   const [savingAll, setSavingAll] = useState(false);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [allMatchingSelected, setAllMatchingSelected] = useState(false);
+  const [selectingAll, setSelectingAll] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deletingSelected, setDeletingSelected] = useState(false);
   const [bulkOnboarding, setBulkOnboarding] = useState(false);
@@ -211,6 +222,11 @@ export function LeadsTablePage({
   const [bulkEmailNotice, setBulkEmailNotice] = useState<string | null>(null);
   const [deduping, setDeduping] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  const showEmailNotice = useCallback((message: string) => {
+    setBulkEmailNotice(message);
+    window.setTimeout(() => setBulkEmailNotice(null), 8000);
+  }, []);
 
   useEffect(() => {
     if (!isFullscreen) return;
@@ -240,6 +256,24 @@ export function LeadsTablePage({
 
   const isOldClients = section === "old_clients";
   const isInterestedClients = section === "interested_clients";
+
+  const tableQueryParams = useMemo(
+    () => ({
+      score: score || undefined,
+      market_role: marketRole || undefined,
+      country: country || undefined,
+      q: search.trim() || undefined,
+      sort_by: sortBy,
+      sort_dir: sortDir,
+      ...sectionTableParams(section),
+    }),
+    [country, marketRole, score, search, section, sortBy, sortDir],
+  );
+
+  const clearSelection = useCallback(() => {
+    setSelected(new Set());
+    setAllMatchingSelected(false);
+  }, []);
 
   const loadSectionCounts = useCallback(async () => {
     if (!onSectionCountsChange) return;
@@ -280,40 +314,27 @@ export function LeadsTablePage({
   const loadTable = useCallback(async () => {
     setLoading(true);
     try {
-      const sectionParams =
-        section === "old_clients"
-          ? { source: "old_clients" }
-          : section === "interested_clients"
-            ? { call_outcome: "interested" }
-            : { exclude_source: "old_clients" };
-
       const result = await client.listLeadsTable({
-        score: score || undefined,
-        market_role: marketRole || undefined,
-        country: country || undefined,
-        q: search.trim() || undefined,
-        sort_by: sortBy,
-        sort_dir: sortDir,
+        ...tableQueryParams,
         page,
         page_size: TABLE_PAGE_SIZE,
-        ...sectionParams,
       });
       setRows(result.rows);
       setTotal(result.total);
       setFilteredCount(result.filtered_count);
       setTotalPages(result.total_pages);
       setPage(result.page);
-      setSelected(new Set());
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to load leads table");
     } finally {
       setLoading(false);
     }
-  }, [country, marketRole, onError, page, score, search, section, sortBy, sortDir]);
+  }, [onError, page, tableQueryParams]);
 
   useEffect(() => {
     setPage(1);
-  }, [section, score, marketRole, country, search, sortBy, sortDir]);
+    clearSelection();
+  }, [clearSelection, section, score, marketRole, country, search, sortBy, sortDir]);
 
   useEffect(() => {
     client
@@ -335,7 +356,6 @@ export function LeadsTablePage({
   }, [loadSectionCounts, loadTable, refreshToken]);
 
   useEffect(() => {
-    setSelected(new Set());
     setEditMode(false);
     setDrafts({});
     setOriginalKeys({});
@@ -346,7 +366,8 @@ export function LeadsTablePage({
     setMarketRole("");
     setCountry("");
     setSearch("");
-  }, [section]);
+    clearSelection();
+  }, [clearSelection, section]);
 
   function enterEditMode() {
     setDrafts(Object.fromEntries(rows.map((row) => [row.id, { ...row }])));
@@ -409,6 +430,7 @@ export function LeadsTablePage({
   }
 
   function toggleSelected(rowId: number) {
+    setAllMatchingSelected(false);
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(rowId)) next.delete(rowId);
@@ -418,11 +440,32 @@ export function LeadsTablePage({
   }
 
   function toggleSelectAllOnPage() {
-    if (selected.size === rows.length) {
-      setSelected(new Set());
-      return;
+    const pageIds = rows.map((row) => row.id);
+    const allSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
+    setAllMatchingSelected(false);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allSelected) {
+        pageIds.forEach((id) => next.delete(id));
+      } else {
+        pageIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  }
+
+  async function selectAllMatching() {
+    if (filteredCount === 0 || selectingAll) return;
+    setSelectingAll(true);
+    try {
+      const result = await client.listLeadsTableIds(tableQueryParams);
+      setSelected(new Set(result.ids));
+      setAllMatchingSelected(true);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to select all matching leads");
+    } finally {
+      setSelectingAll(false);
     }
-    setSelected(new Set(rows.map((row) => row.id)));
   }
 
   async function bulkResearchAndScore() {
@@ -484,7 +527,7 @@ export function LeadsTablePage({
     setBulkProgress(null);
     setBulkOnboarding(false);
     setBulkResults(results);
-    setSelected(new Set());
+    clearSelection();
     await loadTable();
   }
 
@@ -673,7 +716,16 @@ export function LeadsTablePage({
   }
 
   const hasActiveFilters = Boolean(score || marketRole || country || search.trim());
-  const allOnPageSelected = rows.length > 0 && selected.size === rows.length;
+  const allOnPageSelected =
+    rows.length > 0 && rows.every((row) => selected.has(row.id));
+  const someOnPageSelected = rows.some((row) => selected.has(row.id));
+  const allMatchingAreSelected =
+    allMatchingSelected && selected.size > 0 && selected.size === filteredCount;
+  const showSelectAllBanner =
+    filteredCount > rows.length &&
+    allOnPageSelected &&
+    !allMatchingAreSelected &&
+    !selectingAll;
   const tableOuterClass = isFullscreen
     ? "flex flex-col flex-1 min-h-0 rounded-xl border border-slate-800 overflow-hidden"
     : "rounded-xl border border-slate-800 overflow-hidden";
@@ -694,6 +746,13 @@ export function LeadsTablePage({
           <p className="text-sm text-slate-500 mt-1">{sectionDescription(section)}</p>
           <p className="text-sm text-slate-500 mt-1">
             {filteredCount} matching · {total} in section · {TABLE_PAGE_SIZE} per page
+            {selected.size > 0 ? (
+              <span className="text-sky-400">
+                {" "}
+                · {selected.size} selected
+                {allMatchingAreSelected ? " (all matching)" : ""}
+              </span>
+            ) : null}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -709,6 +768,36 @@ export function LeadsTablePage({
           )}
           <button
             type="button"
+            onClick={() => void selectAllMatching()}
+            disabled={
+              filteredCount === 0 ||
+              selectingAll ||
+              allMatchingAreSelected ||
+              bulkOnboarding ||
+              deletingSelected ||
+              deletingId !== null ||
+              editMode
+            }
+            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm font-medium disabled:opacity-50"
+          >
+            {selectingAll
+              ? "Selecting all…"
+              : allMatchingAreSelected
+                ? `All ${filteredCount} selected`
+                : `Select all matching (${filteredCount})`}
+          </button>
+          {selected.size > 0 && (
+            <button
+              type="button"
+              onClick={clearSelection}
+              disabled={bulkOnboarding || deletingSelected || deletingId !== null || editMode}
+              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm disabled:opacity-50"
+            >
+              Clear selection
+            </button>
+          )}
+          <button
+            type="button"
             onClick={() => setShowBulkEmail(true)}
             disabled={
               selected.size === 0 ||
@@ -719,7 +808,7 @@ export function LeadsTablePage({
             }
             className="px-3 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-600 border border-sky-600/50 text-sm font-medium disabled:opacity-50"
           >
-            Create email drafts ({selected.size})
+            Send emails ({selected.size})
           </button>
           <button
             type="button"
@@ -816,6 +905,38 @@ export function LeadsTablePage({
       {bulkEmailNotice && (
         <p className="text-xs text-emerald-300 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 shrink-0">
           {bulkEmailNotice}
+        </p>
+      )}
+
+      {selectingAll && (
+        <p className="text-xs text-slate-300 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 shrink-0">
+          Selecting all {filteredCount} matching leads…
+        </p>
+      )}
+
+      {showSelectAllBanner && (
+        <p className="text-xs text-sky-200 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 shrink-0">
+          All {rows.length} leads on this page are selected.{" "}
+          <button
+            type="button"
+            onClick={() => void selectAllMatching()}
+            className="font-medium text-sky-300 hover:text-sky-200 underline underline-offset-2"
+          >
+            Select all {filteredCount} matching leads
+          </button>
+        </p>
+      )}
+
+      {allMatchingAreSelected && filteredCount > rows.length && (
+        <p className="text-xs text-sky-200 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 shrink-0">
+          All {filteredCount} matching leads are selected across every page.{" "}
+          <button
+            type="button"
+            onClick={clearSelection}
+            className="font-medium text-sky-300 hover:text-sky-200 underline underline-offset-2"
+          >
+            Clear selection
+          </button>
         </p>
       )}
 
@@ -996,6 +1117,9 @@ export function LeadsTablePage({
                     <input
                       type="checkbox"
                       checked={allOnPageSelected}
+                      ref={(el) => {
+                        if (el) el.indeterminate = someOnPageSelected && !allOnPageSelected;
+                      }}
                       onChange={toggleSelectAllOnPage}
                       aria-label="Select all leads on this page"
                       className="rounded border-slate-600 bg-slate-950"
@@ -1130,17 +1254,19 @@ export function LeadsTablePage({
                       <td className="py-3 pr-3 text-slate-400">
                         {cell("contact_secondary_phone", row.contact_secondary_phone ?? "")}
                       </td>
-                      <td className="py-3 pr-3 text-slate-400">
+                      <td
+                        className="py-3 pr-3 text-slate-400"
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         {editMode ? (
                           cell("contact_email", row.contact_email ?? "", { type: "email" })
                         ) : row.contact_email ? (
-                          <a
-                            href={`mailto:${row.contact_email}`}
-                            className="text-emerald-400 hover:text-emerald-300 truncate block"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            {row.contact_email}
-                          </a>
+                          <EmailComposeButton
+                            row={row}
+                            email={row.contact_email}
+                            onError={onError}
+                            onDraftCreated={showEmailNotice}
+                          />
                         ) : (
                           "—"
                         )}
@@ -1151,13 +1277,9 @@ export function LeadsTablePage({
                             type: "email",
                           })
                         ) : row.contact_secondary_email ? (
-                          <a
-                            href={`mailto:${row.contact_secondary_email}`}
-                            className="text-emerald-400 hover:text-emerald-300 truncate block"
-                            onClick={(e) => e.stopPropagation()}
-                          >
+                          <span className="truncate block text-slate-300">
                             {row.contact_secondary_email}
-                          </a>
+                          </span>
                         ) : (
                           "—"
                         )}
@@ -1277,6 +1399,9 @@ export function LeadsTablePage({
                   <input
                     type="checkbox"
                     checked={allOnPageSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = someOnPageSelected && !allOnPageSelected;
+                    }}
                     onChange={toggleSelectAllOnPage}
                     aria-label="Select all leads on this page"
                     className="rounded border-slate-600 bg-slate-950"
@@ -1396,7 +1521,10 @@ export function LeadsTablePage({
                         <span className="truncate block">{row.contact_name || "—"}</span>
                       )}
                     </td>
-                    <td className="py-3 pr-3 text-slate-400">
+                    <td
+                      className="py-3 pr-3 text-slate-400"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       {editMode ? (
                         <input
                           type="email"
@@ -1406,13 +1534,12 @@ export function LeadsTablePage({
                           className={EDIT_INPUT}
                         />
                       ) : row.contact_email ? (
-                        <a
-                          href={`mailto:${row.contact_email}`}
-                          className="text-emerald-400 hover:text-emerald-300 truncate block"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {row.contact_email}
-                        </a>
+                        <EmailComposeButton
+                          row={row}
+                          email={row.contact_email}
+                          onError={onError}
+                          onDraftCreated={showEmailNotice}
+                        />
                       ) : (
                         "—"
                       )}
@@ -1543,17 +1670,21 @@ export function LeadsTablePage({
         <BulkEmailModal
           buyerIds={[...selected]}
           sampleBuyerId={[...selected][0] ?? null}
+          sampleCompanyName={rows.find((r) => selected.has(r.id))?.company_name}
           onClose={() => setShowBulkEmail(false)}
           onError={onError}
           onCreated={(result) => {
             setBulkEmailNotice(
-              `Created ${result.created_count} draft(s). ` +
+              `Sent ${result.sent_count ?? 0} email(s). ` +
+                ((result.failed_count ?? 0) > 0
+                  ? `${result.failed_count} failed. `
+                  : "") +
                 (result.skipped_count > 0
                   ? `${result.skipped_count} skipped (no email on file). `
                   : "") +
-                "Open Approval Queue to review and send.",
+                "Open Email Activity for live notifications.",
             );
-            setSelected(new Set());
+            clearSelection();
           }}
         />
       )}

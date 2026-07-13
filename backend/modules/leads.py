@@ -185,7 +185,7 @@ def get_lead_table_filters(db: Session) -> dict[str, list[str]]:
     }
 
 
-def list_leads_table(
+def _filtered_lead_table_rows(
     db: Session,
     *,
     score: str | None = None,
@@ -198,12 +198,7 @@ def list_leads_table(
     q: str | None = None,
     sort_by: str = "created_at",
     sort_dir: str = "desc",
-    page: int = 1,
-    page_size: int = 20,
-) -> dict[str, object]:
-    page = max(1, page)
-    page_size = min(max(1, page_size), 100)
-
+) -> tuple[list[dict[str, object]], int]:
     buyer_query = db.query(Buyer)
 
     if source:
@@ -227,14 +222,7 @@ def list_leads_table(
 
         matched_buyer_ids = buyer_ids_with_latest_call_outcome(db, call_outcome)
         if not matched_buyer_ids:
-            return {
-                "total": 0,
-                "filtered_count": 0,
-                "page": page,
-                "page_size": page_size,
-                "total_pages": 1,
-                "rows": [],
-            }
+            return [], 0
         buyer_query = buyer_query.filter(Buyer.id.in_(matched_buyer_ids))
 
     buyers = buyer_query.order_by(Buyer.created_at.desc()).all()
@@ -367,6 +355,74 @@ def list_leads_table(
         return (0, value)
 
     rows.sort(key=sort_key, reverse=reverse)
+    return rows, section_total
+
+
+def list_leads_table_ids(
+    db: Session,
+    *,
+    score: str | None = None,
+    country: str | None = None,
+    industry: str | None = None,
+    source: str | None = None,
+    exclude_source: str | None = None,
+    call_outcome: str | None = None,
+    market_role: str | None = None,
+    q: str | None = None,
+    sort_by: str = "created_at",
+    sort_dir: str = "desc",
+) -> dict[str, object]:
+    rows, _section_total = _filtered_lead_table_rows(
+        db,
+        score=score,
+        country=country,
+        industry=industry,
+        source=source,
+        exclude_source=exclude_source,
+        call_outcome=call_outcome,
+        market_role=market_role,
+        q=q,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    return {
+        "filtered_count": len(rows),
+        "ids": [int(row["id"]) for row in rows],
+    }
+
+
+def list_leads_table(
+    db: Session,
+    *,
+    score: str | None = None,
+    country: str | None = None,
+    industry: str | None = None,
+    source: str | None = None,
+    exclude_source: str | None = None,
+    call_outcome: str | None = None,
+    market_role: str | None = None,
+    q: str | None = None,
+    sort_by: str = "created_at",
+    sort_dir: str = "desc",
+    page: int = 1,
+    page_size: int = 20,
+) -> dict[str, object]:
+    page = max(1, page)
+    page_size = min(max(1, page_size), 100)
+
+    rows, section_total = _filtered_lead_table_rows(
+        db,
+        score=score,
+        country=country,
+        industry=industry,
+        source=source,
+        exclude_source=exclude_source,
+        call_outcome=call_outcome,
+        market_role=market_role,
+        q=q,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
 
     filtered_count = len(rows)
     total_pages = max(1, (filtered_count + page_size - 1) // page_size)

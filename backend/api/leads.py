@@ -21,6 +21,7 @@ from api.schemas import (
     LeadTableCleanupResponse,
     LeadTableDedupeResponse,
     LeadTableFiltersRead,
+    LeadTableIdsResponse,
     LeadTableResponse,
     LeadTableRowRead,
     LeadTableRowUpdate,
@@ -259,6 +260,36 @@ def list_leads_table(
         page_size=page_size,
     )
     return LeadTableResponse(**result)
+
+
+@router.get("/table/ids", response_model=LeadTableIdsResponse)
+def list_leads_table_ids(
+    score: str | None = None,
+    country: str | None = None,
+    industry: str | None = None,
+    source: str | None = None,
+    exclude_source: str | None = None,
+    call_outcome: str | None = None,
+    market_role: str | None = None,
+    q: str | None = None,
+    sort_by: str = "created_at",
+    sort_dir: str = "desc",
+    db: Session = Depends(get_db),
+):
+    result = leads_module.list_leads_table_ids(
+        db,
+        score=score,
+        country=country,
+        industry=industry,
+        source=source,
+        exclude_source=exclude_source,
+        call_outcome=call_outcome,
+        market_role=market_role,
+        q=q,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    return LeadTableIdsResponse(**result)
 
 
 @router.patch("/table/{lead_id}", response_model=LeadTableRowRead)

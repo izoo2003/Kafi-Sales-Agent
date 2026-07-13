@@ -3,19 +3,17 @@ import { client, QUOTATION_AGENT_URL } from "./api/client";
 import { AppSidebar, type LeadsTableSection, type NavItem, type Tab } from "./components/AppSidebar";
 import { InboxAlertToasts } from "./components/InboxAlertToasts";
 import { InterestedFollowUpAlertToasts } from "./components/InterestedFollowUpAlertToasts";
-import { ApprovalQueue } from "./pages/ApprovalQueue";
+import { EmailActivityPage } from "./pages/EmailActivityPage";
+import { EmailTemplatesPage } from "./pages/EmailTemplatesPage";
 import { BuyerProfile } from "./pages/BuyerProfile";
 import { CallsPage } from "./pages/CallsPage";
 import { ConsentPage } from "./pages/ConsentPage";
-import { BulkEmailPage } from "./pages/BulkEmailPage";
 import { InboxPage } from "./pages/InboxPage";
 import { LeadsPage } from "./pages/LeadsPage";
 import { LeadsTablePage } from "./pages/LeadsTablePage";
-import { QuotationsPage } from "./pages/QuotationsPage";
 import { ChatbotPage } from "./pages/ChatbotPage";
 import { TwilioVoiceProvider, useTwilioVoiceOptional } from "./hooks/useTwilioVoice";
 import { PostCallRemarksModal } from "./components/PostCallRemarksModal";
-import { useDrafts } from "./hooks/useDrafts";
 import { useLeads } from "./hooks/useLeads";
 import {
   alertInterestedFollowUp,
@@ -43,7 +41,7 @@ function CallInitBanner() {
 }
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("drafts");
+  const [tab, setTab] = useState<Tab>("activity");
   const [tableSection, setTableSection] = useState<LeadsTableSection>("all");
   const [tableCounts, setTableCounts] = useState({
     all: 0,
@@ -53,13 +51,23 @@ export default function App() {
   const [leadsTableRefreshToken, setLeadsTableRefreshToken] = useState(0);
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { total: draftCount, refresh: refreshDrafts } = useDrafts({ page: 1, pageSize: 1 });
+  const [emailActivityUnread, setEmailActivityUnread] = useState(0);
+  const [emailTemplateCount, setEmailTemplateCount] = useState(0);
   const { leads, refresh: refreshLeads } = useLeads();
 
   const [consentSummary, setConsentSummary] = useState<{ unknown: number } | null>(null);
   const [inboxUnread, setInboxUnread] = useState(0);
   const seenMessageUidsRef = useRef<Set<string> | null>(null);
   const seenFollowUpIdsRef = useRef<Set<string>>(new Set());
+
+  const loadEmailTemplateCount = useCallback(async () => {
+    try {
+      const rows = await client.listEmailTemplates();
+      setEmailTemplateCount(rows.length);
+    } catch {
+      setEmailTemplateCount(0);
+    }
+  }, []);
 
   const loadTableCounts = useCallback(async () => {
     try {
@@ -157,17 +165,22 @@ export default function App() {
 
   const refreshAll = useCallback(() => {
     setError(null);
-    refreshDrafts();
     refreshLeads();
     void loadTableCounts();
+    void loadEmailTemplateCount();
     client.getConsentSummary().then(setConsentSummary).catch(() => setConsentSummary(null));
+    client
+      .getEmailActivityUnreadCount()
+      .then((r) => setEmailActivityUnread(r.unread_count))
+      .catch(() => setEmailActivityUnread(0));
     pollInbox();
     pollInterestedFollowUps();
-  }, [loadTableCounts, refreshDrafts, refreshLeads, pollInbox, pollInterestedFollowUps]);
+  }, [loadEmailTemplateCount, loadTableCounts, refreshLeads, pollInbox, pollInterestedFollowUps]);
 
   useEffect(() => {
     client.getConsentSummary().then(setConsentSummary).catch(() => setConsentSummary(null));
     void loadTableCounts();
+    void loadEmailTemplateCount();
     requestNotificationPermission();
 
     const unlock = () => unlockNotificationAudio();
@@ -176,15 +189,26 @@ export default function App() {
 
     pollInbox();
     pollInterestedFollowUps();
+    client
+      .getEmailActivityUnreadCount()
+      .then((r) => setEmailActivityUnread(r.unread_count))
+      .catch(() => setEmailActivityUnread(0));
     const inboxTimer = window.setInterval(pollInbox, INBOX_POLL_INTERVAL_MS);
     const followUpTimer = window.setInterval(pollInterestedFollowUps, FOLLOW_UP_POLL_INTERVAL_MS);
+    const activityTimer = window.setInterval(() => {
+      client
+        .getEmailActivityUnreadCount()
+        .then((r) => setEmailActivityUnread(r.unread_count))
+        .catch(() => undefined);
+    }, INBOX_POLL_INTERVAL_MS);
     return () => {
       window.clearInterval(inboxTimer);
       window.clearInterval(followUpTimer);
+      window.clearInterval(activityTimer);
       window.removeEventListener("click", unlock);
       window.removeEventListener("keydown", unlock);
     };
-  }, [loadTableCounts, pollInbox, pollInterestedFollowUps]);
+  }, [loadEmailTemplateCount, loadTableCounts, pollInbox, pollInterestedFollowUps]);
 
   function handleSelectLead(leadId: number) {
     setError(null);
@@ -195,6 +219,7 @@ export default function App() {
     setSelectedLeadId(null);
     refreshLeads();
     void loadTableCounts();
+    void loadEmailTemplateCount();
   }
 
   function handleSelectTab(nextTab: Tab) {
@@ -211,6 +236,7 @@ export default function App() {
 
   function handleCallFollowUpSaved(_outcome: string | null | undefined) {
     void loadTableCounts();
+    void loadEmailTemplateCount();
     setLeadsTableRefreshToken((token) => token + 1);
   }
 
@@ -229,7 +255,8 @@ export default function App() {
   }
 
   const navItems: NavItem[] = [
-    { id: "drafts", label: "Approval Queue", count: draftCount },
+    { id: "activity", label: "Email Activity", count: emailActivityUnread, alert: emailActivityUnread > 0 },
+    { id: "email-templates", label: "Email templates", count: emailTemplateCount },
     { id: "leads", label: "Discover Leads", count: leads.length },
     {
       id: "table",
@@ -246,8 +273,6 @@ export default function App() {
     },
     { id: "inbox", label: "Inbox", count: inboxUnread, alert: inboxUnread > 0 },
     { id: "calls", label: "Calls", count: 0 },
-    { id: "bulk-email", label: "Bulk email", count: 0 },
-    { id: "quotations", label: "Product outreach", count: 0 },
     {
       id: "quotation-agent",
       label: "Quotation agent",
@@ -295,7 +320,15 @@ export default function App() {
               </div>
             )}
 
-            {tab === "drafts" && <ApprovalQueue onError={setError} />}
+            {tab === "activity" && (
+              <EmailActivityPage onError={setError} onUnreadChange={setEmailActivityUnread} />
+            )}
+            {tab === "email-templates" && (
+              <EmailTemplatesPage
+                onError={setError}
+                onCountChange={setEmailTemplateCount}
+              />
+            )}
             {tab === "leads" && selectedLeadId !== null && (
               <BuyerProfile
                 leadId={selectedLeadId}
@@ -342,8 +375,6 @@ export default function App() {
                 onCallFollowUpSaved={handleCallFollowUpSaved}
               />
             )}
-            {tab === "bulk-email" && <BulkEmailPage onError={setError} />}
-            {tab === "quotations" && <QuotationsPage onError={setError} />}
             {tab === "compliance" && selectedLeadId !== null && (
               <BuyerProfile
                 leadId={selectedLeadId}

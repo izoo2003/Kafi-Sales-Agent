@@ -12,8 +12,6 @@ import { ConversionBar, ProducerTierBadge } from "../components/ProducerTierBadg
 import { CallHistoryPanel } from "../components/CallHistoryPanel";
 import { ContactsPanel } from "../components/ContactsPanel";
 import { DiscoverLeadsPanel } from "../components/DiscoverLeadsPanel";
-import { ProductInterestPanel } from "../components/ProductInterestPanel";
-
 interface BuyerProfileProps {
   leadId: number;
   onBack: () => void;
@@ -33,9 +31,7 @@ export function BuyerProfile({ leadId, onBack, onError, onCallFollowUpSaved }: B
   const [loading, setLoading] = useState(true);
   const [researching, setResearching] = useState(false);
   const [scoring, setScoring] = useState(false);
-  const [draftNotice, setDraftNotice] = useState<string | null>(null);
   const [showDiscover, setShowDiscover] = useState(false);
-  const [contactsVersion, setContactsVersion] = useState(0);
 
   const loadProfile = useCallback(async () => {
     setLoading(true);
@@ -185,11 +181,7 @@ export function BuyerProfile({ leadId, onBack, onError, onCallFollowUpSaved }: B
         />
       )}
 
-      <ContactsPanel
-        leadId={leadId}
-        onError={onError}
-        onContactsChange={() => setContactsVersion((v) => v + 1)}
-      />
+      <ContactsPanel leadId={leadId} onError={onError} />
 
       <CallHistoryPanel
         leadId={leadId}
@@ -365,24 +357,6 @@ export function BuyerProfile({ leadId, onBack, onError, onCallFollowUpSaved }: B
         </section>
       )}
 
-      {draftNotice && (
-        <p className="text-sm text-emerald-300/90 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3">
-          {draftNotice}
-        </p>
-      )}
-
-      <ProductInterestPanel
-        leadId={leadId}
-        leadName={lead.company_name}
-        score={score}
-        suggestedProducts={profile?.matched_products ?? []}
-        contactsVersion={contactsVersion}
-        onError={onError}
-        onDraftCreated={(msg) => {
-          setDraftNotice(msg);
-          setTimeout(() => setDraftNotice(null), 8000);
-        }}
-      />
     </div>
   );
 }

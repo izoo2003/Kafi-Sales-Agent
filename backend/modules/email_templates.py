@@ -84,6 +84,35 @@ def delete_template(db: Session, template_id: int) -> bool:
     return True
 
 
+def preview_text(
+    db: Session,
+    *,
+    buyer_id: int,
+    subject: str,
+    body: str,
+) -> dict[str, str] | None:
+    buyer = db.get(Buyer, buyer_id)
+    if not buyer:
+        return None
+
+    from modules.buyers import primary_contact_with_email
+
+    contact = primary_contact_with_email(db, buyer_id)
+    if not contact:
+        contact = Contact(
+            buyer_id=buyer_id,
+            full_name="Sample Contact",
+            email="contact@example.com",
+        )
+
+    return {
+        "subject": render_template_text(subject, buyer=buyer, contact=contact),
+        "body": render_template_text(body, buyer=buyer, contact=contact),
+        "company_name": buyer.company_name,
+        "contact_email": contact.email or "",
+    }
+
+
 def preview_template(
     db: Session,
     template_id: int,

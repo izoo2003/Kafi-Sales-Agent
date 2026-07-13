@@ -7,6 +7,7 @@ from api.schemas import (
     EmailTemplatePreviewRead,
     EmailTemplateRead,
     EmailTemplateUpdate,
+    EmailTextPreviewRequest,
 )
 from modules import email_templates as templates_module
 from modules.audit import log_action
@@ -78,6 +79,19 @@ def delete_email_template(template_id: int, db: Session = Depends(get_db)):
     if not templates_module.delete_template(db, template_id):
         raise HTTPException(404, "Template not found")
     log_action(db, entity_type="email_template", entity_id=template_id, action="deleted")
+
+
+@router.post("/preview-text", response_model=EmailTemplatePreviewRead)
+def preview_email_text(payload: EmailTextPreviewRequest, db: Session = Depends(get_db)):
+    preview = templates_module.preview_text(
+        db,
+        buyer_id=payload.buyer_id,
+        subject=payload.subject,
+        body=payload.body,
+    )
+    if not preview:
+        raise HTTPException(404, "Lead not found")
+    return EmailTemplatePreviewRead(**preview)
 
 
 @router.get("/{template_id}/preview/{buyer_id}", response_model=EmailTemplatePreviewRead)
