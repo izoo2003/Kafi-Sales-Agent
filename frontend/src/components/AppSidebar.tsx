@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-type Tab = "drafts" | "leads" | "table" | "inbox" | "calls" | "bulk-email" | "quotations" | "compliance";
+export type Tab = "drafts" | "leads" | "table" | "inbox" | "calls" | "bulk-email" | "quotations" | "compliance" | "chatbot";
 
 export type LeadsTableSection = "all" | "old_clients" | "interested_clients";
 

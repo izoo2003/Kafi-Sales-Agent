@@ -198,8 +198,46 @@ def list_leads_table(
     q: str | None = None,
     sort_by: str = "created_at",
     sort_dir: str = "desc",
+    page: int = 1,
+    page_size: int = 20,
 ) -> dict[str, object]:
-    buyers = db.query(Buyer).order_by(Buyer.created_at.desc()).all()
+    page = max(1, page)
+    page_size = min(max(1, page_size), 100)
+
+    buyer_query = db.query(Buyer)
+
+    if source:
+        buyer_query = buyer_query.filter(
+            sa_func.lower(Buyer.source) == source.strip().lower()
+        )
+
+    if exclude_source:
+        excluded = {
+            part.strip().lower()
+            for part in exclude_source.split(",")
+            if part.strip()
+        }
+        if excluded:
+            buyer_query = buyer_query.filter(
+                ~sa_func.lower(sa_func.coalesce(Buyer.source, "")).in_(excluded)
+            )
+
+    if call_outcome:
+        from modules.calls import buyer_ids_with_latest_call_outcome
+
+        matched_buyer_ids = buyer_ids_with_latest_call_outcome(db, call_outcome)
+        if not matched_buyer_ids:
+            return {
+                "total": 0,
+                "filtered_count": 0,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": 1,
+                "rows": [],
+            }
+        buyer_query = buyer_query.filter(Buyer.id.in_(matched_buyer_ids))
+
+    buyers = buyer_query.order_by(Buyer.created_at.desc()).all()
     buyer_ids = [buyer.id for buyer in buyers]
 
     score_by_buyer: dict[int, LeadScore] = {}
@@ -277,28 +315,6 @@ def list_leads_table(
             }
         )
 
-    if source:
-        rows = [row for row in rows if (row["source"] or "").lower() == source.lower()]
-
-    if exclude_source:
-        excluded = {
-            part.strip().lower()
-            for part in exclude_source.split(",")
-            if part.strip()
-        }
-        if excluded:
-            rows = [
-                row
-                for row in rows
-                if (row["source"] or "").lower() not in excluded
-            ]
-
-    if call_outcome:
-        from modules.calls import buyer_ids_with_latest_call_outcome
-
-        matched_buyer_ids = buyer_ids_with_latest_call_outcome(db, call_outcome)
-        rows = [row for row in rows if int(row["id"]) in matched_buyer_ids]
-
     section_total = len(rows)
 
     query = (q or "").strip().lower()
@@ -352,10 +368,20 @@ def list_leads_table(
 
     rows.sort(key=sort_key, reverse=reverse)
 
+    filtered_count = len(rows)
+    total_pages = max(1, (filtered_count + page_size - 1) // page_size)
+    if page > total_pages:
+        page = total_pages
+    start = (page - 1) * page_size
+    paged_rows = rows[start : start + page_size]
+
     return {
         "total": section_total,
-        "filtered_count": len(rows),
-        "rows": rows,
+        "filtered_count": filtered_count,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "rows": paged_rows,
     }
 
 

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { client, QUOTATION_AGENT_URL } from "./api/client";
-import { AppSidebar, type LeadsTableSection, type NavItem } from "./components/AppSidebar";
+import { AppSidebar, type LeadsTableSection, type NavItem, type Tab } from "./components/AppSidebar";
 import { InboxAlertToasts } from "./components/InboxAlertToasts";
+import { InterestedFollowUpAlertToasts } from "./components/InterestedFollowUpAlertToasts";
 import { ApprovalQueue } from "./pages/ApprovalQueue";
 import { BuyerProfile } from "./pages/BuyerProfile";
 import { CallsPage } from "./pages/CallsPage";
@@ -11,19 +12,21 @@ import { InboxPage } from "./pages/InboxPage";
 import { LeadsPage } from "./pages/LeadsPage";
 import { LeadsTablePage } from "./pages/LeadsTablePage";
 import { QuotationsPage } from "./pages/QuotationsPage";
+import { ChatbotPage } from "./pages/ChatbotPage";
 import { TwilioVoiceProvider, useTwilioVoiceOptional } from "./hooks/useTwilioVoice";
 import { PostCallRemarksModal } from "./components/PostCallRemarksModal";
 import { useDrafts } from "./hooks/useDrafts";
 import { useLeads } from "./hooks/useLeads";
 import {
+  alertInterestedFollowUp,
   alertNewInboxMessage,
   requestNotificationPermission,
   unlockNotificationAudio,
 } from "./utils/notify";
 
-type Tab = "drafts" | "leads" | "table" | "inbox" | "calls" | "bulk-email" | "quotations" | "compliance";
 
 const INBOX_POLL_INTERVAL_MS = 12_000;
+const FOLLOW_UP_POLL_INTERVAL_MS = 60_000;
 
 function CallInitBanner() {
   const voice = useTwilioVoiceOptional();
@@ -50,12 +53,13 @@ export default function App() {
   const [leadsTableRefreshToken, setLeadsTableRefreshToken] = useState(0);
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { drafts, refresh: refreshDrafts } = useDrafts();
+  const { total: draftCount, refresh: refreshDrafts } = useDrafts({ page: 1, pageSize: 1 });
   const { leads, refresh: refreshLeads } = useLeads();
 
   const [consentSummary, setConsentSummary] = useState<{ unknown: number } | null>(null);
   const [inboxUnread, setInboxUnread] = useState(0);
   const seenMessageUidsRef = useRef<Set<string> | null>(null);
+  const seenFollowUpIdsRef = useRef<Set<string>>(new Set());
 
   const loadTableCounts = useCallback(async () => {
     try {
@@ -64,16 +68,22 @@ export default function App() {
           exclude_source: "old_clients",
           sort_by: "company_name",
           sort_dir: "asc",
+          page: 1,
+          page_size: 1,
         }),
         client.listLeadsTable({
           source: "old_clients",
           sort_by: "company_name",
           sort_dir: "asc",
+          page: 1,
+          page_size: 1,
         }),
         client.listLeadsTable({
           call_outcome: "interested",
           sort_by: "company_name",
           sort_dir: "asc",
+          page: 1,
+          page_size: 1,
         }),
       ]);
       setTableCounts({
@@ -123,6 +133,28 @@ export default function App() {
       });
   }, []);
 
+  const pollInterestedFollowUps = useCallback(() => {
+    client
+      .listInterestedFollowUps()
+      .then((reminders) => {
+        const seen = seenFollowUpIdsRef.current;
+        for (const reminder of reminders) {
+          if (seen.has(reminder.id)) continue;
+          seen.add(reminder.id);
+          alertInterestedFollowUp({
+            id: reminder.id,
+            buyerId: reminder.buyer_id,
+            companyName: reminder.company_name,
+            contactName: reminder.contact_name,
+            weeksSincePlacement: reminder.weeks_since_placement,
+          });
+        }
+      })
+      .catch(() => {
+        /* optional */
+      });
+  }, []);
+
   const refreshAll = useCallback(() => {
     setError(null);
     refreshDrafts();
@@ -130,7 +162,8 @@ export default function App() {
     void loadTableCounts();
     client.getConsentSummary().then(setConsentSummary).catch(() => setConsentSummary(null));
     pollInbox();
-  }, [loadTableCounts, refreshDrafts, refreshLeads, pollInbox]);
+    pollInterestedFollowUps();
+  }, [loadTableCounts, refreshDrafts, refreshLeads, pollInbox, pollInterestedFollowUps]);
 
   useEffect(() => {
     client.getConsentSummary().then(setConsentSummary).catch(() => setConsentSummary(null));
@@ -142,13 +175,16 @@ export default function App() {
     window.addEventListener("keydown", unlock, { once: true });
 
     pollInbox();
-    const timer = window.setInterval(pollInbox, INBOX_POLL_INTERVAL_MS);
+    pollInterestedFollowUps();
+    const inboxTimer = window.setInterval(pollInbox, INBOX_POLL_INTERVAL_MS);
+    const followUpTimer = window.setInterval(pollInterestedFollowUps, FOLLOW_UP_POLL_INTERVAL_MS);
     return () => {
-      window.clearInterval(timer);
+      window.clearInterval(inboxTimer);
+      window.clearInterval(followUpTimer);
       window.removeEventListener("click", unlock);
       window.removeEventListener("keydown", unlock);
     };
-  }, [loadTableCounts, pollInbox]);
+  }, [loadTableCounts, pollInbox, pollInterestedFollowUps]);
 
   function handleSelectLead(leadId: number) {
     setError(null);
@@ -178,8 +214,22 @@ export default function App() {
     setLeadsTableRefreshToken((token) => token + 1);
   }
 
+  function handleViewInterestedClient(buyerId: number) {
+    setTab("table");
+    setTableSection("interested_clients");
+    setSelectedLeadId(buyerId);
+  }
+
+  async function handleAcknowledgeInterestedFollowUp(buyerId: number) {
+    await client.acknowledgeInterestedFollowUp(buyerId);
+    const reminders = await client.listInterestedFollowUps();
+    for (const reminder of reminders) {
+      seenFollowUpIdsRef.current.add(reminder.id);
+    }
+  }
+
   const navItems: NavItem[] = [
-    { id: "drafts", label: "Approval Queue", count: drafts.length },
+    { id: "drafts", label: "Approval Queue", count: draftCount },
     { id: "leads", label: "Discover Leads", count: leads.length },
     {
       id: "table",
@@ -209,6 +259,7 @@ export default function App() {
       label: "Automated messages",
       count: consentSummary?.unknown ?? 0,
     },
+    { id: "chatbot", label: "Brand assistant", count: 0 },
   ];
 
   return (
@@ -221,6 +272,10 @@ export default function App() {
       />
       <div className="min-h-screen flex">
         <InboxAlertToasts onOpenInbox={() => handleSelectTab("inbox")} />
+        <InterestedFollowUpAlertToasts
+          onViewClient={handleViewInterestedClient}
+          onAcknowledge={handleAcknowledgeInterestedFollowUp}
+        />
         <AppSidebar
           navItems={navItems}
           activeTab={tab}
@@ -300,6 +355,7 @@ export default function App() {
             {tab === "compliance" && selectedLeadId === null && (
               <ConsentPage onError={setError} onSelectLead={handleSelectLead} />
             )}
+            {tab === "chatbot" && <ChatbotPage onError={setError} />}
           </main>
         </div>
       </div>

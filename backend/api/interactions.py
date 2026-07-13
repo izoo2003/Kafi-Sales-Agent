@@ -8,6 +8,7 @@ from api.schemas import (
     BulkEmailDraftRequest,
     BulkEmailDraftResponse,
     BulkEmailSettingsRead,
+    DraftListResponse,
     EmailDraftRequest,
     InteractionApprove,
     InteractionApproveResponse,
@@ -27,10 +28,23 @@ def _interaction_read(db: Session, interaction) -> InteractionRead:
     return InteractionRead(**comms.interaction_to_dict(db, interaction))
 
 
-@router.get("/drafts", response_model=list[InteractionRead])
-def list_draft_interactions(db: Session = Depends(get_db)):
-    drafts = comms.list_drafts(db)
-    return [_interaction_read(db, draft) for draft in drafts]
+@router.get("/drafts", response_model=DraftListResponse)
+def list_draft_interactions(
+    page: int = 1,
+    page_size: int = 20,
+    db: Session = Depends(get_db),
+):
+    drafts, total = comms.list_drafts(db, page=page, page_size=page_size)
+    page = max(1, page)
+    page_size = min(max(1, page_size), 100)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    return DraftListResponse(
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+        rows=[_interaction_read(db, draft) for draft in drafts],
+    )
 
 
 @router.get("", response_model=list[InteractionRead])

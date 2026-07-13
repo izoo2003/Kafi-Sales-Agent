@@ -300,13 +300,26 @@ class CommsGenerator:
         db.refresh(draft)
         return draft
 
-    def list_drafts(self, db: Session) -> list[Interaction]:
-        return (
-            db.query(Interaction)
-            .filter(Interaction.status == InteractionStatus.draft)
-            .order_by(Interaction.created_at.desc())
+    def list_drafts(
+        self,
+        db: Session,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[list[Interaction], int]:
+        page = max(1, page)
+        page_size = min(max(1, page_size), 100)
+        base_query = db.query(Interaction).filter(
+            Interaction.status == InteractionStatus.draft
+        )
+        total = base_query.count()
+        drafts = (
+            base_query.order_by(Interaction.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
             .all()
         )
+        return drafts, total
 
     def update_draft_attachments(
         self,

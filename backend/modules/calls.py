@@ -510,6 +510,16 @@ def update_call_followup(
         new_notes or None,
         new_outcome,
     )
+
+    from modules.interested_follow_ups import sync_buyer_interested_status
+
+    sync_buyer_interested_status(
+        db,
+        buyer_id=interaction.contact.buyer_id,
+        new_outcome=new_outcome,
+        previous_outcome=existing_outcome,
+    )
+
     db.commit()
     db.refresh(interaction)
     return call_interaction_to_dict(db, interaction)

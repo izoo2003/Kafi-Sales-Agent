@@ -126,6 +126,8 @@ class Buyer(Base):
     producer_tier: Mapped[Optional["ProducerTier"]] = mapped_column(Enum(ProducerTier))
     producer_conversion_pct: Mapped[Optional[float]] = mapped_column(Numeric(5, 2))
     producer_tier_reasoning: Mapped[Optional[str]] = mapped_column(Text)
+    interested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    interested_follow_up_ack_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

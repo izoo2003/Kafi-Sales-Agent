@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import { client, type DraftInteraction } from "../api/client";
 
-export function useDrafts() {
+interface UseDraftsOptions {
+  page?: number;
+  pageSize?: number;
+}
+
+export function useDrafts(options: UseDraftsOptions = {}) {
+  const page = options.page ?? 1;
+  const pageSize = options.pageSize ?? 20;
   const [drafts, setDrafts] = useState<DraftInteraction[]>([]);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -10,17 +19,20 @@ export function useDrafts() {
     setLoading(true);
     setError(null);
     try {
-      setDrafts(await client.listDrafts());
+      const result = await client.listDrafts({ page, page_size: pageSize });
+      setDrafts(result.rows);
+      setTotal(result.total);
+      setTotalPages(result.total_pages);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load drafts");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [page, pageSize]);
 
   useEffect(() => {
-    refresh();
+    void refresh();
   }, [refresh]);
 
-  return { drafts, loading, error, refresh };
+  return { drafts, total, totalPages, page, pageSize, loading, error, refresh };
 }

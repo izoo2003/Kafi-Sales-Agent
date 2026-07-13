@@ -4,7 +4,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api import calls, compliance, email_attachments, email_templates, inbox, interactions, leads, scheduler
+from api import calls, chatbot, compliance, email_attachments, email_templates, inbox, interactions, leads, scheduler
 from config import settings
 from modules.lead_discovery import OLD_CLIENTS_IMPORT_PARSER
 from db.migrate import run_migrations
@@ -98,6 +98,7 @@ app.include_router(calls.router, prefix="/api")
 app.include_router(email_attachments.router, prefix="/api")
 app.include_router(inbox.router, prefix="/api")
 app.include_router(calls.webhooks_router, prefix="/api")
+app.include_router(chatbot.router, prefix="/api")
 
 
 OLD_CLIENTS_IMPORT_PARSER = "old_clients_v2"

@@ -99,6 +99,33 @@ export interface Lead {
   score_reasoning?: string | null;
 }
 
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface ChatResponse {
+  reply: string;
+  provider: string;
+  model: string;
+}
+
+export interface ChatbotStatus {
+  gemini: boolean;
+  openai: boolean;
+  anthropic: boolean;
+}
+
+export interface InterestedFollowUp {
+  id: string;
+  buyer_id: number;
+  company_name: string;
+  contact_name: string | null;
+  interested_at: string;
+  weeks_since_placement: number;
+  due_at: string;
+}
+
 export interface BuyerProfile {
   buyer_id: number;
   company_name: string;
@@ -539,7 +566,18 @@ export interface LeadTableRowUpdate {
 export interface LeadTableResponse {
   total: number;
   filtered_count: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
   rows: LeadTableRow[];
+}
+
+export interface DraftListResponse {
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  rows: DraftInteraction[];
 }
 
 export interface LeadTableFilters {
@@ -561,6 +599,8 @@ export interface LeadTableQuery {
   q?: string;
   sort_by?: string;
   sort_dir?: "asc" | "desc";
+  page?: number;
+  page_size?: number;
 }
 
 export type LeadTableSectionScope = Pick<LeadTableQuery, "source" | "exclude_source">;
@@ -582,6 +622,8 @@ export const client = {
     if (params.q) search.set("q", params.q);
     if (params.sort_by) search.set("sort_by", params.sort_by);
     if (params.sort_dir) search.set("sort_dir", params.sort_dir);
+    if (params.page) search.set("page", String(params.page));
+    if (params.page_size) search.set("page_size", String(params.page_size));
     const query = search.toString();
     return request<LeadTableResponse>(`/leads/table${query ? `?${query}` : ""}`);
   },
@@ -714,7 +756,13 @@ export const client = {
       (r) => r.product_types,
     ),
 
-  listDrafts: () => request<DraftInteraction[]>("/interactions/drafts"),
+  listDrafts: (params: { page?: number; page_size?: number } = {}) => {
+    const search = new URLSearchParams();
+    if (params.page) search.set("page", String(params.page));
+    if (params.page_size) search.set("page_size", String(params.page_size));
+    const query = search.toString();
+    return request<DraftListResponse>(`/interactions/drafts${query ? `?${query}` : ""}`);
+  },
   approveDraft: (id: number, content?: string, send = true) =>
     request<ApproveDraftResult>(`/interactions/${id}/approve`, {
       method: "POST",
@@ -842,7 +890,32 @@ export const client = {
       body: JSON.stringify(data),
     }),
 
+  getChatbotStatus: () => request<ChatbotStatus>("/chatbot/status"),
+  sendChatbotMessage: async (payload: {
+    message: string;
+    image?: File;
+    history?: ChatMessage[];
+  }): Promise<ChatResponse> => {
+    const form = new FormData();
+    form.append("message", payload.message);
+    form.append("history", JSON.stringify(payload.history ?? []));
+    if (payload.image) form.append("image", payload.image);
+    const res = await fetch(`${API_BASE}/chatbot/chat`, { method: "POST", body: form });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || res.statusText);
+    }
+    return res.json() as Promise<ChatResponse>;
+  },
+
   getCallConfig: () => request<CallConfig>("/calls/config"),
+  listInterestedFollowUps: () =>
+    request<InterestedFollowUp[]>("/leads/interested-follow-ups"),
+  acknowledgeInterestedFollowUp: (buyerId: number) =>
+    request<{ buyer_id: number; interested_follow_up_ack_at: string }>(
+      `/leads/interested-follow-ups/${buyerId}/acknowledge`,
+      { method: "POST" },
+    ),
   getVoiceToken: () => request<VoiceToken>("/calls/voice-token"),
   listCallHistory: (limit = 50) =>
     request<CallHistoryItem[]>(`/calls/history?limit=${limit}`),

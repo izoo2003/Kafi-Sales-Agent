@@ -26,6 +26,8 @@ from api.schemas import (
     LeadTableRowUpdate,
     ProductInterestEmailRequest,
     QuotationEligibleLeadRead,
+    InterestedFollowUpAckRead,
+    InterestedFollowUpRead,
 )
 from db.models import LeadScoreLabel
 from modules.comms_generator import get_comms
@@ -192,6 +194,26 @@ def list_quotation_eligible_leads(db: Session = Depends(get_db)):
     return leads_module.list_quotation_eligible_leads(db)
 
 
+@router.get("/interested-follow-ups", response_model=list[InterestedFollowUpRead])
+def list_interested_follow_ups(db: Session = Depends(get_db)):
+    from modules.interested_follow_ups import list_due_follow_ups
+
+    return list_due_follow_ups(db)
+
+
+@router.post(
+    "/interested-follow-ups/{buyer_id}/acknowledge",
+    response_model=InterestedFollowUpAckRead,
+)
+def acknowledge_interested_follow_up(buyer_id: int, db: Session = Depends(get_db)):
+    from modules.interested_follow_ups import acknowledge_follow_up
+
+    try:
+        return acknowledge_follow_up(db, buyer_id=buyer_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.get("/product-types")
 def list_product_types():
     from modules.product_catalog import list_unique_product_types
@@ -217,6 +239,8 @@ def list_leads_table(
     q: str | None = None,
     sort_by: str = "created_at",
     sort_dir: str = "desc",
+    page: int = 1,
+    page_size: int = 20,
     db: Session = Depends(get_db),
 ):
     result = leads_module.list_leads_table(
@@ -231,6 +255,8 @@ def list_leads_table(
         q=q,
         sort_by=sort_by,
         sort_dir=sort_dir,
+        page=page,
+        page_size=page_size,
     )
     return LeadTableResponse(**result)
 

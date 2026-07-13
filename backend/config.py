@@ -52,6 +52,15 @@ class Settings(BaseSettings):
     gemini_fallback_models: str | None = None
     gemini_max_output_tokens: int = 512
 
+    # Product chatbot only — separate keys from GEMINI_API_KEY / llm_client.py
+    chatbot_gemini_api_key: str | None = None
+    chatbot_gemini_api_keys: str | None = None  # optional comma-separated extra keys
+    chatbot_gemini_fallback_models: str | None = None
+    chatbot_openai_api_key: str | None = None
+    chatbot_openai_model: str = "gpt-4o-mini"
+    chatbot_anthropic_api_key: str | None = None
+    chatbot_anthropic_model: str = "claude-3-5-haiku-20241022"
+
     # Web search — see modules/web_search.py
     brave_api_key: str | None = None
     google_cse_api_key: str | None = None

@@ -7,9 +7,18 @@ export interface InboxPopupPayload {
   count: number;
 }
 
+export interface InterestedFollowUpPopupPayload {
+  id: string;
+  buyerId: number;
+  companyName: string;
+  contactName: string | null;
+  weeksSincePlacement: number;
+}
+
 let audioCtx: AudioContext | null = null;
 let audioUnlocked = false;
 const popupListeners = new Set<(payload: InboxPopupPayload) => void>();
+const followUpListeners = new Set<(payload: InterestedFollowUpPopupPayload) => void>();
 
 function getAudioContext(): AudioContext | null {
   if (typeof window === "undefined") return null;
@@ -32,8 +41,19 @@ export function subscribeInboxPopup(listener: (payload: InboxPopupPayload) => vo
   return () => popupListeners.delete(listener);
 }
 
+export function subscribeInterestedFollowUpPopup(
+  listener: (payload: InterestedFollowUpPopupPayload) => void,
+) {
+  followUpListeners.add(listener);
+  return () => followUpListeners.delete(listener);
+}
+
 function emitInboxPopup(payload: InboxPopupPayload) {
   popupListeners.forEach((listener) => listener(payload));
+}
+
+function emitInterestedFollowUpPopup(payload: InterestedFollowUpPopupPayload) {
+  followUpListeners.forEach((listener) => listener(payload));
 }
 
 /** Call once after a user click/keypress so browsers allow sound. */
@@ -172,5 +192,40 @@ export function alertNewInboxMessage(details: {
     from: sender,
     subject,
     count,
+  });
+}
+
+export function alertInterestedFollowUp(details: {
+  id: string;
+  buyerId: number;
+  companyName: string;
+  contactName?: string | null;
+  weeksSincePlacement: number;
+}) {
+  unlockNotificationAudio();
+  playNotificationChime();
+
+  const label = details.contactName?.trim()
+    ? `${details.contactName} (${details.companyName})`
+    : details.companyName;
+  const weekLabel =
+    details.weeksSincePlacement === 1
+      ? "one week"
+      : `${details.weeksSincePlacement} weeks`;
+
+  const spoken = `Follow-up reminder. ${label} was marked interested ${weekLabel} ago. Please take follow-up action.`;
+  window.setTimeout(() => speakInboxAlert(spoken), 350);
+
+  showDesktopNotification(
+    "Interested client follow-up",
+    `${label} — follow-up due (${weekLabel} since placement)`,
+  );
+
+  emitInterestedFollowUpPopup({
+    id: details.id,
+    buyerId: details.buyerId,
+    companyName: details.companyName,
+    contactName: details.contactName ?? null,
+    weeksSincePlacement: details.weeksSincePlacement,
   });
 }

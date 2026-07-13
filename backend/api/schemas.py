@@ -405,7 +405,18 @@ class LeadTableRowUpdate(BaseModel):
 class LeadTableResponse(BaseModel):
     total: int
     filtered_count: int
+    page: int = 1
+    page_size: int = 20
+    total_pages: int = 1
     rows: list[LeadTableRowRead]
+
+
+class DraftListResponse(BaseModel):
+    total: int
+    page: int = 1
+    page_size: int = 20
+    total_pages: int = 1
+    rows: list[InteractionRead]
 
 
 class LeadTableFiltersRead(BaseModel):
@@ -635,6 +646,21 @@ class CallHistoryItem(BaseModel):
 class CallNotesRequest(BaseModel):
     notes: str = ""
     call_outcome: Optional[str] = None
+
+
+class InterestedFollowUpRead(BaseModel):
+    id: str
+    buyer_id: int
+    company_name: str
+    contact_name: Optional[str] = None
+    interested_at: datetime
+    weeks_since_placement: int
+    due_at: datetime
+
+
+class InterestedFollowUpAckRead(BaseModel):
+    buyer_id: int
+    interested_follow_up_ack_at: datetime
 
 
 # ── Inbox (Outlook) ───────────────────────────────────────────────────────────

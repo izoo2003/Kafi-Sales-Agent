@@ -6,11 +6,14 @@ import {
   type EmailAttachment,
 } from "../api/client";
 import { EmailAttachmentsField } from "../components/EmailAttachmentsField";
+import { Pagination } from "../components/Pagination";
 import { useDrafts } from "../hooks/useDrafts";
 
 interface ApprovalQueueProps {
   onError: (message: string) => void;
 }
+
+const DRAFT_PAGE_SIZE = 20;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -25,7 +28,11 @@ function chunkIds(ids: number[], size: number): number[][] {
 }
 
 export function ApprovalQueue({ onError }: ApprovalQueueProps) {
-  const { drafts, loading, refresh } = useDrafts();
+  const [page, setPage] = useState(1);
+  const { drafts, total, totalPages, loading, refresh } = useDrafts({
+    page,
+    pageSize: DRAFT_PAGE_SIZE,
+  });
   const [editingDraft, setEditingDraft] = useState<Record<number, string>>({});
   const [editingAttachments, setEditingAttachments] = useState<Record<number, EmailAttachment[]>>({});
   const [approvingId, setApprovingId] = useState<number | null>(null);
@@ -44,6 +51,12 @@ export function ApprovalQueue({ onError }: ApprovalQueueProps) {
   useEffect(() => {
     client.getBulkEmailSettings().then(setBulkSettings).catch(() => setBulkSettings(null));
   }, []);
+
+  useEffect(() => {
+    if (!loading && drafts.length === 0 && page > 1) {
+      setPage((current) => Math.max(1, current - 1));
+    }
+  }, [drafts.length, loading, page]);
 
   const emailDrafts = drafts.filter((d) => d.channel === "email");
   const allEmailSelected =
@@ -221,7 +234,7 @@ export function ApprovalQueue({ onError }: ApprovalQueueProps) {
               checked={allEmailSelected}
               onChange={toggleSelectAll}
             />
-            Select all email drafts ({emailDrafts.length})
+            Select all on this page ({emailDrafts.length})
           </label>
           <button
             type="button"
@@ -262,10 +275,11 @@ export function ApprovalQueue({ onError }: ApprovalQueueProps) {
         </p>
       )}
 
-      {drafts.length === 0 ? (
+      {total === 0 ? (
         <p className="text-slate-400">No drafts pending approval.</p>
       ) : (
-        drafts.map((draft) => (
+        <>
+        {drafts.map((draft) => (
           <article
             key={draft.id}
             className="rounded-xl border border-slate-800 bg-slate-900 p-5"
@@ -363,7 +377,16 @@ export function ApprovalQueue({ onError }: ApprovalQueueProps) {
               </p>
             )}
           </article>
-        ))
+        ))}
+        <Pagination
+          page={page}
+          totalPages={totalPages}
+          totalItems={total}
+          pageSize={DRAFT_PAGE_SIZE}
+          onPageChange={setPage}
+          disabled={loading || bulkApproving}
+        />
+        </>
       )}
     </section>
   );

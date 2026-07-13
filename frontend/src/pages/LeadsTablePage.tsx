@@ -15,7 +15,10 @@ import { BulkEmailModal } from "../components/BulkEmailModal";
 import { LeadsTableCsvImport } from "../components/LeadsTableCsvImport";
 import { SocialLinksCell } from "../components/SocialLinksCell";
 import { CallLeadButton } from "../components/CallLeadButton";
+import { Pagination } from "../components/Pagination";
 import { exportLeadsTableCsv } from "../utils/exportCsv";
+
+const TABLE_PAGE_SIZE = 20;
 
 interface LeadsTablePageProps {
   section: LeadsTableSection;
@@ -182,6 +185,8 @@ export function LeadsTablePage({
   const [rows, setRows] = useState<LeadTableRow[]>([]);
   const [total, setTotal] = useState(0);
   const [filteredCount, setFilteredCount] = useState(0);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
   const [loading, setLoading] = useState(true);
   const [editMode, setEditMode] = useState(false);
   const [drafts, setDrafts] = useState<Record<number, LeadTableRow>>({});
@@ -244,16 +249,22 @@ export function LeadsTablePage({
           exclude_source: "old_clients",
           sort_by: "company_name",
           sort_dir: "asc",
+          page: 1,
+          page_size: 1,
         }),
         client.listLeadsTable({
           source: "old_clients",
           sort_by: "company_name",
           sort_dir: "asc",
+          page: 1,
+          page_size: 1,
         }),
         client.listLeadsTable({
           call_outcome: "interested",
           sort_by: "company_name",
           sort_dir: "asc",
+          page: 1,
+          page_size: 1,
         }),
       ]);
       onSectionCountsChange({
@@ -283,18 +294,26 @@ export function LeadsTablePage({
         q: search.trim() || undefined,
         sort_by: sortBy,
         sort_dir: sortDir,
+        page,
+        page_size: TABLE_PAGE_SIZE,
         ...sectionParams,
       });
       setRows(result.rows);
       setTotal(result.total);
       setFilteredCount(result.filtered_count);
+      setTotalPages(result.total_pages);
+      setPage(result.page);
       setSelected(new Set());
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to load leads table");
     } finally {
       setLoading(false);
     }
-  }, [country, marketRole, onError, score, search, section, sortBy, sortDir]);
+  }, [country, marketRole, onError, page, score, search, section, sortBy, sortDir]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [section, score, marketRole, country, search, sortBy, sortDir]);
 
   useEffect(() => {
     client
@@ -674,7 +693,7 @@ export function LeadsTablePage({
           <h2 className="text-lg font-medium text-slate-100">{sectionTitle(section)}</h2>
           <p className="text-sm text-slate-500 mt-1">{sectionDescription(section)}</p>
           <p className="text-sm text-slate-500 mt-1">
-            Showing {filteredCount} of {total}
+            {filteredCount} matching · {total} in section · {TABLE_PAGE_SIZE} per page
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -1494,6 +1513,17 @@ export function LeadsTablePage({
           )}
           </div>
         </div>
+      )}
+
+      {!loading && rows.length > 0 && (
+        <Pagination
+          page={page}
+          totalPages={totalPages}
+          totalItems={filteredCount}
+          pageSize={TABLE_PAGE_SIZE}
+          onPageChange={setPage}
+          disabled={loading || bulkOnboarding || deletingSelected || editMode}
+        />
       )}
       </div>
 
