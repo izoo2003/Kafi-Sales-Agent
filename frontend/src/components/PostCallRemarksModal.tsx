@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { client } from "../api/client";
 import { useTwilioVoice } from "../hooks/useTwilioVoice";
-import { type CallOutcome } from "../utils/callOutcomes";
+import { type CallOutcome, callOutcomeSectionHint } from "../utils/callOutcomes";
 import { CallRemarksForm } from "./CallRemarksForm";
 
 interface PostCallRemarksModalProps {
@@ -58,9 +58,9 @@ export function PostCallRemarksModal({ onError, onSaved }: PostCallRemarksModalP
           <p className="text-sm text-slate-400 mt-1">
             Add remarks and label the outcome for{" "}
             <span className="text-slate-200">{pendingFollowUp.label}</span>.
-            {outcome === "interested" ? (
+            {callOutcomeSectionHint(outcome) ? (
               <span className="block mt-1 text-emerald-300/90">
-                Interested clients are added to Leads table → Interested clients.
+                {callOutcomeSectionHint(outcome)}
               </span>
             ) : null}
           </p>

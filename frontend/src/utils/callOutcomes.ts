@@ -23,3 +23,23 @@ export function callOutcomeBadge(value: string | null | undefined): string {
   }
   return "bg-slate-700/50 text-slate-300 border-slate-600";
 }
+
+export function callOutcomeListNotice(value: CallOutcome | null | undefined): string | null {
+  if (value === "interested") return "Client added to Interested clients list.";
+  if (value === "not_interested") return "Client added to Not interested list.";
+  if (value === "not_received_call") return "Client added to Did not receive call list.";
+  return null;
+}
+
+export function callOutcomeSectionHint(value: CallOutcome | ""): string | null {
+  if (value === "interested") {
+    return "Interested clients are added to Leads table → Interested clients.";
+  }
+  if (value === "not_interested") {
+    return "Not interested clients are added to Leads table → Not interested.";
+  }
+  if (value === "not_received_call") {
+    return "These clients are added to Leads table → Did not receive call.";
+  }
+  return null;
+}

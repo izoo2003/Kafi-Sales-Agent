@@ -10,7 +10,7 @@ import { CallManualDialer } from "../components/CallManualDialer";
 import { CallRemarksForm } from "../components/CallRemarksForm";
 import { CallRecordingPanel } from "../components/CallRecordingPanel";
 import { CountrySelect } from "../components/CountrySelect";
-import { type CallOutcome, callOutcomeBadge, callOutcomeLabel } from "../utils/callOutcomes";
+import { type CallOutcome, callOutcomeBadge, callOutcomeLabel, callOutcomeListNotice } from "../utils/callOutcomes";
 import { countryMatches } from "../data/countries";
 
 interface CallsPageProps {
@@ -56,6 +56,7 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
   const [remarksDraft, setRemarksDraft] = useState("");
   const [outcomeDraft, setOutcomeDraft] = useState<CallOutcome | "">("");
   const [savingFollowUp, setSavingFollowUp] = useState(false);
+  const [deletingCallId, setDeletingCallId] = useState<number | null>(null);
   const [countryFilter, setCountryFilter] = useState<string>("");
   const pollRef = useRef<number | null>(null);
 
@@ -124,11 +125,8 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
       });
       setHistory((prev) => prev.map((c) => (c.id === selectedCallId ? updated : c)));
       onCallFollowUpSaved?.(updated.call_outcome);
-      if (updated.call_outcome === "interested") {
-        setNotice("Client added to Interested clients list.");
-      } else {
-        setNotice("Call remarks saved.");
-      }
+      const outcomeNotice = callOutcomeListNotice(updated.call_outcome);
+      setNotice(outcomeNotice ?? "Call remarks saved.");
       setTimeout(() => setNotice(null), 4000);
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to save call remarks");
@@ -141,6 +139,31 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
     setSelectedCallId(call.id);
     setRemarksDraft(call.notes ?? "");
     setOutcomeDraft((call.call_outcome as CallOutcome | undefined) ?? "");
+  }
+
+  async function deleteCall(call: CallHistoryItem) {
+    const label = call.company_name ?? call.contact_name ?? "this call";
+    if (!window.confirm(`Delete call log for ${label}? This cannot be undone.`)) return;
+
+    setDeletingCallId(call.id);
+    try {
+      await client.deleteCallLog(call.id);
+      setHistory((prev) => prev.filter((c) => c.id !== call.id));
+      if (selectedCallId === call.id) {
+        setSelectedCallId(null);
+        setRemarksDraft("");
+        setOutcomeDraft("");
+      }
+      if (call.call_outcome) {
+        onCallFollowUpSaved?.(null);
+      }
+      setNotice("Call log deleted.");
+      setTimeout(() => setNotice(null), 4000);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to delete call log");
+    } finally {
+      setDeletingCallId(null);
+    }
   }
 
   if (!loading && config && !config.configured) {
@@ -297,39 +320,52 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
               <p className="p-4 text-sm text-slate-500">No calls yet.</p>
             ) : (
               history.map((call) => (
-                <button
+                <div
                   key={call.id}
-                  type="button"
-                  onClick={() => selectCall(call)}
-                  className={`w-full text-left px-4 py-3 hover:bg-slate-800/50 transition ${
+                  className={`flex items-stretch ${
                     selectedCallId === call.id ? "bg-slate-800/70" : ""
                   }`}
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="text-sm text-slate-200 truncate">
-                        {call.company_name ?? call.contact_name ?? "Call"}
-                      </p>
-                      <p className="text-xs text-slate-500">{formatDate(call.created_at)}</p>
+                  <button
+                    type="button"
+                    onClick={() => selectCall(call)}
+                    className="flex-1 min-w-0 text-left px-4 py-3 hover:bg-slate-800/50 transition"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm text-slate-200 truncate">
+                          {call.company_name ?? call.contact_name ?? "Call"}
+                        </p>
+                        <p className="text-xs text-slate-500">{formatDate(call.created_at)}</p>
+                      </div>
+                      <div className="shrink-0 flex flex-col items-end gap-1">
+                        {call.call_outcome && (
+                          <span
+                            className={`text-xs px-2 py-0.5 rounded border ${callOutcomeBadge(call.call_outcome)}`}
+                          >
+                            {callOutcomeLabel(call.call_outcome)}
+                          </span>
+                        )}
+                        {call.call_status && (
+                          <span
+                            className={`text-xs px-2 py-0.5 rounded border ${statusBadge(call.call_status)}`}
+                          >
+                            {call.call_status}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <div className="shrink-0 flex flex-col items-end gap-1">
-                      {call.call_outcome && (
-                        <span
-                          className={`text-xs px-2 py-0.5 rounded border ${callOutcomeBadge(call.call_outcome)}`}
-                        >
-                          {callOutcomeLabel(call.call_outcome)}
-                        </span>
-                      )}
-                      {call.call_status && (
-                        <span
-                          className={`text-xs px-2 py-0.5 rounded border ${statusBadge(call.call_status)}`}
-                        >
-                          {call.call_status}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </button>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void deleteCall(call)}
+                    disabled={deletingCallId === call.id}
+                    title="Delete call log"
+                    className="shrink-0 px-3 text-xs text-red-300 hover:text-red-200 hover:bg-red-900/30 border-l border-slate-800/80 disabled:opacity-50"
+                  >
+                    {deletingCallId === call.id ? "…" : "Delete"}
+                  </button>
+                </div>
               ))
             )}
           </div>
@@ -419,6 +455,14 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
                 saving={savingFollowUp}
                 saveLabel="Save remarks"
               />
+              <button
+                type="button"
+                onClick={() => void deleteCall(selectedCall)}
+                disabled={deletingCallId === selectedCall.id}
+                className="w-full px-3 py-2 rounded-lg bg-red-900/40 hover:bg-red-900/60 border border-red-800/50 text-sm text-red-200 disabled:opacity-50"
+              >
+                {deletingCallId === selectedCall.id ? "Deleting…" : "Delete call log"}
+              </button>
             </>
           )}
         </div>

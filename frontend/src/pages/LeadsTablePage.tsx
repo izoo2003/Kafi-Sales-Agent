@@ -30,6 +30,8 @@ interface LeadsTablePageProps {
     all: number;
     old_clients: number;
     interested_clients: number;
+    not_interested_clients: number;
+    not_received_call_clients: number;
   }) => void;
 }
 
@@ -68,12 +70,16 @@ function sectionTableParams(
 ): { source?: string; exclude_source?: string; call_outcome?: string } {
   if (section === "old_clients") return { source: "old_clients" };
   if (section === "interested_clients") return { call_outcome: "interested" };
+  if (section === "not_interested_clients") return { call_outcome: "not_interested" };
+  if (section === "not_received_call_clients") return { call_outcome: "not_received_call" };
   return { exclude_source: "old_clients" };
 }
 
 function sectionTitle(section: LeadsTableSection): string {
   if (section === "old_clients") return "Old clients";
   if (section === "interested_clients") return "Interested clients";
+  if (section === "not_interested_clients") return "Not interested";
+  if (section === "not_received_call_clients") return "Did not receive call";
   return "Leads table";
 }
 
@@ -84,7 +90,26 @@ function sectionDescription(section: LeadsTableSection): string {
   if (section === "interested_clients") {
     return "Clients labeled Interested after a call. Update outcomes from the Calls tab or post-call remarks.";
   }
+  if (section === "not_interested_clients") {
+    return "Clients labeled Not interested after a call. Update outcomes from the Calls tab or post-call remarks.";
+  }
+  if (section === "not_received_call_clients") {
+    return "Clients who did not receive the call. Update outcomes from the Calls tab or post-call remarks.";
+  }
   return "Browse, filter, edit, delete, and export leads. Social icons link to Facebook, Instagram, and LinkedIn — filled automatically when you research a lead.";
+}
+
+function sectionEmptyMessage(section: LeadsTableSection): string | null {
+  if (section === "interested_clients") {
+    return "No interested clients yet. After a call, label the client as Interested in post-call remarks.";
+  }
+  if (section === "not_interested_clients") {
+    return "No not interested clients yet. After a call, label the client as Not interested in post-call remarks.";
+  }
+  if (section === "not_received_call_clients") {
+    return "No clients listed yet. After a call, label the client as Did not receive call in post-call remarks.";
+  }
+  return null;
 }
 
 function rowDraftKey(row: LeadTableRow): string {
@@ -255,7 +280,7 @@ export function LeadsTablePage({
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   const isOldClients = section === "old_clients";
-  const isInterestedClients = section === "interested_clients";
+  const callOutcomeEmptyMessage = sectionEmptyMessage(section);
 
   const tableQueryParams = useMemo(
     () => ({
@@ -278,7 +303,8 @@ export function LeadsTablePage({
   const loadSectionCounts = useCallback(async () => {
     if (!onSectionCountsChange) return;
     try {
-      const [allResult, oldResult, interestedResult] = await Promise.all([
+      const [allResult, oldResult, interestedResult, notInterestedResult, notReceivedResult] =
+        await Promise.all([
         client.listLeadsTable({
           exclude_source: "old_clients",
           sort_by: "company_name",
@@ -300,11 +326,27 @@ export function LeadsTablePage({
           page: 1,
           page_size: 1,
         }),
+        client.listLeadsTable({
+          call_outcome: "not_interested",
+          sort_by: "company_name",
+          sort_dir: "asc",
+          page: 1,
+          page_size: 1,
+        }),
+        client.listLeadsTable({
+          call_outcome: "not_received_call",
+          sort_by: "company_name",
+          sort_dir: "asc",
+          page: 1,
+          page_size: 1,
+        }),
       ]);
       onSectionCountsChange({
         all: allResult.total,
         old_clients: oldResult.total,
         interested_clients: interestedResult.total,
+        not_interested_clients: notInterestedResult.total,
+        not_received_call_clients: notReceivedResult.total,
       });
     } catch {
       /* optional */
@@ -1073,9 +1115,7 @@ export function LeadsTablePage({
               ? "No leads match these filters."
               : isOldClients
                 ? "No old clients yet. Import a CSV or Excel file to map past clients into this table."
-                : isInterestedClients
-                  ? "No interested clients yet. After a call, label the client as Interested in post-call remarks."
-                  : "No leads in this section yet."}
+                : callOutcomeEmptyMessage ?? "No leads in this section yet."}
           </p>
           {isOldClients && !hasActiveFilters && (
             <button

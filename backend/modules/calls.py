@@ -525,5 +525,54 @@ def update_call_followup(
     return call_interaction_to_dict(db, interaction)
 
 
+def _latest_call_outcome_for_buyer(db: Session, buyer_id: int) -> str | None:
+    interaction = (
+        db.query(Interaction)
+        .join(Contact, Interaction.contact_id == Contact.id)
+        .filter(Contact.buyer_id == buyer_id, Interaction.channel == Channel.phone)
+        .order_by(Interaction.created_at.desc())
+        .first()
+    )
+    if not interaction:
+        return None
+    return parse_call_fields(interaction.content).get("call_outcome")
+
+
+def delete_call_log(db: Session, *, interaction_id: int) -> bool:
+    interaction = db.get(Interaction, interaction_id)
+    if not interaction or interaction.channel != Channel.phone:
+        return False
+
+    contact = db.get(Contact, interaction.contact_id)
+    buyer_id = contact.buyer_id if contact else None
+    deleted_outcome = parse_call_fields(interaction.content).get("call_outcome")
+
+    from modules.call_media import get_call_media, resolve_local_recording
+
+    media = get_call_media(interaction)
+    if media:
+        path = resolve_local_recording(media)
+        if path and path.is_file():
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+    db.delete(interaction)
+    db.commit()
+
+    if buyer_id and (deleted_outcome or "").strip().lower() == "interested":
+        from modules.interested_follow_ups import sync_buyer_interested_status
+
+        sync_buyer_interested_status(
+            db,
+            buyer_id=buyer_id,
+            new_outcome=_latest_call_outcome_for_buyer(db, buyer_id),
+            previous_outcome="interested",
+        )
+
+    return True
+
+
 def update_call_notes(db: Session, *, interaction_id: int, notes: str) -> dict:
     return update_call_followup(db, interaction_id=interaction_id, notes=notes)

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { client, type CallHistoryItem } from "../api/client";
-import { type CallOutcome, callOutcomeBadge, callOutcomeLabel } from "../utils/callOutcomes";
+import { type CallOutcome, callOutcomeBadge, callOutcomeLabel, callOutcomeListNotice } from "../utils/callOutcomes";
 import { CallRemarksForm } from "./CallRemarksForm";
 import { CallRecordingPanel } from "./CallRecordingPanel";
 
@@ -46,6 +46,7 @@ export function CallHistoryPanel({
   const [remarksDraft, setRemarksDraft] = useState("");
   const [outcomeDraft, setOutcomeDraft] = useState<CallOutcome | "">("");
   const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const loadCalls = useCallback(async () => {
@@ -73,8 +74,9 @@ export function CallHistoryPanel({
       setCalls((prev) => prev.map((c) => (c.id === interactionId ? updated : c)));
       setEditingId(null);
       onCallFollowUpSaved?.(updated.call_outcome);
-      if (updated.call_outcome === "interested") {
-        setNotice("Added to Interested clients list.");
+      const outcomeNotice = callOutcomeListNotice(updated.call_outcome);
+      if (outcomeNotice) {
+        setNotice(outcomeNotice);
         setTimeout(() => setNotice(null), 4000);
       }
     } catch (e) {
@@ -88,6 +90,27 @@ export function CallHistoryPanel({
     setEditingId(call.id);
     setRemarksDraft(call.notes ?? "");
     setOutcomeDraft((call.call_outcome as CallOutcome | undefined) ?? "");
+  }
+
+  async function deleteCall(call: CallHistoryItem) {
+    const label = call.contact_name ?? call.company_name ?? "this call";
+    if (!window.confirm(`Delete call log for ${label}? This cannot be undone.`)) return;
+
+    setDeletingId(call.id);
+    try {
+      await client.deleteCallLog(call.id);
+      setCalls((prev) => prev.filter((c) => c.id !== call.id));
+      if (editingId === call.id) setEditingId(null);
+      if (call.call_outcome) {
+        onCallFollowUpSaved?.(null);
+      }
+      setNotice("Call log deleted.");
+      setTimeout(() => setNotice(null), 4000);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to delete call log");
+    } finally {
+      setDeletingId(null);
+    }
   }
 
   if (loading) {
@@ -190,13 +213,23 @@ export function CallHistoryPanel({
                 </button>
               </div>
             ) : (
-              <button
-                type="button"
-                onClick={() => startEditing(call)}
-                className="text-xs text-sky-400 hover:text-sky-300"
-              >
-                {call.notes || call.call_outcome ? "Edit remarks" : "Add remarks"}
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => startEditing(call)}
+                  className="text-xs text-sky-400 hover:text-sky-300"
+                >
+                  {call.notes || call.call_outcome ? "Edit remarks" : "Add remarks"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void deleteCall(call)}
+                  disabled={deletingId === call.id}
+                  className="text-xs text-red-300 hover:text-red-200 disabled:opacity-50"
+                >
+                  {deletingId === call.id ? "Deleting…" : "Delete"}
+                </button>
+              </div>
             )}
           </li>
         ))}

@@ -47,6 +47,8 @@ export default function App() {
     all: 0,
     old_clients: 0,
     interested_clients: 0,
+    not_interested_clients: 0,
+    not_received_call_clients: 0,
   });
   const [leadsTableRefreshToken, setLeadsTableRefreshToken] = useState(0);
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
@@ -71,7 +73,8 @@ export default function App() {
 
   const loadTableCounts = useCallback(async () => {
     try {
-      const [allResult, oldResult, interestedResult] = await Promise.all([
+      const [allResult, oldResult, interestedResult, notInterestedResult, notReceivedResult] =
+        await Promise.all([
         client.listLeadsTable({
           exclude_source: "old_clients",
           sort_by: "company_name",
@@ -93,11 +96,27 @@ export default function App() {
           page: 1,
           page_size: 1,
         }),
+        client.listLeadsTable({
+          call_outcome: "not_interested",
+          sort_by: "company_name",
+          sort_dir: "asc",
+          page: 1,
+          page_size: 1,
+        }),
+        client.listLeadsTable({
+          call_outcome: "not_received_call",
+          sort_by: "company_name",
+          sort_dir: "asc",
+          page: 1,
+          page_size: 1,
+        }),
       ]);
       setTableCounts({
         all: allResult.total,
         old_clients: oldResult.total,
         interested_clients: interestedResult.total,
+        not_interested_clients: notInterestedResult.total,
+        not_received_call_clients: notReceivedResult.total,
       });
     } catch {
       /* optional badges */
@@ -268,6 +287,16 @@ export default function App() {
           id: "interested_clients",
           label: "Interested clients",
           count: tableCounts.interested_clients,
+        },
+        {
+          id: "not_interested_clients",
+          label: "Not interested",
+          count: tableCounts.not_interested_clients,
+        },
+        {
+          id: "not_received_call_clients",
+          label: "Did not receive call",
+          count: tableCounts.not_received_call_clients,
         },
       ],
     },

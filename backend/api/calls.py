@@ -106,6 +106,13 @@ def update_call_notes(
     return CallHistoryItem(**result)
 
 
+@router.delete("/calls/{interaction_id}", status_code=204)
+def delete_call_log(interaction_id: int, db: Session = Depends(get_db)):
+    if not calls_module.delete_call_log(db, interaction_id=interaction_id):
+        raise HTTPException(404, "Call not found")
+    return Response(status_code=204)
+
+
 @router.get("/calls/{interaction_id}/recording")
 def get_call_recording(
     interaction_id: int,

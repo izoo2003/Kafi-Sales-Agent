@@ -2,7 +2,12 @@ import { useEffect, useState } from "react";
 
 export type Tab = "activity" | "email-templates" | "leads" | "table" | "inbox" | "calls" | "compliance" | "chatbot";
 
-export type LeadsTableSection = "all" | "old_clients" | "interested_clients";
+export type LeadsTableSection =
+  | "all"
+  | "old_clients"
+  | "interested_clients"
+  | "not_interested_clients"
+  | "not_received_call_clients";
 
 export type NavChild = {
   id: LeadsTableSection;

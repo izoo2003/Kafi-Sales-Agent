@@ -1038,6 +1038,8 @@ export const client = {
       method: "PATCH",
       body: JSON.stringify(data),
     }),
+  deleteCallLog: (interactionId: number) =>
+    request<void>(`/calls/${interactionId}`, { method: "DELETE" }),
   getCallRecordingUrl: (interactionId: number, download = false) =>
     `${API_BASE}/calls/${interactionId}/recording${download ? "?download=1" : ""}`,
   transcribeCall: (interactionId: number, wait = false) =>
