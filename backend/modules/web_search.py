@@ -18,6 +18,7 @@ SearchResults:
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Callable
 from urllib.parse import urlparse
@@ -27,9 +28,13 @@ import httpx
 from config import settings
 
 # Fallback chain for market discovery (first hit wins).
-_DEFAULT_ORDER = ("serpapi", "duckduckgo")
-# Per-record enrichment runs ALL of these and merges (see search_combined).
-_DEFAULT_COMBINED = ("serpapi", "duckduckgo")
+_DEFAULT_ORDER = ("serpapi", "duckduckgo", "google_cse", "wikidata")
+# Per-record enrichment merges these in parallel. Wikidata also runs as a dedicated
+# name lookup inside lead_discovery (more accurate than query-string search).
+_DEFAULT_COMBINED = ("serpapi", "duckduckgo", "google_cse")
+# Keep provider HTTP calls short so enrichment cannot freeze the API worker.
+_HTTP_TIMEOUT = 8.0
+_COMBINED_PROVIDER_TIMEOUT = 12.0
 
 
 @dataclass
@@ -98,7 +103,7 @@ def _search_serpapi(query: str, *, num: int, gl_code: str | None) -> SearchResul
         params["gl"] = gl_code
 
     try:
-        response = httpx.get("https://serpapi.com/search.json", params=params, timeout=20)
+        response = httpx.get("https://serpapi.com/search.json", params=params, timeout=_HTTP_TIMEOUT)
         response.raise_for_status()
         data = response.json()
     except httpx.HTTPError as exc:
@@ -164,7 +169,7 @@ def _search_brave(query: str, *, num: int, gl_code: str | None) -> SearchResults
                 "Accept": "application/json",
                 "X-Subscription-Token": api_key,
             },
-            timeout=20,
+            timeout=_HTTP_TIMEOUT,
         )
         response.raise_for_status()
         data = response.json()
@@ -203,7 +208,7 @@ def _search_google_cse(query: str, *, num: int, gl_code: str | None) -> SearchRe
 
     try:
         response = httpx.get(
-            "https://www.googleapis.com/customsearch/v1", params=params, timeout=20
+            "https://www.googleapis.com/customsearch/v1", params=params, timeout=_HTTP_TIMEOUT
         )
         response.raise_for_status()
         data = response.json()
@@ -254,11 +259,76 @@ def _search_duckduckgo(query: str, *, num: int, gl_code: str | None) -> SearchRe
     return results
 
 
+def _search_wikidata(query: str, *, num: int, gl_code: str | None) -> SearchResults:
+    """Resolve company websites/socials via Wikidata search + SPARQL claims."""
+    results = SearchResults(provider="wikidata")
+    # Queries are often '"Acme Foods" UAE' — strip quotes and keep the company phrase.
+    cleaned = (query or "").replace('"', " ").strip()
+    if not cleaned:
+        return results
+
+    # Prefer leading phrase before a regional qualifier when present.
+    company_name = cleaned.split(",")[0].strip()
+    for token in (" official website", " company website", " website"):
+        if company_name.lower().endswith(token):
+            company_name = company_name[: -len(token)].strip()
+
+    try:
+        from modules.company_enrichment import lookup_wikidata_company
+    except Exception as exc:
+        results.messages.append(f"Wikidata helper unavailable: {exc}")
+        return results
+
+    # gl_code is unused; country may still be embedded in the query string.
+    country = None
+    parts = cleaned.split()
+    if len(parts) >= 2:
+        # Last token as soft country hint when it looks like a word.
+        maybe_country = parts[-1]
+        if maybe_country.isalpha() and len(maybe_country) >= 2:
+            country = maybe_country
+
+    found = lookup_wikidata_company(company_name, country)
+    if not found.get("website") and not found.get("linkedin_url"):
+        if found.get("source_detail") is None:
+            results.messages.append("Wikidata returned no matching company website.")
+        return results
+
+    label = found.get("label") or company_name
+    website = found.get("website") or ""
+    social_bits = [
+        found.get("linkedin_url"),
+        found.get("facebook_url"),
+        found.get("instagram_url"),
+    ]
+    snippet_parts = [bit for bit in social_bits if bit]
+    results.organic.append(
+        {
+            "title": f"{label} (Wikidata)",
+            "link": website or (found.get("linkedin_url") or ""),
+            "snippet": " · ".join(snippet_parts) or "Official company record on Wikidata",
+            "source": "wikidata",
+        }
+    )
+    results.knowledge_graph = {
+        "title": label,
+        "website": website or None,
+        "phone": None,
+        "address": None,
+        "description": "Wikidata SPARQL company record",
+        "linkedin_url": found.get("linkedin_url"),
+        "facebook_url": found.get("facebook_url"),
+        "instagram_url": found.get("instagram_url"),
+    }
+    return results
+
+
 _PROVIDERS: dict[str, Callable[..., SearchResults]] = {
     "serpapi": _search_serpapi,
     "brave": _search_brave,
     "google_cse": _search_google_cse,
     "duckduckgo": _search_duckduckgo,
+    "wikidata": _search_wikidata,
 }
 
 
@@ -279,6 +349,8 @@ def provider_available(name: str) -> bool:
             return True
         except ImportError:
             return False
+    if name == "wikidata":
+        return True
     return False
 
 
@@ -296,10 +368,10 @@ def search_combined(
     num: int = 10,
     gl_code: str | None = None,
 ) -> SearchResults:
-    """Run every configured combined provider and merge organic/knowledge/local results.
+    """Run every configured combined provider in parallel and merge results.
 
-    Used for per-company enrichment so SerpAPI and DuckDuckGo both contribute to the
-    same record (cross-validated website, directory, phone signals).
+    Used for per-company enrichment so SerpAPI, DuckDuckGo, Google CSE, and Wikidata
+    all contribute without blocking the API for tens of seconds sequentially.
     """
     names = [n for n in _combined_providers() if provider_available(n)]
     if not names:
@@ -311,11 +383,45 @@ def search_combined(
     seen_organic: set[str] = set()
     seen_local: set[str] = set()
 
-    for name in names:
+    def _run(name: str) -> tuple[str, SearchResults]:
         provider_fn = _PROVIDERS.get(name)
         if not provider_fn:
-            continue
-        result = provider_fn(query, num=num, gl_code=gl_code)
+            empty = SearchResults(provider=name)
+            empty.messages.append(f"Unknown provider: {name}")
+            return name, empty
+        return name, provider_fn(query, num=num, gl_code=gl_code)
+
+    provider_results: list[tuple[str, SearchResults]] = []
+    with ThreadPoolExecutor(max_workers=max(1, len(names))) as pool:
+        futures = {pool.submit(_run, name): name for name in names}
+        try:
+            for future in as_completed(futures, timeout=_COMBINED_PROVIDER_TIMEOUT):
+                try:
+                    provider_results.append(future.result())
+                except Exception as exc:
+                    name = futures[future]
+                    failed = SearchResults(provider=name)
+                    failed.messages.append(f"{name} failed: {exc}")
+                    provider_results.append((name, failed))
+        except TimeoutError:
+            messages.append("Combined search timed out waiting for some providers.")
+            for future, name in futures.items():
+                if future.done():
+                    try:
+                        provider_results.append(future.result())
+                    except Exception as exc:
+                        failed = SearchResults(provider=name)
+                        failed.messages.append(f"{name} failed: {exc}")
+                        provider_results.append((name, failed))
+                else:
+                    future.cancel()
+                    messages.append(f"{name} skipped after timeout.")
+
+    # Preserve configured provider order when merging.
+    order = {name: index for index, name in enumerate(names)}
+    provider_results.sort(key=lambda item: order.get(item[0], 999))
+
+    for name, result in provider_results:
         messages.extend(result.messages)
         if result.is_empty():
             continue
@@ -323,6 +429,10 @@ def search_combined(
 
         if not merged.knowledge_graph and result.knowledge_graph:
             merged.knowledge_graph = dict(result.knowledge_graph)
+        elif result.knowledge_graph:
+            for key, value in result.knowledge_graph.items():
+                if value and not merged.knowledge_graph.get(key):
+                    merged.knowledge_graph[key] = value
 
         for place in result.local:
             key = f"{place.get('title') or ''}|{place.get('phone') or ''}"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -20,6 +21,8 @@ _DURATION_RE = re.compile(r"duration\s+(\d+)m\s+(\d+)s|duration\s+(\d+)s")
 _NOTES_MARKER = "\n\nNOTES:"
 _OUTCOME_MARKER = "\n\nOUTCOME:"
 _VALID_CALL_OUTCOMES = frozenset({"interested", "not_interested", "not_received_call"})
+# Recent Calls keeps ~1 rolling month of logs, then they may be purged.
+CALL_HISTORY_RETENTION_DAYS = 30
 
 
 def _split_metadata(content: str | None) -> tuple[str, str | None, str | None]:
@@ -201,7 +204,16 @@ def call_interaction_to_dict(db: Session, interaction: Interaction) -> dict:
     }
 
 
-def list_call_history(db: Session, *, buyer_id: int | None = None, limit: int = 50) -> list[dict]:
+def list_call_history(
+    db: Session,
+    *,
+    buyer_id: int | None = None,
+    limit: int = 50,
+    page: int | None = None,
+    page_size: int | None = None,
+    since_days: int | None = CALL_HISTORY_RETENTION_DAYS,
+) -> dict[str, object]:
+    """List phone call interactions, optionally paginated and limited to a recent window."""
     query = (
         db.query(Interaction)
         .join(Contact, Interaction.contact_id == Contact.id)
@@ -209,8 +221,63 @@ def list_call_history(db: Session, *, buyer_id: int | None = None, limit: int = 
     )
     if buyer_id is not None:
         query = query.filter(Contact.buyer_id == buyer_id)
-    rows = query.order_by(Interaction.created_at.desc()).limit(limit).all()
-    return [call_interaction_to_dict(db, row) for row in rows]
+
+    if since_days is not None and since_days > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+        query = query.filter(Interaction.created_at >= cutoff)
+
+    total = query.count()
+    ordered = query.order_by(Interaction.created_at.desc())
+
+    if page is None and page_size is None:
+        rows = ordered.limit(max(1, min(limit, 200))).all()
+        return {
+            "total": total,
+            "page": 1,
+            "page_size": len(rows) or limit,
+            "total_pages": 1,
+            "since_days": since_days,
+            "rows": [call_interaction_to_dict(db, row) for row in rows],
+        }
+
+    size = min(max(1, page_size or 5), 50)
+    current = max(1, page or 1)
+    total_pages = max(1, (total + size - 1) // size) if total else 1
+    if current > total_pages:
+        current = total_pages
+    rows = ordered.offset((current - 1) * size).limit(size).all()
+    return {
+        "total": total,
+        "page": current,
+        "page_size": size,
+        "total_pages": total_pages,
+        "since_days": since_days,
+        "rows": [call_interaction_to_dict(db, row) for row in rows],
+    }
+
+
+def purge_old_call_logs(
+    db: Session,
+    *,
+    older_than_days: int = CALL_HISTORY_RETENTION_DAYS,
+) -> int:
+    """Delete call logs older than the Recent Calls retention window."""
+    if older_than_days < 1:
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    stale = (
+        db.query(Interaction)
+        .filter(
+            Interaction.channel == Channel.phone,
+            Interaction.created_at < cutoff,
+        )
+        .all()
+    )
+    deleted = 0
+    for interaction in stale:
+        if delete_call_log(db, interaction_id=interaction.id):
+            deleted += 1
+    return deleted
 
 
 def _primary_contact_for_call(db: Session, buyer_id: int) -> Contact | None:

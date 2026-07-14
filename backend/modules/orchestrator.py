@@ -28,13 +28,24 @@ class Orchestrator:
         self.scheduler = SchedulerModule()
 
     def handle_new_buyer(self, db: Session, buyer_id: int) -> dict:
-        profile = self.research.research_buyer(db, buyer_id)
+        # Old-client / incomplete leads: discover website, socials, and contacts
+        # via SerpAPI + DuckDuckGo + Google CSE + Wikidata (+ CompanyLens) before research.
+        enrichment: dict | None = None
+        try:
+            from modules.lead_discovery import enrich_existing_buyer
+
+            enrichment = enrich_existing_buyer(db, buyer_id)
+        except Exception as exc:
+            enrichment = {"error": str(exc)}
+
+        profile = self.research.research_buyer(db, buyer_id, force_refresh=True)
         score = self.scoring.score(db, profile)
         result: dict = {
             "buyer_id": buyer_id,
             "profile": profile,
             "score": score.score.value,
             "reasoning": score.reasoning,
+            "enrichment": enrichment,
             "next_actions": [],
         }
         if score.score == LeadScoreLabel.HOT:

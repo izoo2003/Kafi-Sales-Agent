@@ -215,6 +215,14 @@ export interface Lead {
   score_reasoning?: string | null;
 }
 
+export interface LeadListResponse {
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  rows: Lead[];
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -354,6 +362,15 @@ export interface CallHistoryItem {
   transcript?: string | null;
   transcript_status?: string | null;
   transcript_error?: string | null;
+}
+
+export interface CallHistoryListResponse {
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  since_days?: number | null;
+  rows: CallHistoryItem[];
 }
 
 export interface ApproveDraftResult {
@@ -496,6 +513,13 @@ export interface OnboardResult {
   score: string;
   reasoning: string;
   next_actions: string[];
+  enrichment?: {
+    buyer_id?: number;
+    filled_fields?: string[];
+    website_url?: string | null;
+    source_detail?: string | null;
+    error?: string;
+  } | null;
 }
 
 export interface LeadCreate {
@@ -808,7 +832,13 @@ export const client = {
   deleteUser: (userId: number) =>
     request<void>(`/auth/users/${userId}`, { method: "DELETE" }),
 
-  listLeads: () => request<Lead[]>("/leads"),
+  listLeads: (params: { page?: number; page_size?: number } = {}) => {
+    const search = new URLSearchParams();
+    if (params.page) search.set("page", String(params.page));
+    if (params.page_size) search.set("page_size", String(params.page_size));
+    const query = search.toString();
+    return request<LeadListResponse>(`/leads${query ? `?${query}` : ""}`);
+  },
   listLeadTableFilters: () => request<LeadTableFilters>("/leads/table/filters"),
   listLeadsTable: (params: LeadTableQuery = {}) => {
     const search = new URLSearchParams();
@@ -1222,10 +1252,23 @@ export const client = {
       },
     ),
   getVoiceToken: () => request<VoiceToken>("/calls/voice-token"),
-  listCallHistory: (limit = 50) =>
-    request<CallHistoryItem[]>(`/calls/history?limit=${limit}`),
-  listLeadCalls: (leadId: number, limit = 50) =>
-    request<CallHistoryItem[]>(`/leads/${leadId}/calls?limit=${limit}`),
+  listCallHistory: (params: { page?: number; page_size?: number; since_days?: number } = {}) => {
+    const search = new URLSearchParams();
+    search.set("page", String(params.page ?? 1));
+    search.set("page_size", String(params.page_size ?? 5));
+    if (params.since_days != null) search.set("since_days", String(params.since_days));
+    return request<CallHistoryListResponse>(`/calls/history?${search}`);
+  },
+  listLeadCalls: (
+    leadId: number,
+    params: { page?: number; page_size?: number; since_days?: number | null } = {},
+  ) => {
+    const search = new URLSearchParams();
+    search.set("page", String(params.page ?? 1));
+    search.set("page_size", String(params.page_size ?? 5));
+    if (params.since_days != null) search.set("since_days", String(params.since_days));
+    return request<CallHistoryListResponse>(`/leads/${leadId}/calls?${search}`);
+  },
   updateCallNotes: (interactionId: number, notes: string) =>
     request<CallHistoryItem>(`/calls/${interactionId}/notes`, {
       method: "PATCH",

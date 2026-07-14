@@ -48,8 +48,8 @@ export function CallRecordingPanel({
     setPolling(true);
     const timer = window.setInterval(async () => {
       try {
-        const history = await client.listCallHistory(50);
-        const updated = history.find((item) => item.id === call.id);
+        const history = await client.listCallHistory({ page: 1, page_size: 50, since_days: 30 });
+        const updated = history.rows.find((item) => item.id === call.id);
         if (!updated) return;
         onUpdated?.(updated);
         if (

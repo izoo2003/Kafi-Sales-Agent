@@ -1,23 +1,32 @@
-import { useState, type MouseEvent } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
 import { client } from "../api/client";
 import { CreateLeadForm } from "../components/CreateLeadForm";
 import { DiscoverLeadsPanel } from "../components/DiscoverLeadsPanel";
+import { Pagination } from "../components/Pagination";
 import { ScoreBadge } from "../components/ScoreBadge";
 import { useLeads } from "../hooks/useLeads";
+
+const PAGE_SIZE = 20;
 
 interface LeadsPageProps {
   onError: (message: string) => void;
   onSelectLead: (leadId: number) => void;
+  onTotalChange?: (total: number) => void;
 }
 
-export function LeadsPage({ onError, onSelectLead }: LeadsPageProps) {
-  const { leads, loading, refresh } = useLeads();
+export function LeadsPage({ onError, onSelectLead, onTotalChange }: LeadsPageProps) {
+  const { leads, loading, refresh, page, total, totalPages, goToPage, pageSize } =
+    useLeads(PAGE_SIZE);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [showDiscover, setShowDiscover] = useState(false);
   const [onboardResult, setOnboardResult] = useState<
     Record<number, { score: string; reasoning: string }>
   >({});
   const [onboarding, setOnboarding] = useState<number | null>(null);
+
+  useEffect(() => {
+    onTotalChange?.(total);
+  }, [onTotalChange, total]);
 
   async function handleOnboard(leadId: number, event: MouseEvent) {
     event.stopPropagation();
@@ -28,7 +37,7 @@ export function LeadsPage({ onError, onSelectLead }: LeadsPageProps) {
         ...prev,
         [leadId]: { score: result.score, reasoning: result.reasoning },
       }));
-      refresh();
+      await refresh();
     } catch (e) {
       onError(e instanceof Error ? e.message : "Onboard failed");
     } finally {
@@ -42,13 +51,13 @@ export function LeadsPage({ onError, onSelectLead }: LeadsPageProps) {
     onSelectLead(leadId);
   }
 
-  if (loading) return <p className="text-slate-400">Loading leads…</p>;
+  if (loading && leads.length === 0) return <p className="text-slate-400">Loading leads…</p>;
 
   return (
     <section className="space-y-4">
       <div className="flex items-center justify-between">
         <p className="text-sm text-slate-400">
-          {leads.length} lead{leads.length === 1 ? "" : "s"}
+          {total} lead{total === 1 ? "" : "s"}
         </p>
         {!showCreateForm && (
           <div className="flex gap-2">
@@ -95,7 +104,7 @@ export function LeadsPage({ onError, onSelectLead }: LeadsPageProps) {
         />
       )}
 
-      {leads.length === 0 && !showCreateForm && (
+      {total === 0 && !showCreateForm && (
         <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/50 p-8 text-center">
           <p className="text-slate-400 text-sm">No leads yet.</p>
           <button
@@ -108,51 +117,61 @@ export function LeadsPage({ onError, onSelectLead }: LeadsPageProps) {
         </div>
       )}
 
-      {leads.map((lead) => {
-        // Prefer in-session onboard result (fresher), fall back to persisted score from API
-        const result = onboardResult[lead.id];
-        const scoreLabel = result?.score ?? lead.latest_score ?? null;
-        const scoreReasoning = result?.reasoning ?? lead.score_reasoning ?? null;
-        return (
-          <div
-            key={lead.id}
-            role="button"
-            tabIndex={0}
-            onClick={() => onSelectLead(lead.id)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") onSelectLead(lead.id);
-            }}
-            className="rounded-xl border border-slate-800 bg-slate-900 p-4 flex items-center justify-between gap-4 cursor-pointer hover:border-slate-700 hover:bg-slate-900/80 transition"
-          >
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="font-medium">{lead.company_name}</h3>
-                {scoreLabel ? (
-                  <ScoreBadge score={scoreLabel} />
-                ) : (
-                  <span className="px-2 py-0.5 rounded border text-xs font-medium bg-slate-700/30 text-slate-400 border-slate-600/40">
-                    Unscored
-                  </span>
+      <div className={loading ? "opacity-60 pointer-events-none space-y-4" : "space-y-4"}>
+        {leads.map((lead) => {
+          const result = onboardResult[lead.id];
+          const scoreLabel = result?.score ?? lead.latest_score ?? null;
+          const scoreReasoning = result?.reasoning ?? lead.score_reasoning ?? null;
+          return (
+            <div
+              key={lead.id}
+              role="button"
+              tabIndex={0}
+              onClick={() => onSelectLead(lead.id)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") onSelectLead(lead.id);
+              }}
+              className="rounded-xl border border-slate-800 bg-slate-900 p-4 flex items-center justify-between gap-4 cursor-pointer hover:border-slate-700 hover:bg-slate-900/80 transition"
+            >
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="font-medium">{lead.company_name}</h3>
+                  {scoreLabel ? (
+                    <ScoreBadge score={scoreLabel} />
+                  ) : (
+                    <span className="px-2 py-0.5 rounded border text-xs font-medium bg-slate-700/30 text-slate-400 border-slate-600/40">
+                      Unscored
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm text-slate-400">
+                  {[lead.country, lead.industry].filter(Boolean).join(" · ") || "—"}
+                </p>
+                {scoreReasoning && (
+                  <p className="text-sm text-slate-500 mt-1 line-clamp-2">{scoreReasoning}</p>
                 )}
               </div>
-              <p className="text-sm text-slate-400">
-                {[lead.country, lead.industry].filter(Boolean).join(" · ") || "—"}
-              </p>
-              {scoreReasoning && (
-                <p className="text-sm text-slate-500 mt-1 line-clamp-2">{scoreReasoning}</p>
-              )}
+              <button
+                type="button"
+                onClick={(e) => handleOnboard(lead.id, e)}
+                disabled={onboarding === lead.id}
+                className="shrink-0 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm disabled:opacity-50"
+              >
+                {onboarding === lead.id ? "Scoring…" : "Re-score"}
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={(e) => handleOnboard(lead.id, e)}
-              disabled={onboarding === lead.id}
-              className="shrink-0 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm disabled:opacity-50"
-            >
-              {onboarding === lead.id ? "Scoring…" : "Re-score"}
-            </button>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
+
+      <Pagination
+        page={page}
+        totalPages={totalPages}
+        totalItems={total}
+        pageSize={pageSize}
+        onPageChange={goToPage}
+        disabled={loading}
+      />
     </section>
   );
 }

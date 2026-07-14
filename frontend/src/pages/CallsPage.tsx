@@ -10,6 +10,7 @@ import { CallManualDialer } from "../components/CallManualDialer";
 import { CallRemarksForm } from "../components/CallRemarksForm";
 import { CallRecordingPanel } from "../components/CallRecordingPanel";
 import { CountrySelect } from "../components/CountrySelect";
+import { Pagination } from "../components/Pagination";
 import { type CallOutcome, callOutcomeBadge, callOutcomeLabel, callOutcomeListNotice } from "../utils/callOutcomes";
 import { countryMatches } from "../data/countries";
 
@@ -20,6 +21,8 @@ interface CallsPageProps {
 }
 
 const POLL_INTERVAL_MS = 15_000;
+const RECENT_CALLS_PAGE_SIZE = 5;
+const RECENT_CALLS_SINCE_DAYS = 30;
 
 function formatDate(value: string): string {
   const date = new Date(value);
@@ -49,6 +52,9 @@ function statusBadge(status: string | null | undefined): string {
 export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsPageProps) {
   const [config, setConfig] = useState<CallConfig | null>(null);
   const [history, setHistory] = useState<CallHistoryItem[]>([]);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyTotalPages, setHistoryTotalPages] = useState(1);
   const [dialableLeads, setDialableLeads] = useState<LeadTableRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
@@ -61,16 +67,24 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
   const pollRef = useRef<number | null>(null);
 
   const loadData = useCallback(
-    async (options?: { silent?: boolean }) => {
+    async (options?: { silent?: boolean; page?: number }) => {
+      const page = options?.page ?? historyPage;
       if (!options?.silent) setLoading(true);
       try {
         const [cfg, calls, table] = await Promise.all([
           client.getCallConfig(),
-          client.listCallHistory(50),
-          client.listLeadsTable(),
+          client.listCallHistory({
+            page,
+            page_size: RECENT_CALLS_PAGE_SIZE,
+            since_days: RECENT_CALLS_SINCE_DAYS,
+          }),
+          client.listLeadsTable({ page: 1, page_size: 100 }),
         ]);
         setConfig(cfg);
-        setHistory(calls);
+        setHistory(calls.rows);
+        setHistoryPage(calls.page);
+        setHistoryTotal(calls.total);
+        setHistoryTotalPages(calls.total_pages);
         setDialableLeads(
           table.rows.filter((row) => row.contact_phone && row.contact_phone.trim()),
         );
@@ -82,7 +96,7 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
         if (!options?.silent) setLoading(false);
       }
     },
-    [onError],
+    [historyPage, onError],
   );
 
   useEffect(() => {
@@ -148,7 +162,14 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
     setDeletingCallId(call.id);
     try {
       await client.deleteCallLog(call.id);
-      setHistory((prev) => prev.filter((c) => c.id !== call.id));
+      const nextHistory = history.filter((c) => c.id !== call.id);
+      if (nextHistory.length === 0 && historyPage > 1) {
+        const prevPage = historyPage - 1;
+        setHistoryPage(prevPage);
+        await loadData({ page: prevPage, silent: true });
+      } else {
+        await loadData({ page: historyPage, silent: true });
+      }
       if (selectedCallId === call.id) {
         setSelectedCallId(null);
         setRemarksDraft("");
@@ -314,10 +335,14 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
         <div className="lg:col-span-1 rounded-xl border border-slate-800 bg-slate-900 flex flex-col overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-800">
             <h3 className="text-sm font-medium text-slate-300">Recent calls</h3>
+            <p className="text-xs text-slate-500 mt-1">
+              Last {RECENT_CALLS_SINCE_DAYS} days · {historyTotal} call
+              {historyTotal === 1 ? "" : "s"} · older logs are removed automatically
+            </p>
           </div>
           <div className="flex-1 overflow-y-auto divide-y divide-slate-800/80">
             {history.length === 0 ? (
-              <p className="p-4 text-sm text-slate-500">No calls yet.</p>
+              <p className="p-4 text-sm text-slate-500">No calls in the last month.</p>
             ) : (
               history.map((call) => (
                 <div
@@ -368,6 +393,19 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
                 </div>
               ))
             )}
+          </div>
+          <div className="px-3 pb-3">
+            <Pagination
+              page={historyPage}
+              totalPages={historyTotalPages}
+              totalItems={historyTotal}
+              pageSize={RECENT_CALLS_PAGE_SIZE}
+              disabled={loading}
+              onPageChange={(nextPage) => {
+                setHistoryPage(nextPage);
+                void loadData({ page: nextPage });
+              }}
+            />
           </div>
         </div>
 

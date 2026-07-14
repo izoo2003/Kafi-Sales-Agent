@@ -7,6 +7,7 @@ import html
 import io
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -936,6 +937,8 @@ def _company_lookup(
     company_name: str,
     country: str | None = None,
     industry: str | None = None,
+    *,
+    allow_soft_website_match: bool = False,
 ) -> dict[str, str | None]:
     """Look a named company up via web search and return verified, associated details.
 
@@ -944,6 +947,9 @@ def _company_lookup(
     name-matched organic website. Also captures a B2B directory profile (e.g.
     freshdi.com) to use as a contact fallback. Never returns details that aren't
     clearly tied to the searched company name — otherwise the field stays blank.
+
+    When ``allow_soft_website_match`` is True (old-client Research & Score), strong
+    title matches are accepted even when the domain does not echo the company name.
     """
     result: dict[str, str | None] = {
         "website": None,
@@ -952,7 +958,24 @@ def _company_lookup(
         "address": None,
         "directory_url": None,
         "source_detail": None,
+        "linkedin_url": None,
+        "facebook_url": None,
+        "instagram_url": None,
     }
+
+    # Wikidata SPARQL first — strong official website / social signals when present.
+    try:
+        from modules.company_enrichment import lookup_wikidata_company
+
+        wiki = lookup_wikidata_company(company_name, country)
+        if wiki.get("website"):
+            result["website"] = wiki["website"]
+            result["source_detail"] = wiki.get("source_detail") or "Wikidata SPARQL"
+        for key in ("linkedin_url", "facebook_url", "instagram_url"):
+            if wiki.get(key):
+                result[key] = wiki[key]
+    except Exception:
+        pass
 
     if not web_search.any_combined_provider_available() or not company_name.strip():
         return result
@@ -961,11 +984,13 @@ def _company_lookup(
     queries = [f'"{company_name}"']
     if country:
         queries.append(f'"{company_name}" {country}')
-    if industry:
-        queries.append(f'"{company_name}" {industry.split(",")[0].strip()}')
+    # Cap at 2 queries so Research & Score stays interactive.
+    queries = queries[:2]
 
     best_url: str | None = None
     best_score = 0
+    soft_url: str | None = None
+    soft_score = 0
     gl = _country_gl_code(country)
     providers_used: set[str] = set()
 
@@ -996,14 +1021,21 @@ def _company_lookup(
                     and not _is_trade_data_platform(kg_domain)
                     and not _domain_matches_blocklist(kg_domain, _SKIP_DOMAINS)
                     and not _domain_matches_blocklist(kg_domain, _DIRECTORY_PROFILE_DOMAINS)
-                    and _domain_relates_to_name(company_name, kg_site)
+                    and (
+                        _domain_relates_to_name(company_name, kg_site)
+                        or allow_soft_website_match
+                        or (kg.get("description") or "").lower().find("wikidata") >= 0
+                    )
                 ):
                     result["website"] = _homepage_url(kg_site) or kg_site
-                    result["source_detail"] = "Knowledge panel"
+                    result["source_detail"] = result["source_detail"] or "Knowledge panel"
             if not result["phone"] and kg.get("phone"):
                 result["phone"] = str(kg["phone"]).strip()
             if not result["address"] and kg.get("address"):
                 result["address"] = str(kg["address"]).strip()
+            for key in ("linkedin_url", "facebook_url", "instagram_url"):
+                if not result.get(key) and kg.get(key):
+                    result[key] = str(kg[key]).strip()
 
         # 2. Local business results — reliable phone/address for physical companies.
         for place in found.local:
@@ -1041,13 +1073,15 @@ def _company_lookup(
                 continue
             if not _result_matches_name(company_name, title, link, snippet):
                 continue
-            # The domain must echo the company name — rejects name-mirroring aggregators.
-            if not _domain_relates_to_name(company_name, link):
-                continue
             score = _score_website_candidate(company_name, title, link, snippet)
-            if score > best_score:
-                best_score = score
-                best_url = _homepage_url(link) or link
+            relates = _domain_relates_to_name(company_name, link)
+            if relates:
+                if score > best_score:
+                    best_score = score
+                    best_url = _homepage_url(link) or link
+            elif allow_soft_website_match and score >= 55 and score > soft_score:
+                soft_score = score
+                soft_url = _homepage_url(link) or link
 
         if result["website"] and result["phone"]:
             break
@@ -1057,6 +1091,11 @@ def _company_lookup(
     if not result["website"] and best_url and best_score >= 40:
         result["website"] = best_url
         result["source_detail"] = result["source_detail"] or "Website found via web search"
+    elif not result["website"] and soft_url and soft_score >= 55:
+        result["website"] = soft_url
+        result["source_detail"] = (
+            result["source_detail"] or "Website found via soft name match (search)"
+        )
 
     if providers_used:
         label = " + ".join(sorted(providers_used))
@@ -1185,15 +1224,16 @@ def _flag_invalid_candidates(candidates: list[DiscoveryCandidate]) -> int:
 def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool = False) -> bool:
     homepage = _homepage_url(candidate.website_url)
     directory_url: str | None = None
+    soft_match = keep_row or candidate.source in {"csv", "old_clients", "manual"}
 
     if not homepage:
-        # Search Google by exact company name and pull only verified, name-matched
-        # details (knowledge panel / local results): website, phone, address, and a
-        # B2B directory profile as a contact fallback.
+        # Search via SerpAPI + DuckDuckGo + Google CSE + Wikidata and pull only
+        # verified, name-matched details (website, phone, address, socials).
         lookup = _company_lookup(
             candidate.company_name,
             candidate.country,
             candidate.industry,
+            allow_soft_website_match=soft_match,
         )
         directory_url = lookup.get("directory_url")
 
@@ -1212,6 +1252,26 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
             candidate.phone = _clean_found(lookup["phone"])
         if not candidate.country and lookup.get("country"):
             candidate.country = lookup["country"]
+        if candidate.linkedin_url == _NOT_FOUND and lookup.get("linkedin_url"):
+            candidate.linkedin_url = _clean_found(lookup["linkedin_url"])
+        if candidate.facebook_url == _NOT_FOUND and lookup.get("facebook_url"):
+            candidate.facebook_url = _clean_found(lookup["facebook_url"])
+        if candidate.instagram_url == _NOT_FOUND and lookup.get("instagram_url"):
+            candidate.instagram_url = _clean_found(lookup["instagram_url"])
+    else:
+        # Website already known — still ask Wikidata for missing social links.
+        try:
+            from modules.company_enrichment import lookup_wikidata_company
+
+            wiki = lookup_wikidata_company(candidate.company_name, candidate.country)
+            if candidate.linkedin_url == _NOT_FOUND and wiki.get("linkedin_url"):
+                candidate.linkedin_url = _clean_found(wiki["linkedin_url"])
+            if candidate.facebook_url == _NOT_FOUND and wiki.get("facebook_url"):
+                candidate.facebook_url = _clean_found(wiki["facebook_url"])
+            if candidate.instagram_url == _NOT_FOUND and wiki.get("instagram_url"):
+                candidate.instagram_url = _clean_found(wiki["instagram_url"])
+        except Exception:
+            pass
 
     if not homepage:
         # No own website, but a directory profile or knowledge-panel phone may still
@@ -1237,50 +1297,54 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
     company_domain = _domain(homepage)
     fallback_country = candidate.country
 
-    with httpx.Client(
-        timeout=10,
-        follow_redirects=True,
-        headers={"User-Agent": USER_AGENT},
-    ) as client:
-        for path in _CONTACT_PATHS:
-            page_url = urljoin(homepage.rstrip("/") + "/", path.lstrip("/"))
-            if not can_fetch(page_url):
-                continue
-            try:
+    def _fetch_page(path: str) -> tuple[str, str] | None:
+        page_url = urljoin(homepage.rstrip("/") + "/", path.lstrip("/"))
+        if not can_fetch(page_url):
+            return None
+        try:
+            with httpx.Client(
+                timeout=6,
+                follow_redirects=True,
+                headers={"User-Agent": USER_AGENT},
+            ) as client:
                 response = client.get(page_url)
                 response.raise_for_status()
-            except httpx.HTTPError:
+                return page_url, response.text
+        except httpx.HTTPError:
+            return None
+
+    # Fetch homepage + key contact/about paths in parallel.
+    paths = list(_CONTACT_PATHS[:5])
+    fetched: list[tuple[str, str]] = []
+    with ThreadPoolExecutor(max_workers=min(5, len(paths))) as pool:
+        futures = [pool.submit(_fetch_page, path) for path in paths]
+        for future in as_completed(futures):
+            try:
+                item = future.result()
+            except Exception:
                 continue
+            if item:
+                fetched.append(item)
 
-            text = response.text
-            page_texts.append(text)
-            soup = BeautifulSoup(text, "html.parser")
-            emails.update(_extract_emails(soup, text))
-            phones.update(_extract_phones(soup))
+    for page_url, text in fetched:
+        page_texts.append(text)
+        soup = BeautifulSoup(text, "html.parser")
+        emails.update(_extract_emails(soup, text))
+        phones.update(_extract_phones(soup))
 
-            for element in soup.find_all(attrs={"itemprop": re.compile(r"addressCountry", re.I)}):
-                value = element.get("content") or element.get_text(" ", strip=True)
-                if value:
-                    address_countries.append(value.strip())
+        for element in soup.find_all(attrs={"itemprop": re.compile(r"addressCountry", re.I)}):
+            value = element.get("content") or element.get_text(" ", strip=True)
+            if value:
+                address_countries.append(value.strip())
 
-            for anchor in soup.find_all("a", href=True):
-                href = anchor["href"].strip()
-                if not href:
-                    continue
-
-                full_url = urljoin(page_url, href)
-                key = _social_key(full_url)
-                if key and key not in socials:
-                    socials[key] = _clean_social_url(full_url)
-
-            # For CSV imports, keep scanning until we have contact + social signals or exhaust paths.
-            if keep_row:
-                has_contact = bool(emails or phones)
-                has_social = bool(socials)
-                if has_contact and has_social and len(page_texts) >= 2:
-                    break
-            elif emails and phones:
-                break
+        for anchor in soup.find_all("a", href=True):
+            href = anchor["href"].strip()
+            if not href:
+                continue
+            full_url = urljoin(page_url, href)
+            key = _social_key(full_url)
+            if key and key not in socials:
+                socials[key] = _clean_social_url(full_url)
 
     if candidate.email == _NOT_FOUND:
         candidate.email = _clean_found(_best_email(emails, company_domain))
@@ -1290,7 +1354,7 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
     # On a site that only loosely matches, its Facebook/Instagram/LinkedIn could
     # belong to someone else — better to leave those cells blank. A user-supplied
     # (CSV/manual) website is trusted even if its domain doesn't echo the name.
-    site_is_trusted = candidate.source in ("csv", "old_clients", "manual") or _website_matches_company(
+    site_is_trusted = soft_match or _website_matches_company(
         candidate.company_name, homepage
     )
     if site_is_trusted:
@@ -1312,6 +1376,31 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
             fallback=fallback_country,
             address_countries=address_countries,
         )
+
+    # CompanyLens domain enrichment for remaining contact/social gaps.
+    try:
+        from modules.company_enrichment import companylens_available, enrich_domain_companylens
+
+        if companylens_available() and company_domain:
+            lens = enrich_domain_companylens(homepage)
+            if candidate.email == _NOT_FOUND and lens.get("email"):
+                candidate.email = _clean_found(str(lens["email"]))
+            if candidate.phone == _NOT_FOUND and lens.get("phone"):
+                candidate.phone = _clean_found(str(lens["phone"]))
+            if site_is_trusted:
+                if candidate.linkedin_url == _NOT_FOUND and lens.get("linkedin_url"):
+                    candidate.linkedin_url = _clean_found(str(lens["linkedin_url"]))
+                if candidate.facebook_url == _NOT_FOUND and lens.get("facebook_url"):
+                    candidate.facebook_url = _clean_found(str(lens["facebook_url"]))
+                if candidate.instagram_url == _NOT_FOUND and lens.get("instagram_url"):
+                    candidate.instagram_url = _clean_found(str(lens["instagram_url"]))
+            if lens.get("source_detail"):
+                detail = str(lens["source_detail"])
+                candidate.source_detail = (
+                    f"{candidate.source_detail}; {detail}" if candidate.source_detail else detail
+                )
+    except Exception:
+        pass
 
     page_preview = " ".join(page_texts)[:8000] if page_texts else ""
     if keep_row:
@@ -1431,11 +1520,15 @@ def _discover_via_web_search(
     gl_code: str | None = None,
     industry_label: str | None = None,
 ) -> tuple[list[DiscoveryCandidate], list[str]]:
-    if not web_search.any_provider_available():
+    if not web_search.any_combined_provider_available() and not web_search.any_provider_available():
         return [], []
 
     gl = gl_code or _country_gl_code(country)
-    found = web_search.search(query, num=min(limit * 2, 20), gl_code=gl)
+    # Merge SerpAPI + DuckDuckGo + Google CSE + Wikidata so Discover Leads
+    # sees candidates from every configured search source.
+    found = web_search.search_combined(query, num=min(limit * 2, 20), gl_code=gl)
+    if found.is_empty():
+        found = web_search.search(query, num=min(limit * 2, 20), gl_code=gl)
     provider = found.provider or "web search"
     messages: list[str] = list(found.messages)
 
@@ -1679,6 +1772,132 @@ def enrich_discovery_candidate(candidate: DiscoveryCandidate) -> DiscoveryCandid
     return candidate
 
 
+def enrich_existing_buyer(db: Session, buyer_id: int) -> dict[str, Any]:
+    """Fill incomplete buyer/contact fields via search + scrape + CompanyLens.
+
+    Used by Research & Score so old-client CSV rows get websites/socials/contacts
+    before research_buyer scrapes the profile.
+    """
+    buyer = buyers_module.get_buyer(db, buyer_id)
+    if not buyer:
+        raise ValueError(f"Buyer {buyer_id} not found")
+
+    contacts = buyers_module.list_contacts_for_buyer(db, buyer_id)
+    contact = next((c for c in contacts if c.email or c.phone), contacts[0] if contacts else None)
+
+    has_website = bool((buyer.website_url or "").strip())
+    has_social = bool(
+        (buyer.facebook_company_url or "").strip()
+        or (buyer.instagram_company_url or "").strip()
+        or (buyer.linkedin_company_url or "").strip()
+    )
+    has_contact = bool(contact and ((contact.email or "").strip() or (contact.phone or "").strip()))
+    if has_website and has_social and has_contact:
+        return {
+            "buyer_id": buyer_id,
+            "filled_fields": [],
+            "website_url": buyer.website_url,
+            "source_detail": "Skipped enrichment — website, contact, and socials already present",
+            "skipped": True,
+        }
+
+    candidate = DiscoveryCandidate(
+        candidate_id=f"buyer-{buyer_id}",
+        company_name=buyer.company_name,
+        website_url=buyer.website_url,
+        contact_name=(contact.full_name if contact else None),
+        email=(contact.email if contact and contact.email else _NOT_FOUND),
+        phone=(contact.phone if contact and contact.phone else _NOT_FOUND),
+        facebook_url=buyer.facebook_company_url or _NOT_FOUND,
+        instagram_url=buyer.instagram_company_url or _NOT_FOUND,
+        linkedin_url=buyer.linkedin_company_url or _NOT_FOUND,
+        country=buyer.country,
+        industry=buyer.industry,
+        city=buyer.city,
+        address=buyer.address,
+        source=(buyer.source or "old_clients"),
+        source_detail="Existing lead enrichment",
+    )
+
+    before = {
+        "website_url": buyer.website_url,
+        "facebook_company_url": buyer.facebook_company_url,
+        "instagram_company_url": buyer.instagram_company_url,
+        "linkedin_company_url": buyer.linkedin_company_url,
+        "country": buyer.country,
+        "industry": buyer.industry,
+        "city": buyer.city,
+        "address": buyer.address,
+        "email": contact.email if contact else None,
+        "phone": contact.phone if contact else None,
+    }
+
+    _enrich_candidate_contact(candidate, keep_row=True)
+
+    buyer_updates: dict[str, Any] = {}
+    if not buyer.website_url and candidate.website_url:
+        buyer_updates["website_url"] = candidate.website_url
+    if not buyer.facebook_company_url and _value_or_none(candidate.facebook_url):
+        buyer_updates["facebook_company_url"] = _value_or_none(candidate.facebook_url)
+    if not buyer.instagram_company_url and _value_or_none(candidate.instagram_url):
+        buyer_updates["instagram_company_url"] = _value_or_none(candidate.instagram_url)
+    if not buyer.linkedin_company_url and _value_or_none(candidate.linkedin_url):
+        buyer_updates["linkedin_company_url"] = _value_or_none(candidate.linkedin_url)
+    if not buyer.country and candidate.country:
+        buyer_updates["country"] = candidate.country
+    if not buyer.industry and candidate.industry:
+        buyer_updates["industry"] = candidate.industry
+    if not buyer.city and candidate.city:
+        buyer_updates["city"] = candidate.city
+    if not buyer.address and candidate.address:
+        buyer_updates["address"] = candidate.address
+
+    if buyer_updates:
+        buyers_module.update_buyer(db, buyer_id, buyer_updates)
+
+    email = _value_or_none(candidate.email)
+    phone = _value_or_none(candidate.phone)
+    linkedin = _value_or_none(candidate.linkedin_url)
+    contact_updates: dict[str, Any] = {}
+    if contact:
+        if not contact.email and email:
+            contact_updates["email"] = email
+        if not contact.phone and phone:
+            contact_updates["phone"] = phone
+        if not contact.linkedin_profile_url and linkedin:
+            contact_updates["linkedin_profile_url"] = linkedin
+        if contact_updates:
+            buyers_module.update_contact(db, contact.id, contact_updates)
+    elif email or phone or candidate.contact_name:
+        buyers_module.create_contact(
+            db,
+            {
+                "buyer_id": buyer_id,
+                "full_name": (candidate.contact_name or "").strip() or "General contact",
+                "email": email,
+                "phone": phone,
+                "linkedin_profile_url": linkedin,
+                "data_source": "enrichment",
+                "consent_status": "unknown",
+            },
+        )
+
+    db.refresh(buyer)
+    filled = [key for key, value in buyer_updates.items() if value]
+    if contact_updates:
+        filled.extend(f"contact.{key}" for key in contact_updates)
+    elif not contact and (email or phone):
+        filled.append("contact.created")
+
+    return {
+        "buyer_id": buyer_id,
+        "filled_fields": filled,
+        "website_url": buyer.website_url,
+        "source_detail": candidate.source_detail,
+        "before": before,
+    }
+
+
 def discover_leads(
     db: Session,
     *,
@@ -1739,7 +1958,7 @@ def discover_leads(
         )
 
     if use_web_search:
-        if web_search.any_provider_available():
+        if web_search.any_provider_available() or web_search.any_combined_provider_available():
             found, search_messages, queries = _discover_via_serpapi_for_markets(
                 regions,
                 normalized_industries,
@@ -1758,8 +1977,8 @@ def discover_leads(
                 result.messages.append("Web search returned no results for this query.")
         else:
             result.messages.append(
-                "No web-search provider available. Set BRAVE_API_KEY and/or "
-                "SERPAPI_API_KEY in backend/.env."
+                "No web-search provider available. Configure SERPAPI_API_KEY, "
+                "GOOGLE_CSE_API_KEY + GOOGLE_CSE_ENGINE_ID, and/or install ddgs for DuckDuckGo."
             )
 
     if use_website_links and seed_url:
@@ -2146,8 +2365,8 @@ def discover_from_csv(
         without_website = sum(1 for c in candidates if not _homepage_url(c.website_url))
         if without_website and not web_search.any_combined_provider_available():
             result.messages.append(
-                f"{without_website} row(s) have no website — research later needs SERPAPI_API_KEY "
-                "(and ddgs for DuckDuckGo)."
+                f"{without_website} row(s) have no website — Research & score later uses "
+                "SerpAPI + DuckDuckGo + Google CSE + Wikidata (+ CompanyLens when configured)."
             )
     else:
         _enrich_candidates(candidates)

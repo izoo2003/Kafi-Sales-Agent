@@ -52,7 +52,8 @@ export function CallHistoryPanel({
   const loadCalls = useCallback(async () => {
     setLoading(true);
     try {
-      setCalls(await client.listLeadCalls(leadId));
+      const result = await client.listLeadCalls(leadId, { page: 1, page_size: 20 });
+      setCalls(result.rows);
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to load call history");
     } finally {

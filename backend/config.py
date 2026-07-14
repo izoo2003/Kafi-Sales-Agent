@@ -72,9 +72,12 @@ class Settings(BaseSettings):
     brave_api_key: str | None = None
     google_cse_api_key: str | None = None
     google_cse_engine_id: str | None = None
+    companylens_api_key: str | None = None
     # Fallback chain for market discovery (first provider that returns results).
+    # Default: serpapi,duckduckgo,google_cse,wikidata
     web_search_providers: str | None = None
-    # Per-record enrichment: ALL listed providers run and results merge (default serpapi+duckduckgo).
+    # Per-record enrichment: ALL listed providers run and results merge.
+    # Default: serpapi,duckduckgo,google_cse,wikidata (+ CompanyLens after a domain is found)
     web_search_combined_providers: str | None = None
 
     # Twilio Voice — browser calling from dashboard (integrations/voice_client.py)

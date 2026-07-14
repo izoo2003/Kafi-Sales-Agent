@@ -6,6 +6,7 @@ from api.deps import get_current_user, get_db, require_admin
 from db.models import AppUser, AppUserRole, LeadScoreLabel
 from api.schemas import (
     BuyerCreate,
+    BuyerListResponse,
     BuyerProfileRead,
     BuyerRead,
     ContactCreate,
@@ -70,9 +71,9 @@ def _require_buyer_access(db, user: AppUser, buyer_id: int) -> None:
 router = APIRouter(prefix="/leads", tags=["leads"])
 
 
-@router.get("", response_model=list[BuyerRead])
-def list_leads(db: Session = Depends(get_db)):
-    return leads_module.list_buyers_with_scores(db)
+@router.get("", response_model=BuyerListResponse)
+def list_leads(page: int = 1, page_size: int = 20, db: Session = Depends(get_db)):
+    return leads_module.list_buyers_with_scores(db, page=page, page_size=page_size)
 
 
 @router.post("", response_model=BuyerRead, status_code=201)
@@ -680,4 +681,5 @@ def onboard_lead(
         "score": result["score"],
         "reasoning": result["reasoning"],
         "next_actions": result["next_actions"],
+        "enrichment": result.get("enrichment"),
     }

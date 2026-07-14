@@ -18,7 +18,6 @@ import { LoginPage } from "./pages/LoginPage";
 import { UsersPage } from "./pages/UsersPage";
 import { TwilioVoiceProvider, useTwilioVoiceOptional } from "./hooks/useTwilioVoice";
 import { PostCallRemarksModal } from "./components/PostCallRemarksModal";
-import { useLeads } from "./hooks/useLeads";
 import {
   alertInterestedFollowUp,
   alertNewInboxMessage,
@@ -60,7 +59,7 @@ function DashboardApp() {
   const [error, setError] = useState<string | null>(null);
   const [emailActivityUnread, setEmailActivityUnread] = useState(0);
   const [emailTemplateCount, setEmailTemplateCount] = useState(0);
-  const { leads, refresh: refreshLeads } = useLeads();
+  const [discoverLeadsCount, setDiscoverLeadsCount] = useState(0);
 
   const [consentSummary, setConsentSummary] = useState<{ unknown: number } | null>(null);
   const [inboxUnread, setInboxUnread] = useState(0);
@@ -84,6 +83,19 @@ function DashboardApp() {
       setTab("activity");
     }
   }, [isAdmin, tab]);
+
+  const loadDiscoverLeadsCount = useCallback(async () => {
+    if (!isAdmin) {
+      setDiscoverLeadsCount(0);
+      return;
+    }
+    try {
+      const result = await client.listLeads({ page: 1, page_size: 1 });
+      setDiscoverLeadsCount(result.total);
+    } catch {
+      setDiscoverLeadsCount(0);
+    }
+  }, [isAdmin]);
 
   const loadEmailTemplateCount = useCallback(async () => {
     try {
@@ -212,7 +224,7 @@ function DashboardApp() {
 
   const refreshAll = useCallback(() => {
     setError(null);
-    refreshLeads();
+    void loadDiscoverLeadsCount();
     void loadTableCounts();
     void loadEmailTemplateCount();
     client.getConsentSummary().then(setConsentSummary).catch(() => setConsentSummary(null));
@@ -222,11 +234,12 @@ function DashboardApp() {
       .catch(() => setEmailActivityUnread(0));
     pollInbox();
     pollInterestedFollowUps();
-  }, [loadEmailTemplateCount, loadTableCounts, refreshLeads, pollInbox, pollInterestedFollowUps]);
+  }, [loadDiscoverLeadsCount, loadEmailTemplateCount, loadTableCounts, pollInbox, pollInterestedFollowUps]);
 
   useEffect(() => {
     client.getConsentSummary().then(setConsentSummary).catch(() => setConsentSummary(null));
     void loadTableCounts();
+    void loadDiscoverLeadsCount();
     void loadEmailTemplateCount();
     requestNotificationPermission();
 
@@ -255,7 +268,7 @@ function DashboardApp() {
       window.removeEventListener("click", unlock);
       window.removeEventListener("keydown", unlock);
     };
-  }, [loadEmailTemplateCount, loadTableCounts, pollInbox, pollInterestedFollowUps]);
+  }, [loadDiscoverLeadsCount, loadEmailTemplateCount, loadTableCounts, pollInbox, pollInterestedFollowUps]);
 
   function handleSelectLead(leadId: number) {
     setError(null);
@@ -264,7 +277,7 @@ function DashboardApp() {
 
   function handleBackFromProfile() {
     setSelectedLeadId(null);
-    refreshLeads();
+    void loadDiscoverLeadsCount();
     void loadTableCounts();
     void loadEmailTemplateCount();
   }
@@ -309,7 +322,7 @@ function DashboardApp() {
     { id: "activity", label: "Email Activity", count: emailActivityUnread, alert: emailActivityUnread > 0 },
     { id: "email-templates", label: "Email templates", count: emailTemplateCount },
     ...(isAdmin
-      ? [{ id: "leads" as const, label: "Discover Leads", count: leads.length }]
+      ? [{ id: "leads" as const, label: "Discover Leads", count: discoverLeadsCount }]
       : []),
     {
       id: "table",
@@ -407,7 +420,11 @@ function DashboardApp() {
               />
             )}
             {tab === "leads" && isAdmin && selectedLeadId === null && (
-              <LeadsPage onError={setError} onSelectLead={handleSelectLead} />
+              <LeadsPage
+                onError={setError}
+                onSelectLead={handleSelectLead}
+                onTotalChange={setDiscoverLeadsCount}
+              />
             )}
             {tab === "table" && selectedLeadId !== null && (
               <BuyerProfile

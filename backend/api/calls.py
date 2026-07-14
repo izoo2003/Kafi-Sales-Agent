@@ -6,6 +6,7 @@ from api.deps import get_current_user, get_db
 from api.schemas import (
     CallConfigRead,
     CallHistoryItem,
+    CallHistoryListResponse,
     CallInitiateRequest,
     CallInitiateResponse,
     CallNotesRequest,
@@ -79,16 +80,35 @@ def get_voice_token():
     return VoiceTokenRead(**result)
 
 
-@router.get("/calls/history", response_model=list[CallHistoryItem])
-def list_call_history(limit: int = 50, db: Session = Depends(get_db)):
-    rows = calls_module.list_call_history(db, limit=min(limit, 200))
-    return [CallHistoryItem(**row) for row in rows]
+@router.get("/calls/history", response_model=CallHistoryListResponse)
+def list_call_history(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(5, ge=1, le=50),
+    since_days: int = Query(calls_module.CALL_HISTORY_RETENTION_DAYS, ge=1, le=366),
+    db: Session = Depends(get_db),
+):
+    result = calls_module.list_call_history(
+        db,
+        page=page,
+        page_size=page_size,
+        since_days=since_days,
+    )
+    return CallHistoryListResponse(
+        total=int(result["total"]),
+        page=int(result["page"]),
+        page_size=int(result["page_size"]),
+        total_pages=int(result["total_pages"]),
+        since_days=result.get("since_days"),
+        rows=[CallHistoryItem(**row) for row in result["rows"]],
+    )
 
 
-@router.get("/leads/{lead_id}/calls", response_model=list[CallHistoryItem])
+@router.get("/leads/{lead_id}/calls", response_model=CallHistoryListResponse)
 def list_lead_calls(
     lead_id: int,
-    limit: int = 50,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(5, ge=1, le=50),
+    since_days: int | None = Query(None, ge=1, le=366),
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
@@ -97,8 +117,21 @@ def list_lead_calls(
     _require_lead_access(db, user, lead_id)
     if not get_buyer(db, lead_id):
         raise HTTPException(404, "Lead not found")
-    rows = calls_module.list_call_history(db, buyer_id=lead_id, limit=min(limit, 200))
-    return [CallHistoryItem(**row) for row in rows]
+    result = calls_module.list_call_history(
+        db,
+        buyer_id=lead_id,
+        page=page,
+        page_size=page_size,
+        since_days=since_days,
+    )
+    return CallHistoryListResponse(
+        total=int(result["total"]),
+        page=int(result["page"]),
+        page_size=int(result["page_size"]),
+        total_pages=int(result["total_pages"]),
+        since_days=result.get("since_days"),
+        rows=[CallHistoryItem(**row) for row in result["rows"]],
+    )
 
 
 @router.patch("/calls/{interaction_id}/notes", response_model=CallHistoryItem)

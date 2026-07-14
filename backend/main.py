@@ -37,6 +37,11 @@ def _run_daily_job():
         run_birthday_check(db)
         run_national_day_check(db)
         run_follow_up_check(db)
+        from modules import calls as calls_module
+
+        purged = calls_module.purge_old_call_logs(db)
+        if purged:
+            print(f"Purged {purged} call log(s) older than {calls_module.CALL_HISTORY_RETENTION_DAYS} days.", flush=True)
     finally:
         db.close()
 
@@ -83,10 +88,37 @@ async def lifespan(app: FastAPI):
 
     print("Application startup complete.", flush=True)
 
-    apscheduler.add_job(_run_daily_job, "cron", hour=8, minute=0, id="daily_scheduler")
-    apscheduler.start()
+    # With --workers 2, only one process should own the daily scheduler.
+    import os
+    from pathlib import Path
+
+    lock_path = Path("/tmp/kafi_apscheduler.lock")
+    run_scheduler = True
+    try:
+        if lock_path.exists():
+            run_scheduler = False
+        else:
+            lock_path.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        run_scheduler = os.environ.get("KAFI_ENABLE_SCHEDULER", "true").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+
+    if run_scheduler:
+        apscheduler.add_job(_run_daily_job, "cron", hour=8, minute=0, id="daily_scheduler")
+        apscheduler.start()
+        print("Daily scheduler started in this worker.", flush=True)
+    else:
+        print("Daily scheduler skipped in this worker (another worker owns it).", flush=True)
     yield
-    apscheduler.shutdown(wait=False)
+    if run_scheduler:
+        apscheduler.shutdown(wait=False)
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 app = FastAPI(

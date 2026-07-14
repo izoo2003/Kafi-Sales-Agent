@@ -33,6 +33,14 @@ class BuyerRead(BaseModel):
     score_reasoning: Optional[str] = None
 
 
+class BuyerListResponse(BaseModel):
+    total: int
+    page: int = 1
+    page_size: int = 20
+    total_pages: int = 1
+    rows: list[BuyerRead]
+
+
 class QuotationEligibleLeadRead(BuyerRead):
     latest_score: str
     score_reasoning: str
@@ -723,6 +731,15 @@ class CallHistoryItem(BaseModel):
     transcript: Optional[str] = None
     transcript_status: Optional[str] = None
     transcript_error: Optional[str] = None
+
+
+class CallHistoryListResponse(BaseModel):
+    total: int
+    page: int = 1
+    page_size: int = 5
+    total_pages: int = 1
+    since_days: Optional[int] = 30
+    rows: list[CallHistoryItem]
 
 
 class CallNotesRequest(BaseModel):

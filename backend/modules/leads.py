@@ -75,33 +75,51 @@ def research_buyer(db: Session, buyer_id: int, *, force_refresh: bool = False) -
     return _research.research_buyer(db, buyer_id, force_refresh=force_refresh)
 
 
-def list_buyers_with_scores(db: Session) -> list[dict]:
-    """Return all buyers enriched with their latest HOT/WARM/COLD score."""
-    buyers = buyers_module.list_buyers(db)
-    if not buyers:
-        return []
+def list_buyers_with_scores(
+    db: Session,
+    *,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict[str, object]:
+    """Return buyers enriched with latest HOT/WARM/COLD score (paginated)."""
+    page = max(1, page)
+    page_size = min(max(1, page_size), 100)
 
-    buyer_ids = [b.id for b in buyers]
+    total = db.query(Buyer).count()
+    total_pages = max(1, (total + page_size - 1) // page_size) if total else 1
+    if page > total_pages:
+        page = total_pages
 
-    latest_sub = (
-        db.query(
-            LeadScore.buyer_id,
-            sa_func.max(LeadScore.scored_at).label("max_scored_at"),
-        )
-        .filter(LeadScore.buyer_id.in_(buyer_ids))
-        .group_by(LeadScore.buyer_id)
-        .subquery()
-    )
-    score_rows = (
-        db.query(LeadScore)
-        .join(
-            latest_sub,
-            (LeadScore.buyer_id == latest_sub.c.buyer_id)
-            & (LeadScore.scored_at == latest_sub.c.max_scored_at),
-        )
+    buyers = (
+        db.query(Buyer)
+        .order_by(Buyer.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
         .all()
     )
-    score_map = {s.buyer_id: s for s in score_rows}
+
+    score_map: dict[int, LeadScore] = {}
+    if buyers:
+        buyer_ids = [b.id for b in buyers]
+        latest_sub = (
+            db.query(
+                LeadScore.buyer_id,
+                sa_func.max(LeadScore.scored_at).label("max_scored_at"),
+            )
+            .filter(LeadScore.buyer_id.in_(buyer_ids))
+            .group_by(LeadScore.buyer_id)
+            .subquery()
+        )
+        score_rows = (
+            db.query(LeadScore)
+            .join(
+                latest_sub,
+                (LeadScore.buyer_id == latest_sub.c.buyer_id)
+                & (LeadScore.scored_at == latest_sub.c.max_scored_at),
+            )
+            .all()
+        )
+        score_map = {s.buyer_id: s for s in score_rows}
 
     results: list[dict] = []
     for buyer in buyers:
@@ -133,7 +151,14 @@ def list_buyers_with_scores(db: Session) -> list[dict]:
                 "score_reasoning": score.reasoning if score else None,
             }
         )
-    return results
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "rows": results,
+    }
 
 
 def get_saved_buyer_profile(db: Session, buyer_id: int) -> BuyerProfile | None:
