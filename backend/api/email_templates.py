@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from api.deps import get_db
+from api.deps import get_current_user, get_db
 from api.schemas import (
     EmailTemplateCreate,
     EmailTemplatePreviewRead,
@@ -9,6 +9,7 @@ from api.schemas import (
     EmailTemplateUpdate,
     EmailTextPreviewRequest,
 )
+from db.models import AppUser
 from modules import email_templates as templates_module
 from modules.audit import log_action
 
@@ -35,9 +36,31 @@ def list_email_templates(db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=EmailTemplateRead, status_code=201)
-def create_email_template(payload: EmailTemplateCreate, db: Session = Depends(get_db)):
+def create_email_template(
+    payload: EmailTemplateCreate,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    from modules import activity as activity_module
+
     record = templates_module.create_template(db, payload.model_dump())
-    log_action(db, entity_type="email_template", entity_id=record.id, action="created")
+    log_action(
+        db,
+        entity_type="email_template",
+        entity_id=record.id,
+        action="created",
+        actor=user.username,
+    )
+    activity_module.log_activity(
+        db,
+        user_id=user.id,
+        activity_type=activity_module.EMAIL_TEMPLATE_CREATED,
+        title="Email template created",
+        summary=f"Created email template “{record.name}”",
+        entity_type="email_template",
+        entity_id=record.id,
+        details={"name": record.name},
+    )
     return _template_read(record)
 
 

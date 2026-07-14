@@ -2,7 +2,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
-from api.deps import get_db
+from api.deps import get_current_user, get_db
 from api.schemas import (
     CallConfigRead,
     CallHistoryItem,
@@ -12,11 +12,18 @@ from api.schemas import (
     ManualCallRequest,
     VoiceTokenRead,
 )
+from db.models import AppUser
 from db.session import SessionLocal
 from integrations.voice_client import voice_client
 from modules import calls as calls_module
+from modules import leads as leads_module
 
 from config import settings
+
+
+def _require_lead_access(db: Session, user: AppUser, lead_id: int) -> None:
+    if not leads_module.user_can_access_buyer(db, user=user, buyer_id=lead_id):
+        raise HTTPException(403, "You do not have access to this lead")
 
 router = APIRouter(tags=["calls"])
 
@@ -79,9 +86,15 @@ def list_call_history(limit: int = 50, db: Session = Depends(get_db)):
 
 
 @router.get("/leads/{lead_id}/calls", response_model=list[CallHistoryItem])
-def list_lead_calls(lead_id: int, limit: int = 50, db: Session = Depends(get_db)):
+def list_lead_calls(
+    lead_id: int,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
     from modules.buyers import get_buyer
 
+    _require_lead_access(db, user, lead_id)
     if not get_buyer(db, lead_id):
         raise HTTPException(404, "Lead not found")
     rows = calls_module.list_call_history(db, buyer_id=lead_id, limit=min(limit, 200))
@@ -93,6 +106,7 @@ def update_call_notes(
     interaction_id: int,
     payload: CallNotesRequest,
     db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
 ):
     try:
         result = calls_module.update_call_followup(
@@ -100,6 +114,7 @@ def update_call_notes(
             interaction_id=interaction_id,
             notes=payload.notes,
             call_outcome=payload.call_outcome,
+            app_user_id=user.id,
         )
     except ValueError as exc:
         raise HTTPException(400 if "Invalid call outcome" in str(exc) else 404, str(exc)) from exc
@@ -178,9 +193,12 @@ def initiate_lead_call(
     lead_id: int,
     payload: CallInitiateRequest,
     db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
 ):
     from modules.buyers import get_buyer
+    from modules import activity as activity_module
 
+    _require_lead_access(db, user, lead_id)
     if not get_buyer(db, lead_id):
         raise HTTPException(404, "Lead not found")
     try:
@@ -191,6 +209,20 @@ def initiate_lead_call(
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+    company = result.get("company_name") or f"Lead #{lead_id}"
+    contact_name = result.get("contact_name") or "contact"
+    phone = result.get("lead_phone") or ""
+    activity_module.log_activity(
+        db,
+        user_id=user.id,
+        activity_type=activity_module.CALL_LOGGED,
+        title="Call logged",
+        summary=f"Called {company} ({contact_name}" + (f", {phone}" if phone else "") + ")",
+        entity_type="interaction",
+        entity_id=result.get("id"),
+        details={"buyer_id": lead_id, "company_name": company},
+    )
     return CallInitiateResponse(**result)
 
 
@@ -198,7 +230,10 @@ def initiate_lead_call(
 def initiate_manual_call(
     payload: ManualCallRequest,
     db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
 ):
+    from modules import activity as activity_module
+
     try:
         result = calls_module.initiate_manual_call(
             db,
@@ -208,6 +243,20 @@ def initiate_manual_call(
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+    company = result.get("company_name") or "Manual dial"
+    contact_name = result.get("contact_name") or payload.contact_name or "contact"
+    phone = result.get("lead_phone") or payload.phone
+    activity_module.log_activity(
+        db,
+        user_id=user.id,
+        activity_type=activity_module.CALL_LOGGED,
+        title="Call logged",
+        summary=f"Called {company} ({contact_name}, {phone})",
+        entity_type="interaction",
+        entity_id=result.get("id"),
+        details={"buyer_id": result.get("buyer_id"), "company_name": company},
+    )
     return CallInitiateResponse(**result)
 
 

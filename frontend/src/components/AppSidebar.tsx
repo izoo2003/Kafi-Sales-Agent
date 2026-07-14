@@ -1,6 +1,16 @@
 import { useEffect, useState } from "react";
 
-export type Tab = "activity" | "email-templates" | "leads" | "table" | "inbox" | "calls" | "compliance" | "chatbot";
+export type Tab =
+  | "activity"
+  | "email-templates"
+  | "leads"
+  | "table"
+  | "inbox"
+  | "calls"
+  | "compliance"
+  | "chatbot"
+  | "kpi"
+  | "users";
 
 export type LeadsTableSection =
   | "all"
@@ -33,6 +43,9 @@ interface AppSidebarProps {
   onSelectTab: (tab: Tab) => void;
   onSelectTableSection?: (section: LeadsTableSection) => void;
   onRefresh: () => void;
+  userLabel?: string;
+  userRole?: string;
+  onLogout?: () => void;
 }
 
 export function AppSidebar({
@@ -42,6 +55,9 @@ export function AppSidebar({
   onSelectTab,
   onSelectTableSection,
   onRefresh,
+  userLabel,
+  userRole,
+  onLogout,
 }: AppSidebarProps) {
   const [leadsMenuOpen, setLeadsMenuOpen] = useState(activeTab === "table");
 
@@ -196,7 +212,15 @@ export function AppSidebar({
         })}
       </nav>
 
-      <div className="px-3 py-4 border-t border-slate-800">
+      <div className="px-3 py-4 border-t border-slate-800 space-y-2">
+        {(userLabel || userRole) && (
+          <div className="px-3 py-2 rounded-lg bg-slate-900/80 border border-slate-800">
+            <p className="text-sm text-slate-200 truncate">{userLabel}</p>
+            {userRole && (
+              <p className="text-xs text-slate-500 mt-0.5 capitalize">{userRole}</p>
+            )}
+          </div>
+        )}
         <button
           type="button"
           onClick={onRefresh}
@@ -204,6 +228,15 @@ export function AppSidebar({
         >
           Refresh
         </button>
+        {onLogout && (
+          <button
+            type="button"
+            onClick={onLogout}
+            className="w-full text-sm px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-400"
+          >
+            Sign out
+          </button>
+        )}
       </div>
     </aside>
   );

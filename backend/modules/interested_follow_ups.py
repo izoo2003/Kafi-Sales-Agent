@@ -1,33 +1,59 @@
-"""Weekly follow-up reminders for clients on the Interested clients list."""
+"""Manual follow-up reminders for Follow up clients and Did not receive call."""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
 from db.models import Buyer, Channel, Contact, Interaction
 from modules.calls import buyer_ids_with_latest_call_outcome, parse_call_fields
 
-FOLLOW_UP_INTERVAL = timedelta(days=7)
+_FOLLOW_UP_SCHEDULE_OUTCOMES = frozenset({"interested", "not_received_call"})
+
+_SECTION_BY_OUTCOME = {
+    "interested": "interested_clients",
+    "not_received_call": "not_received_call_clients",
+}
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _placement_date_for_buyer(db: Session, buyer_id: int) -> datetime | None:
-    """Latest phone call interaction where outcome was set to interested."""
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _latest_outcome_for_buyer(db: Session, buyer_id: int) -> str | None:
     rows = (
-        db.query(Interaction, Contact.buyer_id)
+        db.query(Interaction)
         .join(Contact, Interaction.contact_id == Contact.id)
         .filter(Contact.buyer_id == buyer_id, Interaction.channel == Channel.phone)
         .order_by(Interaction.created_at.desc())
         .all()
     )
-    for interaction, _ in rows:
+    for interaction in rows:
         outcome = parse_call_fields(interaction.content).get("call_outcome")
-        if outcome and str(outcome).lower() == "interested":
+        if outcome:
+            return str(outcome).lower()
+    return None
+
+
+def _placement_date_for_buyer(db: Session, buyer_id: int) -> datetime | None:
+    """Latest phone call with an interested/not-received outcome."""
+    rows = (
+        db.query(Interaction)
+        .join(Contact, Interaction.contact_id == Contact.id)
+        .filter(Contact.buyer_id == buyer_id, Interaction.channel == Channel.phone)
+        .order_by(Interaction.created_at.desc())
+        .all()
+    )
+    for interaction in rows:
+        outcome = parse_call_fields(interaction.content).get("call_outcome")
+        if outcome and str(outcome).lower() in _FOLLOW_UP_SCHEDULE_OUTCOMES:
             return interaction.created_at
     return None
 
@@ -40,6 +66,13 @@ def _primary_contact_name(db: Session, buyer_id: int) -> str | None:
         .first()
     )
     return contact.full_name if contact else None
+
+
+def _schedule_eligible_buyer_ids(db: Session) -> set[int]:
+    ids: set[int] = set()
+    for outcome in _FOLLOW_UP_SCHEDULE_OUTCOMES:
+        ids |= buyer_ids_with_latest_call_outcome(db, outcome)
+    return ids
 
 
 def sync_buyer_interested_status(
@@ -59,50 +92,75 @@ def sync_buyer_interested_status(
     if new == "interested":
         buyer.interested_at = _utcnow()
         buyer.interested_follow_up_ack_at = None
-    elif prev == "interested" and new != "interested":
-        buyer.interested_at = None
-        buyer.interested_follow_up_ack_at = None
+        buyer.follow_up_at = None
+    elif new == "not_received_call":
+        if prev == "interested":
+            buyer.interested_at = None
+            buyer.interested_follow_up_ack_at = None
+        buyer.follow_up_at = None
+    elif prev in _FOLLOW_UP_SCHEDULE_OUTCOMES and new not in _FOLLOW_UP_SCHEDULE_OUTCOMES:
+        if prev == "interested":
+            buyer.interested_at = None
+            buyer.interested_follow_up_ack_at = None
+        buyer.follow_up_at = None
 
 
-def _ensure_interested_at(db: Session, buyer: Buyer) -> datetime:
+def _ensure_placement_at(db: Session, buyer: Buyer) -> datetime:
     if buyer.interested_at:
         return buyer.interested_at
     placement = _placement_date_for_buyer(db, buyer.id)
-    buyer.interested_at = placement or _utcnow()
-    db.commit()
-    db.refresh(buyer)
-    return buyer.interested_at
+    if placement:
+        return placement
+    return buyer.follow_up_at or _utcnow()
 
 
-def list_due_follow_ups(db: Session) -> list[dict]:
-    interested_ids = buyer_ids_with_latest_call_outcome(db, "interested")
-    if not interested_ids:
+def list_due_follow_ups(
+    db: Session,
+    *,
+    assigned_to_user_id: int | None = None,
+) -> list[dict]:
+    """Return clients whose manually scheduled follow-up date is due."""
+    eligible_ids = _schedule_eligible_buyer_ids(db)
+    if not eligible_ids:
         return []
 
     now = _utcnow()
     due: list[dict] = []
 
-    buyers = db.query(Buyer).filter(Buyer.id.in_(interested_ids)).all()
+    query = (
+        db.query(Buyer)
+        .filter(Buyer.id.in_(eligible_ids), Buyer.follow_up_at.isnot(None))
+    )
+    if assigned_to_user_id is not None:
+        query = query.filter(Buyer.assigned_to_user_id == assigned_to_user_id)
+    buyers = query.all()
     for buyer in buyers:
-        placement = _ensure_interested_at(db, buyer)
-        anchor = buyer.interested_follow_up_ack_at or placement
-        due_at = anchor + FOLLOW_UP_INTERVAL
+        if not buyer.follow_up_at:
+            continue
+        due_at = _as_utc(buyer.follow_up_at)
         if now < due_at:
             continue
 
-        days_since = max(0, (now - placement).days)
-        week_index = max(1, days_since // 7)
+        outcome = _latest_outcome_for_buyer(db, buyer.id) or "interested"
+        section = _SECTION_BY_OUTCOME.get(outcome, "interested_clients")
+        placement = _ensure_placement_at(db, buyer)
+        placement_utc = _as_utc(placement)
+        days_since = max(0, (now - placement_utc).days)
         contact_name = _primary_contact_name(db, buyer.id)
+        stamp = due_at.strftime("%Y%m%d%H%M")
 
         due.append(
             {
-                "id": f"{buyer.id}-w{week_index}",
+                "id": f"{buyer.id}-{stamp}",
                 "buyer_id": buyer.id,
                 "company_name": buyer.company_name,
                 "contact_name": contact_name,
                 "interested_at": placement.isoformat(),
-                "weeks_since_placement": week_index,
+                "weeks_since_placement": max(1, days_since // 7) if days_since >= 7 else 0,
+                "days_since_placement": days_since,
                 "due_at": due_at.isoformat(),
+                "call_outcome": outcome,
+                "table_section": section,
             }
         )
 
@@ -110,19 +168,49 @@ def list_due_follow_ups(db: Session) -> list[dict]:
     return due
 
 
-def acknowledge_follow_up(db: Session, *, buyer_id: int) -> dict:
+def set_follow_up_at(
+    db: Session,
+    *,
+    buyer_id: int,
+    follow_up_at: datetime | None,
+) -> dict:
     buyer = db.get(Buyer, buyer_id)
     if not buyer:
         raise ValueError("Lead not found")
-    if buyer_id not in buyer_ids_with_latest_call_outcome(db, "interested"):
-        raise ValueError("Client is not on the Interested clients list")
-    if not buyer.interested_at:
-        _ensure_interested_at(db, buyer)
+    if buyer_id not in _schedule_eligible_buyer_ids(db):
+        raise ValueError(
+            "Client must be on Follow up clients or Did not receive call to schedule a reminder"
+        )
 
+    if follow_up_at is not None:
+        follow_up_at = _as_utc(follow_up_at)
+
+    buyer.follow_up_at = follow_up_at
+    buyer.interested_follow_up_ack_at = None
+    db.commit()
+    db.refresh(buyer)
+    return {
+        "buyer_id": buyer.id,
+        "follow_up_at": buyer.follow_up_at.isoformat() if buyer.follow_up_at else None,
+    }
+
+
+def acknowledge_follow_up(db: Session, *, buyer_id: int) -> dict:
+    """Clear the scheduled reminder after the user acts on a due notification."""
+    buyer = db.get(Buyer, buyer_id)
+    if not buyer:
+        raise ValueError("Lead not found")
+    if buyer_id not in _schedule_eligible_buyer_ids(db):
+        raise ValueError(
+            "Client must be on Follow up clients or Did not receive call"
+        )
+
+    buyer.follow_up_at = None
     buyer.interested_follow_up_ack_at = _utcnow()
     db.commit()
     db.refresh(buyer)
     return {
         "buyer_id": buyer.id,
         "interested_follow_up_ack_at": buyer.interested_follow_up_ack_at.isoformat(),
+        "follow_up_at": None,
     }

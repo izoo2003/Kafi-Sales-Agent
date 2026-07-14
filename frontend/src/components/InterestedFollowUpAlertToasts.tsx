@@ -5,11 +5,24 @@ import {
 } from "../utils/notify";
 
 interface InterestedFollowUpAlertToastsProps {
-  onViewClient: (buyerId: number) => void;
+  onViewClient: (
+    buyerId: number,
+    section?: "interested_clients" | "not_received_call_clients",
+  ) => void;
   onAcknowledge: (buyerId: number) => Promise<void>;
 }
 
 const AUTO_DISMISS_MS = 30_000;
+
+function formatDue(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "now";
+  return date.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
 
 export function InterestedFollowUpAlertToasts({
   onViewClient,
@@ -54,7 +67,7 @@ export function InterestedFollowUpAlertToasts({
     setAcknowledging(alert.buyerId);
     try {
       await onAcknowledge(alert.buyerId);
-      onViewClient(alert.buyerId);
+      onViewClient(alert.buyerId, alert.tableSection ?? "interested_clients");
     } finally {
       setAcknowledging(null);
     }
@@ -65,10 +78,6 @@ export function InterestedFollowUpAlertToasts({
   return (
     <div className="fixed bottom-4 right-4 z-[100] flex flex-col items-end gap-3 max-w-sm w-[calc(100vw-2rem)] pointer-events-none">
       {alerts.map((alert) => {
-        const weekLabel =
-          alert.weeksSincePlacement === 1
-            ? "1 week ago"
-            : `${alert.weeksSincePlacement} weeks ago`;
         const busy = acknowledging === alert.buyerId;
 
         return (
@@ -85,14 +94,14 @@ export function InterestedFollowUpAlertToasts({
               </span>
               <div className="min-w-0 flex-1">
                 <p className="text-amber-300 text-xs font-semibold uppercase tracking-wide">
-                  Interested client follow-up
+                  Follow up reminder
                 </p>
                 <p className="text-slate-100 font-semibold truncate mt-0.5">{alert.companyName}</p>
                 {alert.contactName && (
                   <p className="text-slate-300 text-sm truncate">{alert.contactName}</p>
                 )}
                 <p className="text-slate-400 text-xs mt-1">
-                  Marked interested {weekLabel} — follow-up action needed
+                  Scheduled for {formatDue(alert.dueAt)} — action needed
                 </p>
               </div>
               <button
@@ -112,7 +121,7 @@ export function InterestedFollowUpAlertToasts({
                 disabled={busy}
                 className="px-3 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 text-xs disabled:opacity-50"
               >
-                Remind in 1 week
+                Dismiss
               </button>
               <button
                 type="button"

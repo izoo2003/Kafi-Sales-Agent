@@ -9,6 +9,7 @@ const COLUMNS = [
   { key: "country", header: "Country", width: 160 },
   { key: "industry", header: "Industry", width: 280 },
   { key: "contact", header: "Contact", width: 160 },
+  { key: "assignedTo", header: "Assigned To", width: 120 },
   { key: "email", header: "Email", width: 260 },
   { key: "phone", header: "Phone", width: 120 },
   { key: "website", header: "Website", width: 300 },
@@ -67,6 +68,10 @@ function rowValues(row: LeadTableRow): Record<(typeof COLUMNS)[number]["key"], s
     country: row.country ?? "",
     industry: row.industry ?? "",
     contact: row.contact_name ?? "",
+    assignedTo:
+      !row.assigned_to || row.assigned_to === "unassigned"
+        ? "Unassigned"
+        : row.assigned_to,
     email: row.contact_email ?? "",
     phone: row.contact_phone ?? "",
     website: row.website_url ?? "",

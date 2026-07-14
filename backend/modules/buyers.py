@@ -220,6 +220,8 @@ def update_buyer(db: Session, buyer_id: int, data: dict) -> Buyer | None:
             "city",
             "address",
             "remarks",
+            "assigned_to",
+            "assigned_to_user_id",
         }:
             setattr(buyer, key, value)
     db.commit()

@@ -3,6 +3,8 @@
  * All pages/hooks must call through here — never scatter fetch() elsewhere.
  */
 
+import { clearSession, getStoredToken } from "../auth/session";
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 
 /** External quotation agent (separate app). */
@@ -10,17 +12,50 @@ export const QUOTATION_AGENT_URL =
   import.meta.env.VITE_QUOTATION_AGENT_URL ??
   "https://bank-recon-demo.vercel.app/cnf";
 
+function authHeaders(extra?: HeadersInit): HeadersInit {
+  const token = getStoredToken();
+  return {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...extra,
+  };
+}
+
+function parseErrorDetail(text: string, fallback: string): string {
+  if (!text) return fallback;
+  try {
+    const parsed = JSON.parse(text) as { detail?: unknown };
+    if (typeof parsed.detail === "string") return parsed.detail;
+    if (Array.isArray(parsed.detail)) {
+      return parsed.detail
+        .map((item) => (typeof item === "object" && item && "msg" in item ? String((item as { msg: unknown }).msg) : String(item)))
+        .join("; ");
+    }
+  } catch {
+    /* plain text */
+  }
+  return text;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const headers = new Headers(authHeaders({ "Content-Type": "application/json" }));
+  if (options?.headers) {
+    const extra = new Headers(options.headers);
+    extra.forEach((value, key) => headers.set(key, value));
+  }
+
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...options?.headers,
-    },
     ...options,
+    headers,
   });
+  if (res.status === 401 && path !== "/auth/login") {
+    clearSession();
+    if (!window.location.hash.includes("login")) {
+      window.dispatchEvent(new Event("kafi:auth-expired"));
+    }
+  }
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || res.statusText);
+    throw new Error(parseErrorDetail(text, res.statusText));
   }
   if (res.status === 204) {
     return undefined as T;
@@ -81,6 +116,87 @@ export interface InboxReplyResponse {
   subject: string | null;
 }
 
+export interface AppUser {
+  id: number;
+  username: string;
+  full_name: string;
+  role: "admin" | "user" | string;
+  is_active: boolean;
+}
+
+export interface KpiCounts {
+  calls_logged: number;
+  outcomes_interested: number;
+  outcomes_not_interested: number;
+  outcomes_not_received_call: number;
+  call_remarks: number;
+  leads_imported: number;
+  table_edits: number;
+  email_templates_created: number;
+  bulk_emails_sent: number;
+  inbox_replies: number;
+  brand_assistant_sessions: number;
+}
+
+export interface KpiActivityItem {
+  id: number;
+  user_id: number;
+  username: string | null;
+  full_name: string | null;
+  activity_type: string;
+  title: string;
+  summary: string;
+  quantity: number;
+  entity_type: string | null;
+  entity_id: number | null;
+  details: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface KpiPerUserSummary {
+  user: {
+    id: number;
+    username: string;
+    full_name: string;
+    role: string;
+  } | null;
+  counts: KpiCounts;
+  activity_count: number;
+}
+
+export type KpiPeriod = "day" | "week" | "month";
+
+export interface DailyKpiReport {
+  date: string;
+  period: KpiPeriod | string;
+  date_start?: string | null;
+  date_end?: string | null;
+  timezone: string;
+  scope: "user" | "team" | string;
+  user: {
+    id: number;
+    username: string;
+    full_name: string;
+    role: string;
+  } | null;
+  counts: KpiCounts;
+  per_user: KpiPerUserSummary[];
+  activities: KpiActivityItem[];
+  activity_count: number;
+}
+
+export interface KpiSummaryResponse {
+  summary: string;
+  source: string;
+  subject: string;
+  report: DailyKpiReport;
+}
+
+export interface LoginResponse {
+  token: string;
+  user: AppUser;
+}
+
 export interface Lead {
   id: number;
   company_name: string;
@@ -123,7 +239,10 @@ export interface InterestedFollowUp {
   contact_name: string | null;
   interested_at: string;
   weeks_since_placement: number;
+  days_since_placement?: number;
   due_at: string;
+  call_outcome?: string | null;
+  table_section?: string | null;
 }
 
 export interface BuyerProfile {
@@ -554,6 +673,9 @@ export interface LeadTableRow {
   city: string | null;
   address: string | null;
   remarks: string | null;
+  assigned_to: string;
+  assigned_to_user_id: number | null;
+  follow_up_at: string | null;
   created_at: string;
   latest_score: string | null;
   score_reasoning: string | null;
@@ -588,6 +710,8 @@ export interface LeadTableRowUpdate {
   city?: string | null;
   address?: string | null;
   remarks?: string | null;
+  assigned_to?: string | null;
+  assigned_to_user_id?: number | null;
   contact_id?: number;
   contact_name?: string;
   contact_email?: string;
@@ -648,6 +772,41 @@ export type LeadTableSectionScope = Pick<LeadTableQuery, "source" | "exclude_sou
 
 export const client = {
   health: () => request<{ status: string }>("/health"),
+
+  login: (data: { username: string; password: string }) =>
+    request<LoginResponse>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  logout: () => request<void>("/auth/logout", { method: "POST" }),
+  getMe: () => request<AppUser>("/auth/me"),
+  listUsers: () => request<AppUser[]>("/auth/users"),
+  listAssignees: () => request<AppUser[]>("/auth/assignees"),
+  createUser: (data: { username: string; full_name: string; password: string }) =>
+    request<AppUser>("/auth/users", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  setUserActive: (userId: number, isActive: boolean) =>
+    request<AppUser>(`/auth/users/${userId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ is_active: isActive }),
+    }),
+  updateUser: (
+    userId: number,
+    data: {
+      username?: string;
+      full_name?: string;
+      password?: string;
+      is_active?: boolean;
+    },
+  ) =>
+    request<AppUser>(`/auth/users/${userId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  deleteUser: (userId: number) =>
+    request<void>(`/auth/users/${userId}`, { method: "DELETE" }),
 
   listLeads: () => request<Lead[]>("/leads"),
   listLeadTableFilters: () => request<LeadTableFilters>("/leads/table/filters"),
@@ -764,6 +923,7 @@ export const client = {
     const res = await fetch(`${API_BASE}/leads/discover/csv${query ? `?${query}` : ""}`, {
       method: "POST",
       body: form,
+      headers: authHeaders(),
     });
     if (!res.ok) {
       let message = res.statusText;
@@ -894,6 +1054,31 @@ export const client = {
   getBulkEmailSettings: () =>
     request<BulkEmailSettings>("/interactions/bulk-email-settings"),
 
+  getDailyKpi: (params: {
+    date: string;
+    period?: KpiPeriod | string;
+    user_id?: number | null;
+  }) => {
+    const search = new URLSearchParams();
+    search.set("date", params.date);
+    if (params.period) search.set("period", params.period);
+    if (params.user_id != null) search.set("user_id", String(params.user_id));
+    return request<DailyKpiReport>(`/kpi/daily?${search.toString()}`);
+  },
+  generateKpiSummary: (params: {
+    date: string;
+    period?: KpiPeriod | string;
+    user_id?: number | null;
+  }) =>
+    request<KpiSummaryResponse>("/kpi/summary", {
+      method: "POST",
+      body: JSON.stringify({
+        date: params.date,
+        period: params.period ?? "day",
+        user_id: params.user_id ?? null,
+      }),
+    }),
+
   getInboxStatus: () => request<InboxStatus>("/inbox/status"),
   resetInboxCutoff: () =>
     request<{ showing_since: string }>("/inbox/reset-cutoff", { method: "POST" }),
@@ -954,7 +1139,11 @@ export const client = {
   uploadEmailAttachment: async (file: File) => {
     const form = new FormData();
     form.append("file", file);
-    const res = await fetch(`${API_BASE}/email/attachments`, { method: "POST", body: form });
+    const res = await fetch(`${API_BASE}/email/attachments`, {
+      method: "POST",
+      body: form,
+      headers: authHeaders(),
+    });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error((err as { detail?: string }).detail || res.statusText);
@@ -1004,7 +1193,11 @@ export const client = {
     form.append("message", payload.message);
     form.append("history", JSON.stringify(payload.history ?? []));
     if (payload.image) form.append("image", payload.image);
-    const res = await fetch(`${API_BASE}/chatbot/chat`, { method: "POST", body: form });
+    const res = await fetch(`${API_BASE}/chatbot/chat`, {
+      method: "POST",
+      body: form,
+      headers: authHeaders(),
+    });
     if (!res.ok) {
       const text = await res.text();
       throw new Error(text || res.statusText);
@@ -1016,9 +1209,17 @@ export const client = {
   listInterestedFollowUps: () =>
     request<InterestedFollowUp[]>("/leads/interested-follow-ups"),
   acknowledgeInterestedFollowUp: (buyerId: number) =>
-    request<{ buyer_id: number; interested_follow_up_ack_at: string }>(
+    request<{ buyer_id: number; interested_follow_up_ack_at: string; follow_up_at: null }>(
       `/leads/interested-follow-ups/${buyerId}/acknowledge`,
       { method: "POST" },
+    ),
+  scheduleInterestedFollowUp: (buyerId: number, followUpAt: string | null) =>
+    request<{ buyer_id: number; follow_up_at: string | null }>(
+      `/leads/interested-follow-ups/${buyerId}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ follow_up_at: followUpAt }),
+      },
     ),
   getVoiceToken: () => request<VoiceToken>("/calls/voice-token"),
   listCallHistory: (limit = 50) =>

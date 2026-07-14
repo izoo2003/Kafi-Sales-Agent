@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { client, QUOTATION_AGENT_URL } from "./api/client";
+import { useAuth } from "./auth/AuthContext";
 import { AppSidebar, type LeadsTableSection, type NavItem, type Tab } from "./components/AppSidebar";
 import { InboxAlertToasts } from "./components/InboxAlertToasts";
 import { InterestedFollowUpAlertToasts } from "./components/InterestedFollowUpAlertToasts";
@@ -12,6 +13,9 @@ import { InboxPage } from "./pages/InboxPage";
 import { LeadsPage } from "./pages/LeadsPage";
 import { LeadsTablePage } from "./pages/LeadsTablePage";
 import { ChatbotPage } from "./pages/ChatbotPage";
+import { KpiPage } from "./pages/KpiPage";
+import { LoginPage } from "./pages/LoginPage";
+import { UsersPage } from "./pages/UsersPage";
 import { TwilioVoiceProvider, useTwilioVoiceOptional } from "./hooks/useTwilioVoice";
 import { PostCallRemarksModal } from "./components/PostCallRemarksModal";
 import { useLeads } from "./hooks/useLeads";
@@ -40,7 +44,8 @@ function CallInitBanner() {
   );
 }
 
-export default function App() {
+function DashboardApp() {
+  const { user, isAdmin, logout } = useAuth();
   const [tab, setTab] = useState<Tab>("activity");
   const [tableSection, setTableSection] = useState<LeadsTableSection>("all");
   const [tableCounts, setTableCounts] = useState({
@@ -61,6 +66,24 @@ export default function App() {
   const [inboxUnread, setInboxUnread] = useState(0);
   const seenMessageUidsRef = useRef<Set<string> | null>(null);
   const seenFollowUpIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const onExpired = () => {
+      void logout();
+    };
+    window.addEventListener("kafi:auth-expired", onExpired);
+    return () => window.removeEventListener("kafi:auth-expired", onExpired);
+  }, [logout]);
+
+  useEffect(() => {
+    if (!isAdmin && tab === "leads") {
+      setTab("activity");
+      setSelectedLeadId(null);
+    }
+    if (!isAdmin && tab === "users") {
+      setTab("activity");
+    }
+  }, [isAdmin, tab]);
 
   const loadEmailTemplateCount = useCallback(async () => {
     try {
@@ -173,7 +196,12 @@ export default function App() {
             buyerId: reminder.buyer_id,
             companyName: reminder.company_name,
             contactName: reminder.contact_name,
-            weeksSincePlacement: reminder.weeks_since_placement,
+            dueAt: reminder.due_at,
+            daysSincePlacement: reminder.days_since_placement ?? 0,
+            tableSection:
+              reminder.table_section === "not_received_call_clients"
+                ? "not_received_call_clients"
+                : "interested_clients",
           });
         }
       })
@@ -259,9 +287,12 @@ export default function App() {
     setLeadsTableRefreshToken((token) => token + 1);
   }
 
-  function handleViewInterestedClient(buyerId: number) {
+  function handleViewInterestedClient(
+    buyerId: number,
+    section: LeadsTableSection = "interested_clients",
+  ) {
     setTab("table");
-    setTableSection("interested_clients");
+    setTableSection(section);
     setSelectedLeadId(buyerId);
   }
 
@@ -271,12 +302,15 @@ export default function App() {
     for (const reminder of reminders) {
       seenFollowUpIdsRef.current.add(reminder.id);
     }
+    setLeadsTableRefreshToken((token) => token + 1);
   }
 
   const navItems: NavItem[] = [
     { id: "activity", label: "Email Activity", count: emailActivityUnread, alert: emailActivityUnread > 0 },
     { id: "email-templates", label: "Email templates", count: emailTemplateCount },
-    { id: "leads", label: "Discover Leads", count: leads.length },
+    ...(isAdmin
+      ? [{ id: "leads" as const, label: "Discover Leads", count: leads.length }]
+      : []),
     {
       id: "table",
       label: "Leads table",
@@ -285,7 +319,7 @@ export default function App() {
         { id: "old_clients", label: "Old clients", count: tableCounts.old_clients },
         {
           id: "interested_clients",
-          label: "Interested clients",
+          label: "Follow up clients",
           count: tableCounts.interested_clients,
         },
         {
@@ -314,6 +348,8 @@ export default function App() {
       count: consentSummary?.unknown ?? 0,
     },
     { id: "chatbot", label: "Brand assistant", count: 0 },
+    { id: "kpi", label: "KPI Generation", count: 0 },
+    ...(isAdmin ? [{ id: "users" as const, label: "Users", count: 0 }] : []),
   ];
 
   return (
@@ -337,6 +373,9 @@ export default function App() {
           onSelectTab={handleSelectTab}
           onSelectTableSection={handleSelectTableSection}
           onRefresh={refreshAll}
+          userLabel={user?.full_name || user?.username}
+          userRole={user?.role}
+          onLogout={() => void logout()}
         />
 
         <div className="flex-1 min-w-0 overflow-x-hidden">
@@ -358,15 +397,16 @@ export default function App() {
                 onCountChange={setEmailTemplateCount}
               />
             )}
-            {tab === "leads" && selectedLeadId !== null && (
+            {tab === "leads" && isAdmin && selectedLeadId !== null && (
               <BuyerProfile
                 leadId={selectedLeadId}
                 onBack={handleBackFromProfile}
                 onError={setError}
                 onCallFollowUpSaved={handleCallFollowUpSaved}
+                canDiscover
               />
             )}
-            {tab === "leads" && selectedLeadId === null && (
+            {tab === "leads" && isAdmin && selectedLeadId === null && (
               <LeadsPage onError={setError} onSelectLead={handleSelectLead} />
             )}
             {tab === "table" && selectedLeadId !== null && (
@@ -375,6 +415,7 @@ export default function App() {
                 onBack={handleBackFromProfile}
                 onError={setError}
                 onCallFollowUpSaved={handleCallFollowUpSaved}
+                canDiscover={isAdmin}
               />
             )}
             {tab === "table" && selectedLeadId === null && (
@@ -395,6 +436,7 @@ export default function App() {
                 onBack={handleBackFromProfile}
                 onError={setError}
                 onCallFollowUpSaved={handleCallFollowUpSaved}
+                canDiscover={isAdmin}
               />
             )}
             {tab === "calls" && selectedLeadId === null && (
@@ -410,15 +452,36 @@ export default function App() {
                 onBack={handleBackFromProfile}
                 onError={setError}
                 onCallFollowUpSaved={handleCallFollowUpSaved}
+                canDiscover={isAdmin}
               />
             )}
             {tab === "compliance" && selectedLeadId === null && (
               <ConsentPage onError={setError} onSelectLead={handleSelectLead} />
             )}
             {tab === "chatbot" && <ChatbotPage onError={setError} />}
+            {tab === "kpi" && <KpiPage onError={setError} />}
+            {tab === "users" && isAdmin && <UsersPage onError={setError} />}
           </main>
         </div>
       </div>
     </TwilioVoiceProvider>
   );
+}
+
+export default function App() {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-400 text-sm">
+        Checking session…
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginPage />;
+  }
+
+  return <DashboardApp />;
 }

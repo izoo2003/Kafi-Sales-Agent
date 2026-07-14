@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api import (
+    auth,
     calls,
     chatbot,
     compliance,
@@ -13,10 +14,12 @@ from api import (
     email_templates,
     inbox,
     interactions,
+    kpi,
     leads,
     scheduler,
 )
 from config import settings
+from modules.auth import ensure_default_admin
 from modules.lead_discovery import OLD_CLIENTS_IMPORT_PARSER
 from db.migrate import run_migrations
 from db.session import SessionLocal
@@ -74,6 +77,7 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         seed_sample_data(db)
+        ensure_default_admin(db)
     finally:
         db.close()
 
@@ -100,6 +104,48 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+_PUBLIC_API_PATHS = {"/api/health", "/api/auth/login"}
+_PUBLIC_API_PREFIXES = ("/api/webhooks/",)
+
+
+@app.middleware("http")
+async def require_api_auth(request, call_next):
+    """Require a valid bearer session for dashboard API routes."""
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    path = request.url.path
+    if not path.startswith("/api/"):
+        return await call_next(request)
+    if path in _PUBLIC_API_PATHS or any(path.startswith(prefix) for prefix in _PUBLIC_API_PREFIXES):
+        return await call_next(request)
+
+    auth_header = request.headers.get("authorization") or ""
+    scheme, _, token = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+
+    db = SessionLocal()
+    try:
+        from modules import auth as auth_module
+
+        user = auth_module.get_user_by_token(db, token.strip())
+        if not user:
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+        request.state.user_id = user.id
+        request.state.user_role = user.role.value if hasattr(user.role, "value") else str(user.role)
+    finally:
+        db.close()
+
+    return await call_next(request)
+
+
+app.include_router(auth.router, prefix="/api")
 app.include_router(leads.router, prefix="/api")
 app.include_router(compliance.router, prefix="/api")
 app.include_router(interactions.router, prefix="/api")
@@ -111,6 +157,7 @@ app.include_router(email_attachments.router, prefix="/api")
 app.include_router(inbox.router, prefix="/api")
 app.include_router(calls.webhooks_router, prefix="/api")
 app.include_router(chatbot.router, prefix="/api")
+app.include_router(kpi.router, prefix="/api")
 
 
 OLD_CLIENTS_IMPORT_PARSER = "old_clients_v2"

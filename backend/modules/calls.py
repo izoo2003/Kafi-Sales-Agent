@@ -101,9 +101,7 @@ def _content_without_notes(content: str | None) -> str:
     return base
 
 
-def buyer_ids_with_latest_call_outcome(db: Session, outcome: str) -> set[int]:
-    """Buyers whose most recent phone call has the given outcome label."""
-    wanted = outcome.strip().lower()
+def _latest_call_outcomes_by_buyer(db: Session) -> dict[int, str | None]:
     phone_rows = (
         db.query(Interaction, Contact.buyer_id)
         .join(Contact, Interaction.contact_id == Contact.id)
@@ -117,10 +115,25 @@ def buyer_ids_with_latest_call_outcome(db: Session, outcome: str) -> set[int]:
         if bid in latest_by_buyer:
             continue
         latest_by_buyer[bid] = parse_call_fields(interaction.content).get("call_outcome")
+    return latest_by_buyer
+
+
+def buyer_ids_with_latest_call_outcome(db: Session, outcome: str) -> set[int]:
+    """Buyers whose most recent phone call has the given outcome label."""
+    wanted = outcome.strip().lower()
     return {
         bid
-        for bid, value in latest_by_buyer.items()
+        for bid, value in _latest_call_outcomes_by_buyer(db).items()
         if value and str(value).lower() == wanted
+    }
+
+
+def buyer_ids_with_placed_call_outcome(db: Session) -> set[int]:
+    """Buyers whose latest call placed them in a follow-up outcome list."""
+    return {
+        bid
+        for bid, value in _latest_call_outcomes_by_buyer(db).items()
+        if value and str(value).lower() in _VALID_CALL_OUTCOMES
     }
 
 
@@ -493,6 +506,7 @@ def update_call_followup(
     interaction_id: int,
     notes: str | None = None,
     call_outcome: str | None = None,
+    app_user_id: int | None = None,
 ) -> dict:
     interaction = db.get(Interaction, interaction_id)
     if not interaction or interaction.channel != Channel.phone:
@@ -504,6 +518,9 @@ def update_call_followup(
     if call_outcome is not None:
         trimmed = call_outcome.strip()
         new_outcome = None if not trimmed else _normalize_outcome(trimmed)
+
+    notes_changed = notes is not None and (new_notes or "") != (existing_notes or "")
+    outcome_changed = call_outcome is not None and new_outcome != existing_outcome
 
     interaction.content = _build_content(
         base,
@@ -522,6 +539,48 @@ def update_call_followup(
 
     db.commit()
     db.refresh(interaction)
+
+    if app_user_id:
+        from modules import activity as activity_module
+
+        contact = interaction.contact
+        buyer = contact.buyer if contact else None
+        company = buyer.company_name if buyer else "Unknown"
+        contact_name = contact.full_name if contact else "contact"
+
+        if outcome_changed and new_outcome:
+            activity_module.log_activity(
+                db,
+                user_id=app_user_id,
+                activity_type=activity_module.CALL_OUTCOME,
+                title=activity_module.outcome_label(new_outcome),
+                summary=f"Marked {company} ({contact_name}) as {activity_module.outcome_label(new_outcome).lower()}",
+                entity_type="interaction",
+                entity_id=interaction.id,
+                details={
+                    "outcome": new_outcome,
+                    "buyer_id": buyer.id if buyer else None,
+                    "company_name": company,
+                },
+            )
+        if notes_changed and (new_notes or "").strip():
+            preview = (new_notes or "").strip()
+            if len(preview) > 160:
+                preview = preview[:157] + "…"
+            activity_module.log_activity(
+                db,
+                user_id=app_user_id,
+                activity_type=activity_module.CALL_REMARKS,
+                title="Call remarks added",
+                summary=f"Remarks on call with {company}: {preview}",
+                entity_type="interaction",
+                entity_id=interaction.id,
+                details={
+                    "buyer_id": buyer.id if buyer else None,
+                    "company_name": company,
+                },
+            )
+
     return call_interaction_to_dict(db, interaction)
 
 

@@ -86,6 +86,11 @@ class ProducerTier(str, enum.Enum):
     weak = "weak"
 
 
+class AppUserRole(str, enum.Enum):
+    admin = "admin"
+    user = "user"
+
+
 class EventType(str, enum.Enum):
     birthday = "birthday"
     national_day = "national_day"
@@ -118,6 +123,12 @@ class Buyer(Base):
     city: Mapped[Optional[str]] = mapped_column(String(255))
     address: Mapped[Optional[str]] = mapped_column(Text)
     remarks: Mapped[Optional[str]] = mapped_column(Text)
+    assigned_to: Mapped[str] = mapped_column(String(50), nullable=False, server_default="unassigned")
+    assigned_to_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     market_role: Mapped[MarketRole] = mapped_column(
         Enum(MarketRole), default=MarketRole.unknown, nullable=False
     )
@@ -128,6 +139,7 @@ class Buyer(Base):
     producer_tier_reasoning: Mapped[Optional[str]] = mapped_column(Text)
     interested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     interested_follow_up_ack_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    follow_up_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -351,6 +363,44 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class AppUser(Base):
+    """Dashboard login accounts (admin vs sales user)."""
+
+    __tablename__ = "app_users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[AppUserRole] = mapped_column(
+        Enum(AppUserRole, name="app_user_role", values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
+        default=AppUserRole.user,
+    )
+    password_hash: Mapped[str] = mapped_column(String(512), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    sessions: Mapped[list["AppUserSession"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+
+class AppUserSession(Base):
+    """Opaque bearer tokens for dashboard sessions."""
+
+    __tablename__ = "app_user_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False)
+    token: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    user: Mapped["AppUser"] = relationship(back_populates="sessions")
+
+
 class EmailActivityEvent(Base):
     """Real-time outbound email activity notifications (sent, failed, bulk, etc.)."""
 
@@ -366,6 +416,27 @@ class EmailActivityEvent(Base):
     interaction_id: Mapped[Optional[int]] = mapped_column(ForeignKey("interactions.id"), nullable=True)
     details: Mapped[Optional[dict]] = mapped_column(JSONB)
     read_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class UserActivityEvent(Base):
+    """Per-user work events for daily KPI Generation reports (from go-live onward)."""
+
+    __tablename__ = "user_activity_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    activity_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    entity_type: Mapped[Optional[str]] = mapped_column(String(100))
+    entity_id: Mapped[Optional[int]] = mapped_column(Integer)
+    details: Mapped[Optional[dict]] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )

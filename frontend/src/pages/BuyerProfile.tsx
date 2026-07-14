@@ -17,13 +17,21 @@ interface BuyerProfileProps {
   onBack: () => void;
   onError: (message: string) => void;
   onCallFollowUpSaved?: (outcome: string | null | undefined) => void;
+  /** Admin-only: show Find similar / Discover Leads panel. */
+  canDiscover?: boolean;
 }
 
 function formatCategory(category: string): string {
   return category.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-export function BuyerProfile({ leadId, onBack, onError, onCallFollowUpSaved }: BuyerProfileProps) {
+export function BuyerProfile({
+  leadId,
+  onBack,
+  onError,
+  onCallFollowUpSaved,
+  canDiscover = false,
+}: BuyerProfileProps) {
   const [lead, setLead] = useState<Lead | null>(null);
   const [profile, setProfile] = useState<BuyerProfileData | null>(null);
   const [score, setScore] = useState<LeadScore | null>(null);
@@ -143,13 +151,15 @@ export function BuyerProfile({ leadId, onBack, onError, onCallFollowUpSaved }: B
           )}
         </div>
         <div className="flex gap-2 shrink-0 flex-wrap justify-end">
-          <button
-            type="button"
-            onClick={() => setShowDiscover((v) => !v)}
-            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm"
-          >
-            {showDiscover ? "Hide discovery" : "Find similar"}
-          </button>
+          {canDiscover && (
+            <button
+              type="button"
+              onClick={() => setShowDiscover((v) => !v)}
+              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm"
+            >
+              {showDiscover ? "Hide discovery" : "Find similar"}
+            </button>
+          )}
           <button
             type="button"
             onClick={handleResearch}
@@ -169,7 +179,7 @@ export function BuyerProfile({ leadId, onBack, onError, onCallFollowUpSaved }: B
         </div>
       </div>
 
-      {showDiscover && lead && (
+      {canDiscover && showDiscover && lead && (
         <DiscoverLeadsPanel
           seedLead={lead}
           seedCategories={profile?.matched_categories ?? []}

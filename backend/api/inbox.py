@@ -1,7 +1,9 @@
 """Inbox API — read the Outlook mailbox and send replies from the dashboard."""
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
 
+from api.deps import get_current_user, get_db
 from api.schemas import (
     InboxMessageDetail,
     InboxMessageSummary,
@@ -10,6 +12,7 @@ from api.schemas import (
     InboxStatus,
     InboxUnreadCount,
 )
+from db.models import AppUser
 from modules import inbox as inbox_module
 
 router = APIRouter(prefix="/inbox", tags=["inbox"])
@@ -78,7 +81,14 @@ def mark_inbox_message_read(uid: str):
 
 
 @router.post("/messages/{uid}/reply", response_model=InboxReplyResponse)
-def reply_inbox_message(uid: str, payload: InboxReplyRequest):
+def reply_inbox_message(
+    uid: str,
+    payload: InboxReplyRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    from modules import activity as activity_module
+
     _guard_configured()
     try:
         result = inbox_module.reply(
@@ -92,4 +102,17 @@ def reply_inbox_message(uid: str, payload: InboxReplyRequest):
         raise HTTPException(502, f"Could not send reply: {exc}") from exc
     if result.get("status") != "sent":
         raise HTTPException(502, result.get("message", "Reply failed"))
+
+    subject = result.get("subject") or payload.subject or "(no subject)"
+    to_addr = result.get("to") or payload.to or ""
+    activity_module.log_activity(
+        db,
+        user_id=user.id,
+        activity_type=activity_module.INBOX_REPLIED,
+        title="Inbox reply sent",
+        summary=f"Replied to “{subject}”" + (f" → {to_addr}" if to_addr else ""),
+        entity_type="inbox_message",
+        entity_id=None,
+        details={"uid": uid, "subject": subject, "to": to_addr},
+    )
     return result

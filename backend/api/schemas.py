@@ -393,6 +393,9 @@ class LeadTableRowRead(BaseModel):
     city: Optional[str] = None
     address: Optional[str] = None
     remarks: Optional[str] = None
+    assigned_to: str = "unassigned"
+    assigned_to_user_id: Optional[int] = None
+    follow_up_at: Optional[datetime] = None
     created_at: datetime
     latest_score: Optional[str] = None
     score_reasoning: Optional[str] = None
@@ -427,6 +430,8 @@ class LeadTableRowUpdate(BaseModel):
     city: Optional[str] = None
     address: Optional[str] = None
     remarks: Optional[str] = None
+    assigned_to: Optional[str] = None
+    assigned_to_user_id: Optional[int] = None
     contact_id: Optional[int] = None
     contact_name: Optional[str] = None
     contact_email: Optional[str] = None
@@ -731,13 +736,26 @@ class InterestedFollowUpRead(BaseModel):
     company_name: str
     contact_name: Optional[str] = None
     interested_at: datetime
-    weeks_since_placement: int
+    weeks_since_placement: int = 0
+    days_since_placement: int = 0
     due_at: datetime
+    call_outcome: Optional[str] = None
+    table_section: Optional[str] = None
 
 
 class InterestedFollowUpAckRead(BaseModel):
     buyer_id: int
     interested_follow_up_ack_at: datetime
+    follow_up_at: Optional[datetime] = None
+
+
+class FollowUpAtUpdate(BaseModel):
+    follow_up_at: Optional[datetime] = None
+
+
+class FollowUpAtRead(BaseModel):
+    buyer_id: int
+    follow_up_at: Optional[datetime] = None
 
 
 # ── Inbox (Outlook) ───────────────────────────────────────────────────────────
@@ -801,3 +819,75 @@ class InboxReplyResponse(BaseModel):
     message: str
     to: Optional[str] = None
     subject: Optional[str] = None
+
+
+# ── Daily KPI Generation ──────────────────────────────────────────────────────
+
+
+class KpiUserBrief(BaseModel):
+    id: int
+    username: str
+    full_name: str
+    role: str
+
+
+class KpiCounts(BaseModel):
+    calls_logged: int = 0
+    outcomes_interested: int = 0
+    outcomes_not_interested: int = 0
+    outcomes_not_received_call: int = 0
+    call_remarks: int = 0
+    leads_imported: int = 0
+    table_edits: int = 0
+    email_templates_created: int = 0
+    bulk_emails_sent: int = 0
+    inbox_replies: int = 0
+    brand_assistant_sessions: int = 0
+
+
+class KpiActivityItem(BaseModel):
+    id: int
+    user_id: int
+    username: Optional[str] = None
+    full_name: Optional[str] = None
+    activity_type: str
+    title: str
+    summary: str
+    quantity: int = 1
+    entity_type: Optional[str] = None
+    entity_id: Optional[int] = None
+    details: Optional[dict] = None
+    created_at: datetime
+
+
+class KpiPerUserSummary(BaseModel):
+    user: Optional[KpiUserBrief] = None
+    counts: KpiCounts
+    activity_count: int = 0
+
+
+class DailyKpiReportRead(BaseModel):
+    date: str
+    period: str = "day"
+    date_start: Optional[str] = None
+    date_end: Optional[str] = None
+    timezone: str
+    scope: str
+    user: Optional[KpiUserBrief] = None
+    counts: KpiCounts
+    per_user: list[KpiPerUserSummary] = Field(default_factory=list)
+    activities: list[KpiActivityItem] = Field(default_factory=list)
+    activity_count: int = 0
+
+
+class KpiSummaryRequest(BaseModel):
+    date: date
+    period: str = "day"
+    user_id: Optional[int] = None
+
+
+class KpiSummaryResponse(BaseModel):
+    summary: str
+    source: str
+    subject: str
+    report: DailyKpiReportRead

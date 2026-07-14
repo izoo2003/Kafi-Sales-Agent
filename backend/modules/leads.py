@@ -1,7 +1,7 @@
 from sqlalchemy import func as sa_func
 from sqlalchemy.orm import Session
 
-from db.models import Buyer, Contact, LeadScore
+from db.models import AppUser, AppUserRole, Buyer, Contact, LeadScore
 from modules import buyers as buyers_module
 from modules.countries import country_matches, list_countries
 from modules.orchestrator import Orchestrator
@@ -16,11 +16,59 @@ _SORT_FIELDS = {
     "country",
     "industry",
     "source",
+    "assigned_to",
     "latest_score",
     "market_role",
     "created_at",
     "scored_at",
 }
+
+
+def _assignee_label(user: AppUser | None) -> str:
+    if not user:
+        return "unassigned"
+    return (user.full_name or user.username or "unassigned").strip() or "unassigned"
+
+
+def resolve_assignee_user(db: Session, user_id: int | None) -> AppUser | None:
+    if user_id is None:
+        return None
+    user = db.get(AppUser, user_id)
+    if not user or not user.is_active:
+        raise ValueError("Assignee not found or inactive")
+    role = user.role.value if isinstance(user.role, AppUserRole) else str(user.role)
+    if role != AppUserRole.user.value:
+        raise ValueError("Leads can only be assigned to sales users")
+    return user
+
+
+def apply_buyer_assignee(db: Session, buyer: Buyer, user_id: int | None) -> None:
+    """Set assigned_to_user_id and sync display label. user_id None = unassigned."""
+    if user_id is None:
+        buyer.assigned_to_user_id = None
+        buyer.assigned_to = "unassigned"
+        return
+    user = resolve_assignee_user(db, user_id)
+    assert user is not None
+    buyer.assigned_to_user_id = user.id
+    buyer.assigned_to = _assignee_label(user)
+
+
+def user_can_access_buyer(db: Session, *, user: AppUser, buyer_id: int) -> bool:
+    role = user.role.value if isinstance(user.role, AppUserRole) else str(user.role)
+    if role == AppUserRole.admin.value:
+        return True
+    buyer = buyers_module.get_buyer(db, buyer_id)
+    if not buyer:
+        return False
+    return buyer.assigned_to_user_id == user.id
+
+
+def clear_assignments_for_user(db: Session, user_id: int) -> None:
+    buyers = db.query(Buyer).filter(Buyer.assigned_to_user_id == user_id).all()
+    for buyer in buyers:
+        buyer.assigned_to_user_id = None
+        buyer.assigned_to = "unassigned"
 
 
 def research_buyer(db: Session, buyer_id: int, *, force_refresh: bool = False) -> BuyerProfile:
@@ -198,8 +246,12 @@ def _filtered_lead_table_rows(
     q: str | None = None,
     sort_by: str = "created_at",
     sort_dir: str = "desc",
+    assigned_to_user_id: int | None = None,
 ) -> tuple[list[dict[str, object]], int]:
     buyer_query = db.query(Buyer)
+
+    if assigned_to_user_id is not None:
+        buyer_query = buyer_query.filter(Buyer.assigned_to_user_id == assigned_to_user_id)
 
     if source:
         buyer_query = buyer_query.filter(
@@ -224,6 +276,12 @@ def _filtered_lead_table_rows(
         if not matched_buyer_ids:
             return [], 0
         buyer_query = buyer_query.filter(Buyer.id.in_(matched_buyer_ids))
+    else:
+        from modules.calls import buyer_ids_with_placed_call_outcome
+
+        placed_buyer_ids = buyer_ids_with_placed_call_outcome(db)
+        if placed_buyer_ids:
+            buyer_query = buyer_query.filter(~Buyer.id.in_(placed_buyer_ids))
 
     buyers = buyer_query.order_by(Buyer.created_at.desc()).all()
     buyer_ids = [buyer.id for buyer in buyers]
@@ -278,6 +336,9 @@ def _filtered_lead_table_rows(
                 "city": buyer.city,
                 "address": buyer.address,
                 "remarks": buyer.remarks,
+                "assigned_to": buyer.assigned_to or "unassigned",
+                "assigned_to_user_id": buyer.assigned_to_user_id,
+                "follow_up_at": buyer.follow_up_at,
                 "created_at": buyer.created_at,
                 "latest_score": latest_score,
                 "score_reasoning": latest.reasoning if latest else None,
@@ -321,6 +382,7 @@ def _filtered_lead_table_rows(
             or query in (row.get("product_interest") or "").lower()
             or query in (row.get("city") or "").lower()
             or query in (row.get("remarks") or "").lower()
+            or query in (row.get("assigned_to") or "").lower()
             or query in (row.get("contact_phone") or "").lower()
             or query in (row.get("contact_primary_phone") or "").lower()
             or query in (row.get("contact_secondary_email") or "").lower()
@@ -371,6 +433,7 @@ def list_leads_table_ids(
     q: str | None = None,
     sort_by: str = "created_at",
     sort_dir: str = "desc",
+    assigned_to_user_id: int | None = None,
 ) -> dict[str, object]:
     rows, _section_total = _filtered_lead_table_rows(
         db,
@@ -384,6 +447,7 @@ def list_leads_table_ids(
         q=q,
         sort_by=sort_by,
         sort_dir=sort_dir,
+        assigned_to_user_id=assigned_to_user_id,
     )
     return {
         "filtered_count": len(rows),
@@ -406,6 +470,7 @@ def list_leads_table(
     sort_dir: str = "desc",
     page: int = 1,
     page_size: int = 20,
+    assigned_to_user_id: int | None = None,
 ) -> dict[str, object]:
     page = max(1, page)
     page_size = min(max(1, page_size), 100)
@@ -422,6 +487,7 @@ def list_leads_table(
         q=q,
         sort_by=sort_by,
         sort_dir=sort_dir,
+        assigned_to_user_id=assigned_to_user_id,
     )
 
     filtered_count = len(rows)
@@ -466,6 +532,9 @@ def get_lead_table_row(db: Session, buyer_id: int) -> dict[str, object] | None:
         "city": buyer.city,
         "address": buyer.address,
         "remarks": buyer.remarks,
+        "assigned_to": buyer.assigned_to or "unassigned",
+        "assigned_to_user_id": buyer.assigned_to_user_id,
+        "follow_up_at": buyer.follow_up_at,
         "created_at": buyer.created_at,
         "latest_score": latest.score.value if latest else None,
         "score_reasoning": latest.reasoning if latest else None,
@@ -493,6 +562,16 @@ def get_lead_table_row(db: Session, buyer_id: int) -> dict[str, object] | None:
 
 def update_lead_table_row(db: Session, buyer_id: int, data: dict) -> dict[str, object] | None:
     from modules.audit import log_action
+
+    buyer = buyers_module.get_buyer(db, buyer_id)
+    if not buyer:
+        return None
+
+    if "assigned_to_user_id" in data:
+        apply_buyer_assignee(db, buyer, data.get("assigned_to_user_id"))
+        db.commit()
+        db.refresh(buyer)
+        data = {k: v for k, v in data.items() if k not in {"assigned_to_user_id", "assigned_to"}}
 
     buyer_fields = {
         key: data[key]
@@ -543,16 +622,14 @@ def update_lead_table_row(db: Session, buyer_id: int, data: dict) -> dict[str, o
             secondary_email=data.get("contact_secondary_email"),
         )
 
-    row = get_lead_table_row(db, buyer_id)
-    if row:
-        log_action(
-            db,
-            entity_type="buyer",
-            entity_id=buyer_id,
-            action="table_row_updated",
-            details={key: data.get(key) for key in data if data.get(key) is not None},
-        )
-    return row
+    log_action(
+        db,
+        entity_type="buyer",
+        entity_id=buyer_id,
+        action="table_row_updated",
+        details={k: data[k] for k in data if k != "assigned_to"},
+    )
+    return get_lead_table_row(db, buyer_id)
 
 
 def _filter_buyers_by_section(

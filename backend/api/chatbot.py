@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from api.deps import get_current_user, get_db
+from db.models import AppUser
 
 router = APIRouter(prefix="/chatbot", tags=["chatbot"])
 
@@ -53,6 +57,8 @@ async def chat(
     message: str = Form(...),
     history: str = Form(default="[]"),
     image: Optional[UploadFile] = File(default=None),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
 ) -> Any:
     """Send a text message with an optional product image.
 
@@ -61,6 +67,8 @@ async def chat(
     - **image**: optional uploaded product image file.
     """
     import json
+
+    from modules import activity as activity_module
 
     # Parse history
     try:
@@ -90,6 +98,10 @@ async def chat(
     if not message.strip():
         raise HTTPException(400, "Message cannot be empty.")
 
+    is_new_session = not any(
+        isinstance(m, dict) and m.get("role") == "user" for m in raw_history
+    )
+
     try:
         from modules.product_chatbot import chat as chatbot_chat
 
@@ -99,10 +111,26 @@ async def chat(
             mime_type=mime_type,
             history=raw_history,
         )
-        return ChatResponse(
-            reply=result["reply"],
-            provider=result["provider"],
-            model=result.get("model", ""),
-        )
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
+
+    if is_new_session:
+        preview = message.strip()
+        if len(preview) > 120:
+            preview = preview[:117] + "…"
+        activity_module.log_activity(
+            db,
+            user_id=user.id,
+            activity_type=activity_module.BRAND_ASSISTANT_SESSION,
+            title="Brand assistant session",
+            summary=f"Started a brand assistant chat: {preview}",
+            entity_type="chatbot",
+            entity_id=None,
+            details={"provider": result.get("provider"), "has_image": bool(image_bytes)},
+        )
+
+    return ChatResponse(
+        reply=result["reply"],
+        provider=result["provider"],
+        model=result.get("model", ""),
+    )

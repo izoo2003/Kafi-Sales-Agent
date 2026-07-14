@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pathlib import Path
 from sqlalchemy.orm import Session
 
-from api.deps import get_db
+from api.deps import get_current_user, get_db, require_admin
+from db.models import AppUser, AppUserRole, LeadScoreLabel
 from api.schemas import (
     BuyerCreate,
     BuyerProfileRead,
@@ -29,8 +30,9 @@ from api.schemas import (
     QuotationEligibleLeadRead,
     InterestedFollowUpAckRead,
     InterestedFollowUpRead,
+    FollowUpAtUpdate,
+    FollowUpAtRead,
 )
-from db.models import LeadScoreLabel
 from modules.comms_generator import get_comms
 from modules import buyers as buyers_module
 from modules import leads as leads_module
@@ -48,6 +50,22 @@ from modules.lead_discovery import (
 )
 from modules.file_to_csv import SUPPORTED_UPLOAD_EXTENSIONS, convert_upload_to_csv
 from modules.discovery_regions import list_discovery_regions
+
+
+def _is_admin(user: AppUser) -> bool:
+    role = user.role.value if isinstance(user.role, AppUserRole) else str(user.role)
+    return role == AppUserRole.admin.value
+
+
+def _assignee_scope(user: AppUser) -> int | None:
+    """Non-admins only see leads assigned to them; admins see all."""
+    return None if _is_admin(user) else user.id
+
+
+def _require_buyer_access(db, user: AppUser, buyer_id: int) -> None:
+    if not leads_module.user_can_access_buyer(db, user=user, buyer_id=buyer_id):
+        raise HTTPException(403, "You do not have access to this lead")
+
 
 router = APIRouter(prefix="/leads", tags=["leads"])
 
@@ -196,21 +214,52 @@ def list_quotation_eligible_leads(db: Session = Depends(get_db)):
 
 
 @router.get("/interested-follow-ups", response_model=list[InterestedFollowUpRead])
-def list_interested_follow_ups(db: Session = Depends(get_db)):
+def list_interested_follow_ups(
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
     from modules.interested_follow_ups import list_due_follow_ups
 
-    return list_due_follow_ups(db)
+    return list_due_follow_ups(db, assigned_to_user_id=_assignee_scope(user))
 
 
 @router.post(
     "/interested-follow-ups/{buyer_id}/acknowledge",
     response_model=InterestedFollowUpAckRead,
 )
-def acknowledge_interested_follow_up(buyer_id: int, db: Session = Depends(get_db)):
+def acknowledge_interested_follow_up(
+    buyer_id: int,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
     from modules.interested_follow_ups import acknowledge_follow_up
 
+    _require_buyer_access(db, user, buyer_id)
     try:
         return acknowledge_follow_up(db, buyer_id=buyer_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.patch(
+    "/interested-follow-ups/{buyer_id}",
+    response_model=FollowUpAtRead,
+)
+def schedule_interested_follow_up(
+    buyer_id: int,
+    payload: FollowUpAtUpdate,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    from modules.interested_follow_ups import set_follow_up_at
+
+    _require_buyer_access(db, user, buyer_id)
+    try:
+        return set_follow_up_at(
+            db,
+            buyer_id=buyer_id,
+            follow_up_at=payload.follow_up_at,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -243,6 +292,7 @@ def list_leads_table(
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
 ):
     result = leads_module.list_leads_table(
         db,
@@ -258,6 +308,7 @@ def list_leads_table(
         sort_dir=sort_dir,
         page=page,
         page_size=page_size,
+        assigned_to_user_id=_assignee_scope(user),
     )
     return LeadTableResponse(**result)
 
@@ -275,6 +326,7 @@ def list_leads_table_ids(
     sort_by: str = "created_at",
     sort_dir: str = "desc",
     db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
 ):
     result = leads_module.list_leads_table_ids(
         db,
@@ -288,6 +340,7 @@ def list_leads_table_ids(
         q=q,
         sort_by=sort_by,
         sort_dir=sort_dir,
+        assigned_to_user_id=_assignee_scope(user),
     )
     return LeadTableIdsResponse(**result)
 
@@ -297,19 +350,49 @@ def update_lead_table_row(
     lead_id: int,
     payload: LeadTableRowUpdate,
     db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
 ):
-    row = leads_module.update_lead_table_row(
-        db,
-        lead_id,
-        payload.model_dump(exclude_unset=True),
-    )
+    from modules import activity as activity_module
+
+    _require_buyer_access(db, user, lead_id)
+    data = payload.model_dump(exclude_unset=True)
+    if "assigned_to_user_id" in data or "assigned_to" in data:
+        if not _is_admin(user):
+            # Non-admins may submit the current assignee with row edits — ignore, do not error.
+            data.pop("assigned_to_user_id", None)
+            data.pop("assigned_to", None)
+        else:
+            data.pop("assigned_to", None)
+    try:
+        row = leads_module.update_lead_table_row(db, lead_id, data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if not row:
         raise HTTPException(404, "Lead not found")
+
+    if data:
+        company = row.get("company_name") or f"Lead #{lead_id}"
+        fields = ", ".join(sorted(data.keys()))
+        activity_module.log_activity(
+            db,
+            user_id=user.id,
+            activity_type=activity_module.TABLE_ROW_EDITED,
+            title="Lead table edited",
+            summary=f"Updated {company}: {fields}",
+            entity_type="buyer",
+            entity_id=lead_id,
+            details={"fields": sorted(data.keys()), "company_name": company},
+        )
     return LeadTableRowRead(**row)
 
 
 @router.delete("/table/{lead_id}", status_code=204)
-def delete_lead_table_row(lead_id: int, db: Session = Depends(get_db)):
+def delete_lead_table_row(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(require_admin),
+):
+    del user
     if not leads_module.delete_lead_table_row(db, lead_id):
         raise HTTPException(404, "Lead not found")
 
@@ -343,13 +426,17 @@ def cleanup_sparse_csv_leads(
 
 
 @router.get("/discover/regions", response_model=DiscoveryRegionsResponse)
-def get_discovery_regions():
+def get_discovery_regions(_: AppUser = Depends(require_admin)):
     data = list_discovery_regions()
     return DiscoveryRegionsResponse(**data)
 
 
 @router.post("/discover", response_model=DiscoverLeadsResponse)
-def discover_similar_leads(payload: DiscoverLeadsRequest, db: Session = Depends(get_db)):
+def discover_similar_leads(
+    payload: DiscoverLeadsRequest,
+    db: Session = Depends(get_db),
+    _: AppUser = Depends(require_admin),
+):
     result = discover_leads(
         db,
         seed_lead_id=payload.seed_lead_id,
@@ -375,6 +462,7 @@ def discover_similar_leads(payload: DiscoverLeadsRequest, db: Session = Depends(
 def enrich_discovered_lead(
     payload: DiscoveryCandidateRead,
     db: Session = Depends(get_db),
+    _: AppUser = Depends(require_admin),
 ):
     candidate = discovery_candidate_from_dict(payload.model_dump())
     enrich_discovery_candidate(candidate)
@@ -434,7 +522,10 @@ async def discover_leads_from_csv(
 def import_discovered_leads(
     payload: DiscoverImportRequest,
     db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
 ):
+    from modules import activity as activity_module
+
     result = import_candidates(
         db,
         [c.model_dump() for c in payload.candidates],
@@ -442,6 +533,23 @@ def import_discovered_leads(
         replace_duplicates=payload.replace_duplicates,
         skip_enrichment=payload.skip_enrichment,
     )
+    created_count = int(result.get("created_count") or 0)
+    if created_count > 0:
+        activity_module.log_activity(
+            db,
+            user_id=user.id,
+            activity_type=activity_module.LEADS_IMPORTED,
+            title="Leads imported",
+            summary=f"Imported {created_count} lead{'s' if created_count != 1 else ''} into the table",
+            quantity=created_count,
+            entity_type="buyer",
+            entity_id=None,
+            details={
+                "created_count": created_count,
+                "skipped_count": result.get("skipped_count", 0),
+                "replaced_count": result.get("replaced_count", 0),
+            },
+        )
     return DiscoverImportResponse(
         created_count=result["created_count"],
         skipped_count=result["skipped_count"],
@@ -454,16 +562,26 @@ def import_discovered_leads(
 
 
 @router.get("/{lead_id}/cross-sell")
-def cross_sell_recommendations(lead_id: int, db: Session = Depends(get_db)):
+def cross_sell_recommendations(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
     from modules.commerce import get_commerce
 
+    _require_buyer_access(db, user, lead_id)
     if not buyers_module.get_buyer(db, lead_id):
         raise HTTPException(404, "Lead not found")
     return get_commerce().recommend_cross_sell_from_catalog(db, lead_id)
 
 
 @router.get("/{lead_id}", response_model=BuyerRead)
-def get_lead(lead_id: int, db: Session = Depends(get_db)):
+def get_lead(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    _require_buyer_access(db, user, lead_id)
     buyer = buyers_module.get_buyer(db, lead_id)
     if not buyer:
         raise HTTPException(404, "Lead not found")
@@ -475,7 +593,9 @@ def research_lead(
     lead_id: int,
     force: bool = False,
     db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
 ):
+    _require_buyer_access(db, user, lead_id)
     if not buyers_module.get_buyer(db, lead_id):
         raise HTTPException(404, "Lead not found")
     try:
@@ -493,7 +613,12 @@ def research_lead(
 
 
 @router.get("/{lead_id}/profile", response_model=BuyerProfileRead)
-def get_lead_profile(lead_id: int, db: Session = Depends(get_db)):
+def get_lead_profile(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    _require_buyer_access(db, user, lead_id)
     if not buyers_module.get_buyer(db, lead_id):
         raise HTTPException(404, "Lead not found")
     try:
@@ -506,7 +631,12 @@ def get_lead_profile(lead_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{lead_id}/score", response_model=LeadScoreRead)
-def get_latest_lead_score(lead_id: int, db: Session = Depends(get_db)):
+def get_latest_lead_score(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    _require_buyer_access(db, user, lead_id)
     if not buyers_module.get_buyer(db, lead_id):
         raise HTTPException(404, "Lead not found")
     score = leads_module.get_latest_score(db, lead_id)
@@ -516,7 +646,12 @@ def get_latest_lead_score(lead_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{lead_id}/score", response_model=LeadScoreRead)
-def score_lead(lead_id: int, db: Session = Depends(get_db)):
+def score_lead(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    _require_buyer_access(db, user, lead_id)
     if not buyers_module.get_buyer(db, lead_id):
         raise HTTPException(404, "Lead not found")
     try:
@@ -526,7 +661,12 @@ def score_lead(lead_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{lead_id}/onboard")
-def onboard_lead(lead_id: int, db: Session = Depends(get_db)):
+def onboard_lead(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    _require_buyer_access(db, user, lead_id)
     if not buyers_module.get_buyer(db, lead_id):
         raise HTTPException(404, "Lead not found")
     try:

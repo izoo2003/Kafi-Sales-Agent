@@ -61,6 +61,13 @@ class Settings(BaseSettings):
     chatbot_anthropic_api_key: str | None = None
     chatbot_anthropic_model: str = "claude-3-5-haiku-20241022"
 
+    # KPI Generation summaries only — separate key from GEMINI_API_KEY / chatbot
+    kpi_gemini_api_key: str | None = None
+    kpi_gemini_api_keys: str | None = None  # optional comma-separated extra keys
+    kpi_gemini_model: str = "gemini-3.1-flash-lite"
+    kpi_gemini_fallback_models: str | None = None
+    kpi_gemini_max_output_tokens: int = 1024
+
     # Web search — see modules/web_search.py
     brave_api_key: str | None = None
     google_cse_api_key: str | None = None

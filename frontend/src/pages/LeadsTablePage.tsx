@@ -6,12 +6,14 @@ import {
   type LeadTableRow,
   type LeadTableRowUpdate,
 } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
 import type { LeadsTableSection } from "../components/AppSidebar";
 import { formatCountryLabel } from "../data/countries";
 import { ScoreBadge } from "../components/ScoreBadge";
 import { MarketRoleBadge } from "../components/MarketRoleBadge";
 import { ProducerTierBadge } from "../components/ProducerTierBadge";
-import { BulkEmailModal } from "../components/BulkEmailModal";
+import { AssignedToSelect, type AssigneeOption } from "../components/AssignedToSelect";
+import { FollowUpScheduleControl } from "../components/FollowUpScheduleControl";
 import { LeadsTableCsvImport } from "../components/LeadsTableCsvImport";
 import { SocialLinksCell } from "../components/SocialLinksCell";
 import { CallLeadButton } from "../components/CallLeadButton";
@@ -42,7 +44,12 @@ type SortField =
   | "market_role";
 
 const EDIT_INPUT =
-  "w-full min-w-[120px] rounded-md bg-slate-950 border border-slate-700 px-2 py-1 text-sm text-slate-200";
+  "w-full min-w-0 rounded-md bg-slate-950 border border-slate-700 px-2 py-1 text-sm text-slate-200";
+
+const TH = "py-3 px-3 text-left whitespace-nowrap align-middle";
+const TD = "py-3 px-3 align-middle";
+const TD_MUTED = `${TD} text-slate-400`;
+const TD_PRIMARY = `${TD} text-slate-200 font-medium`;
 
 const MAX_BULK_ONBOARD = 25;
 const BULK_ONBOARD_DELAY_MS = 1000;
@@ -77,7 +84,7 @@ function sectionTableParams(
 
 function sectionTitle(section: LeadsTableSection): string {
   if (section === "old_clients") return "Old clients";
-  if (section === "interested_clients") return "Interested clients";
+  if (section === "interested_clients") return "Follow up clients";
   if (section === "not_interested_clients") return "Not interested";
   if (section === "not_received_call_clients") return "Did not receive call";
   return "Leads table";
@@ -85,29 +92,29 @@ function sectionTitle(section: LeadsTableSection): string {
 
 function sectionDescription(section: LeadsTableSection): string {
   if (section === "old_clients") {
-    return "Past clients mapped from your spreadsheet. Import as-is first; research and score later from the table.";
+    return "Past clients mapped from your spreadsheet. After a call outcome is set, the record moves to Follow up, Not interested, or Did not receive call.";
   }
   if (section === "interested_clients") {
-    return "Clients labeled Interested after a call. Update outcomes from the Calls tab or post-call remarks.";
+    return "Clients moved here after a call is labeled Interested. Use the calendar on each row to set when you want a follow-up reminder — you are only notified on that date.";
   }
   if (section === "not_interested_clients") {
-    return "Clients labeled Not interested after a call. Update outcomes from the Calls tab or post-call remarks.";
+    return "Clients moved here after a call is labeled Not interested. They no longer appear in Leads table or Old clients.";
   }
   if (section === "not_received_call_clients") {
-    return "Clients who did not receive the call. Update outcomes from the Calls tab or post-call remarks.";
+    return "Clients moved here when a call is labeled Did not receive call. Use the calendar on each row to set when you want a reminder to try again.";
   }
-  return "Browse, filter, edit, delete, and export leads. Social icons link to Facebook, Instagram, and LinkedIn — filled automatically when you research a lead.";
+  return "Browse, filter, edit, delete, and export leads. After a call outcome is set, records move to Follow up, Not interested, or Did not receive call.";
 }
 
 function sectionEmptyMessage(section: LeadsTableSection): string | null {
   if (section === "interested_clients") {
-    return "No interested clients yet. After a call, label the client as Interested in post-call remarks.";
+    return "No follow up clients yet. After a call, label the client as Interested in post-call remarks, then set a follow-up date in this table.";
   }
   if (section === "not_interested_clients") {
     return "No not interested clients yet. After a call, label the client as Not interested in post-call remarks.";
   }
   if (section === "not_received_call_clients") {
-    return "No clients listed yet. After a call, label the client as Did not receive call in post-call remarks.";
+    return "No clients listed yet. After a call, label the client as Did not receive call, then set a reminder date with the calendar.";
   }
   return null;
 }
@@ -130,6 +137,9 @@ function rowDraftKey(row: LeadTableRow): string {
     city: row.city,
     address: row.address,
     remarks: row.remarks,
+    assigned_to: row.assigned_to,
+    assigned_to_user_id: row.assigned_to_user_id,
+    follow_up_at: row.follow_up_at,
     contact_designation: row.contact_designation,
     contact_secondary_mobile: row.contact_secondary_mobile,
     contact_primary_phone: row.contact_primary_phone,
@@ -160,6 +170,7 @@ function buildUpdatePayload(draft: LeadTableRow): LeadTableRowUpdate {
     city: draft.city,
     address: draft.address,
     remarks: draft.remarks,
+    assigned_to_user_id: draft.assigned_to_user_id,
     contact_id: draft.contact_id ?? undefined,
     contact_name: draft.contact_name ?? undefined,
     contact_email: draft.contact_email ?? undefined,
@@ -215,6 +226,8 @@ export function LeadsTablePage({
   onSelectLead,
   onSectionCountsChange,
 }: LeadsTablePageProps) {
+  const { isAdmin } = useAuth();
+  const [assigneeOptions, setAssigneeOptions] = useState<AssigneeOption[]>([]);
   const [filters, setFilters] = useState<LeadTableFilters | null>(null);
   const [rows, setRows] = useState<LeadTableRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -228,6 +241,7 @@ export function LeadsTablePage({
   draftsRef.current = drafts;
   const [originalKeys, setOriginalKeys] = useState<Record<number, string>>({});
   const [savingId, setSavingId] = useState<number | null>(null);
+  const [assigningId, setAssigningId] = useState<number | null>(null);
   const [savingAll, setSavingAll] = useState(false);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -252,6 +266,24 @@ export function LeadsTablePage({
     setBulkEmailNotice(message);
     window.setTimeout(() => setBulkEmailNotice(null), 8000);
   }, []);
+
+  useEffect(() => {
+    if (!isAdmin) {
+      setAssigneeOptions([]);
+      return;
+    }
+    client
+      .listAssignees()
+      .then((users) =>
+        setAssigneeOptions(
+          users.map((u) => ({
+            value: String(u.id),
+            label: u.full_name || u.username,
+          })),
+        ),
+      )
+      .catch(() => setAssigneeOptions([]));
+  }, [isAdmin]);
 
   useEffect(() => {
     if (!isFullscreen) return;
@@ -280,6 +312,8 @@ export function LeadsTablePage({
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   const isOldClients = section === "old_clients";
+  const canScheduleFollowUp =
+    section === "interested_clients" || section === "not_received_call_clients";
   const callOutcomeEmptyMessage = sectionEmptyMessage(section);
 
   const tableQueryParams = useMemo(
@@ -463,12 +497,87 @@ export function LeadsTablePage({
       setRows((prev) => prev.map((row) => (row.id === rowId ? updated : row)));
       setDrafts((prev) => ({ ...prev, [rowId]: updated }));
       setOriginalKeys((prev) => ({ ...prev, [rowId]: rowDraftKey(updated) }));
-      setSaveNotice(`Saved ${updated.company_name}`);
+      setSaveNotice("Row saved.");
+      setTimeout(() => setSaveNotice(null), 3000);
     } catch (e) {
-      onError(e instanceof Error ? e.message : "Failed to save lead");
+      onError(e instanceof Error ? e.message : "Failed to save row");
     } finally {
       setSavingId(null);
     }
+  }
+
+  async function saveAssignedTo(rowId: number, assignedToUserId: number | null) {
+    setAssigningId(rowId);
+    try {
+      const updated = await client.updateLeadTableRow(rowId, {
+        assigned_to_user_id: assignedToUserId,
+      });
+      setRows((prev) => prev.map((row) => (row.id === rowId ? updated : row)));
+      setDrafts((prev) => ({ ...prev, [rowId]: updated }));
+      setOriginalKeys((prev) =>
+        prev[rowId] ? { ...prev, [rowId]: rowDraftKey(updated) } : prev,
+      );
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to update assignee");
+    } finally {
+      setAssigningId(null);
+    }
+  }
+
+  async function saveFollowUpAt(rowId: number, followUpAt: string | null) {
+    try {
+      const result = await client.scheduleInterestedFollowUp(rowId, followUpAt);
+      setRows((prev) =>
+        prev.map((row) =>
+          row.id === rowId ? { ...row, follow_up_at: result.follow_up_at } : row,
+        ),
+      );
+      setDrafts((prev) => {
+        const current = prev[rowId];
+        if (!current) return prev;
+        return {
+          ...prev,
+          [rowId]: { ...current, follow_up_at: result.follow_up_at },
+        };
+      });
+      setSaveNotice(
+        followUpAt
+          ? "Follow-up reminder scheduled."
+          : "Follow-up reminder cleared.",
+      );
+      setTimeout(() => setSaveNotice(null), 3000);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to schedule follow-up");
+    }
+  }
+
+  function renderAssignedToCell(row: LeadTableRow, draft: LeadTableRow) {
+    return (
+      <AssignedToSelect
+        value={editMode ? draft.assigned_to_user_id : row.assigned_to_user_id}
+        options={assigneeOptions}
+        onChange={(userId) => {
+          if (editMode) {
+            const label =
+              userId == null
+                ? "unassigned"
+                : assigneeOptions.find((o) => o.value === String(userId))?.label ||
+                  "unassigned";
+            setDrafts((prev) => ({
+              ...prev,
+              [row.id]: {
+                ...(prev[row.id] ?? row),
+                assigned_to_user_id: userId,
+                assigned_to: label,
+              },
+            }));
+            return;
+          }
+          void saveAssignedTo(row.id, userId);
+        }}
+        disabled={!isAdmin || assigningId === row.id || savingId === row.id}
+      />
+    );
   }
 
   function toggleSelected(rowId: number) {
@@ -798,7 +907,7 @@ export function LeadsTablePage({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {isOldClients && (
+          {isOldClients && isAdmin && (
             <button
               type="button"
               onClick={() => setShowCsvImport(true)}
@@ -1113,11 +1222,13 @@ export function LeadsTablePage({
           <p className="text-slate-400 text-sm">
             {hasActiveFilters
               ? "No leads match these filters."
-              : isOldClients
-                ? "No old clients yet. Import a CSV or Excel file to map past clients into this table."
-                : callOutcomeEmptyMessage ?? "No leads in this section yet."}
+              : !isAdmin
+                ? "No leads assigned to you yet. An admin will assign leads from Leads table or Old clients."
+                : isOldClients
+                  ? "No old clients yet. Import a CSV or Excel file to map past clients into this table."
+                  : callOutcomeEmptyMessage ?? "No leads in this section yet."}
           </p>
-          {isOldClients && !hasActiveFilters && (
+          {isOldClients && isAdmin && !hasActiveFilters && (
             <button
               type="button"
               onClick={() => setShowCsvImport(true)}
@@ -1146,11 +1257,11 @@ export function LeadsTablePage({
           </div>
           <div className={tableBodyScrollClass}>
           {isOldClients ? (
-            <table className="w-full min-w-[1800px] text-sm">
+            <table className="w-full min-w-[2400px] text-sm border-collapse">
               <thead>
-                <tr className={`text-left text-slate-500 border-b border-slate-800 bg-slate-950 ${theadStickyClass}`}>
+                <tr className={`text-slate-500 border-b border-slate-800 bg-slate-950 ${theadStickyClass}`}>
                   <th
-                    className={`py-3 pl-3 pr-2 w-10 sticky left-0 bg-slate-950 z-[1] ${
+                    className={`${TH} w-12 sticky left-0 bg-slate-950 z-[1] ${
                       isFullscreen ? "top-0 z-[3]" : ""
                     }`}
                   >
@@ -1165,28 +1276,29 @@ export function LeadsTablePage({
                       className="rounded border-slate-600 bg-slate-950"
                     />
                   </th>
-                  <th className="py-3 pr-3 whitespace-nowrap">S. No</th>
-                  <th className="py-3 pr-3 whitespace-nowrap min-w-[160px]">Company Name</th>
-                  <th className="py-3 pr-3 whitespace-nowrap">Business Type</th>
-                  <th className="py-3 pr-3 whitespace-nowrap">Companies Grading</th>
-                  <th className="py-3 pr-3 whitespace-nowrap">Designation</th>
-                  <th className="py-3 pr-3 whitespace-nowrap">Contact Person</th>
-                  <th className="py-3 pr-3 whitespace-nowrap">Primary Mobile No.</th>
-                  <th className="py-3 pr-3 whitespace-nowrap">Secondary Mobile No.</th>
-                  <th className="py-3 pr-3 whitespace-nowrap">Primary Phone No.</th>
-                  <th className="py-3 pr-3 whitespace-nowrap">Secondary Phone No.</th>
-                  <th className="py-3 pr-3 whitespace-nowrap">Primary Email</th>
-                  <th className="py-3 pr-3 whitespace-nowrap">Secondary Email</th>
-                  <th className="py-3 pr-3 whitespace-nowrap">Country</th>
-                  <th className="py-3 pr-3 whitespace-nowrap">Product</th>
-                  <th className="py-3 pr-3 whitespace-nowrap">City</th>
-                  <th className="py-3 pr-3 whitespace-nowrap min-w-[180px]">Address</th>
-                  <th className="py-3 pr-3 whitespace-nowrap min-w-[160px]">Remarks</th>
-                  <th className="py-3 pr-3 whitespace-nowrap">Score</th>
-                  <th className="py-3 pr-3 whitespace-nowrap min-w-[120px]">Website</th>
-                  <th className="py-3 pr-3 whitespace-nowrap">Socials</th>
-                  {editMode && <th className="py-3 pr-3">Edit</th>}
-                  <th className="py-3 pr-3">Actions</th>
+                  <th className={`${TH} min-w-[72px]`}>S. No</th>
+                  <th className={`${TH} min-w-[180px]`}>Company Name</th>
+                  <th className={`${TH} min-w-[140px]`}>Business Type</th>
+                  <th className={`${TH} min-w-[140px]`}>Companies Grading</th>
+                  <th className={`${TH} min-w-[130px]`}>Designation</th>
+                  <th className={`${TH} min-w-[150px]`}>Contact Person</th>
+                  <th className={`${TH} min-w-[170px]`}>Primary Mobile No.</th>
+                  <th className={`${TH} min-w-[170px]`}>Secondary Mobile No.</th>
+                  <th className={`${TH} min-w-[160px]`}>Primary Phone No.</th>
+                  <th className={`${TH} min-w-[160px]`}>Secondary Phone No.</th>
+                  <th className={`${TH} min-w-[200px]`}>Primary Email</th>
+                  <th className={`${TH} min-w-[180px]`}>Secondary Email</th>
+                  <th className={`${TH} min-w-[130px]`}>Country</th>
+                  <th className={`${TH} min-w-[140px]`}>Product</th>
+                  <th className={`${TH} min-w-[120px]`}>City</th>
+                  <th className={`${TH} min-w-[200px]`}>Address</th>
+                  <th className={`${TH} min-w-[180px]`}>Remarks</th>
+                  <th className={`${TH} min-w-[150px]`}>Assigned To</th>
+                  <th className={`${TH} min-w-[90px]`}>Score</th>
+                  <th className={`${TH} min-w-[160px]`}>Website</th>
+                  <th className={`${TH} min-w-[120px]`}>Socials</th>
+                  {editMode && <th className={`${TH} min-w-[120px]`}>Edit</th>}
+                  <th className={`${TH} min-w-[100px]`}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -1227,7 +1339,7 @@ export function LeadsTablePage({
                       } ${dirty ? "bg-amber-500/5" : ""} ${selected.has(row.id) ? "bg-slate-900/40" : ""}`}
                     >
                       <td
-                        className="py-3 pl-3 pr-2 sticky left-0 bg-slate-900 z-[1]"
+                        className={`${TD} sticky left-0 bg-slate-900 z-[1]`}
                         onClick={(e) => e.stopPropagation()}
                       >
                         <input
@@ -1238,23 +1350,23 @@ export function LeadsTablePage({
                           className="rounded border-slate-600 bg-slate-950"
                         />
                       </td>
-                      <td className="py-3 pr-3 text-slate-400">
+                      <td className={TD_MUTED}>
                         {cell("legacy_serial_no", row.legacy_serial_no != null ? String(row.legacy_serial_no) : "")}
                       </td>
-                      <td className="py-3 pr-3 text-slate-200 font-medium">
+                      <td className={TD_PRIMARY}>
                         {cell("company_name", row.company_name)}
                       </td>
-                      <td className="py-3 pr-3 text-slate-400">{cell("industry", row.industry ?? "")}</td>
-                      <td className="py-3 pr-3 text-slate-400">
+                      <td className={TD_MUTED}>{cell("industry", row.industry ?? "")}</td>
+                      <td className={TD_MUTED}>
                         {cell("company_grading", row.company_grading ?? "")}
                       </td>
-                      <td className="py-3 pr-3 text-slate-400">
+                      <td className={TD_MUTED}>
                         {cell("contact_designation", row.contact_designation ?? "")}
                       </td>
-                      <td className="py-3 pr-3 text-slate-400">
+                      <td className={TD_MUTED}>
                         {cell("contact_name", row.contact_name ?? "")}
                       </td>
-                      <td className="py-3 pr-3 text-slate-400">
+                      <td className={TD_MUTED}>
                         {editMode ? (
                           cell("contact_phone", row.contact_phone ?? "")
                         ) : row.contact_phone ? (
@@ -1271,10 +1383,10 @@ export function LeadsTablePage({
                           "—"
                         )}
                       </td>
-                      <td className="py-3 pr-3 text-slate-400">
+                      <td className={TD_MUTED}>
                         {cell("contact_secondary_mobile", row.contact_secondary_mobile ?? "")}
                       </td>
-                      <td className="py-3 pr-3 text-slate-400">
+                      <td className={TD_MUTED}>
                         {editMode ? (
                           cell("contact_primary_phone", row.contact_primary_phone ?? "")
                         ) : row.contact_primary_phone ? (
@@ -1291,11 +1403,11 @@ export function LeadsTablePage({
                           "—"
                         )}
                       </td>
-                      <td className="py-3 pr-3 text-slate-400">
+                      <td className={TD_MUTED}>
                         {cell("contact_secondary_phone", row.contact_secondary_phone ?? "")}
                       </td>
                       <td
-                        className="py-3 pr-3 text-slate-400"
+                        className={TD_MUTED}
                         onClick={(e) => e.stopPropagation()}
                       >
                         {editMode ? (
@@ -1311,7 +1423,7 @@ export function LeadsTablePage({
                           "—"
                         )}
                       </td>
-                      <td className="py-3 pr-3 text-slate-400">
+                      <td className={TD_MUTED}>
                         {editMode ? (
                           cell("contact_secondary_email", row.contact_secondary_email ?? "", {
                             type: "email",
@@ -1324,7 +1436,7 @@ export function LeadsTablePage({
                           "—"
                         )}
                       </td>
-                      <td className="py-3 pr-3 text-slate-400">
+                      <td className={TD_MUTED}>
                         {editMode ? (
                           <div onClick={(e) => e.stopPropagation()}>
                             <CountrySelect
@@ -1336,16 +1448,19 @@ export function LeadsTablePage({
                           <span className="truncate block">{formatCountryLabel(row.country)}</span>
                         )}
                       </td>
-                      <td className="py-3 pr-3 text-slate-400">
+                      <td className={TD_MUTED}>
                         {cell("product_interest", row.product_interest ?? "")}
                       </td>
-                      <td className="py-3 pr-3 text-slate-400">{cell("city", row.city ?? "")}</td>
-                      <td className="py-3 pr-3 text-slate-400">{cell("address", row.address ?? "")}</td>
-                      <td className="py-3 pr-3 text-slate-400">{cell("remarks", row.remarks ?? "")}</td>
-                      <td className="py-3 pr-3">
+                      <td className={TD_MUTED}>{cell("city", row.city ?? "")}</td>
+                      <td className={TD_MUTED}>{cell("address", row.address ?? "")}</td>
+                      <td className={TD_MUTED}>{cell("remarks", row.remarks ?? "")}</td>
+                      <td className={TD_MUTED} onClick={(e) => e.stopPropagation()}>
+                        {renderAssignedToCell(row, draft)}
+                      </td>
+                      <td className={TD}>
                         <ScoreBadge score={scoreLabel(row.latest_score)} />
                       </td>
-                      <td className="py-3 pr-3 text-slate-400">
+                      <td className={TD_MUTED}>
                         {editMode ? (
                           cell("website_url", row.website_url ?? "")
                         ) : row.website_url ? (
@@ -1362,7 +1477,7 @@ export function LeadsTablePage({
                           "—"
                         )}
                       </td>
-                      <td className="py-3 pr-3" onClick={(e) => e.stopPropagation()}>
+                      <td className={TD} onClick={(e) => e.stopPropagation()}>
                         {editMode ? (
                           <div className="space-y-1">
                             <input
@@ -1394,7 +1509,7 @@ export function LeadsTablePage({
                         )}
                       </td>
                       {editMode && (
-                        <td className="py-3 pr-3 whitespace-nowrap">
+                        <td className={`${TD} whitespace-nowrap`}>
                           <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
                             <button
                               type="button"
@@ -1414,7 +1529,7 @@ export function LeadsTablePage({
                           </div>
                         </td>
                       )}
-                      <td className="py-3 pr-3 whitespace-nowrap">
+                      <td className={`${TD} whitespace-nowrap`}>
                         <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
                           <button
                             type="button"
@@ -1432,10 +1547,14 @@ export function LeadsTablePage({
               </tbody>
             </table>
           ) : (
-          <table className="w-full table-fixed text-sm">
+          <table
+            className={`w-full text-sm border-collapse ${
+              canScheduleFollowUp ? "min-w-[1680px]" : "min-w-[1500px]"
+            }`}
+          >
             <thead>
-              <tr className={`text-left text-slate-500 border-b border-slate-800 bg-slate-950 ${theadStickyClass}`}>
-                <th className="py-3 pl-3 pr-2 w-[3%]">
+              <tr className={`text-slate-500 border-b border-slate-800 bg-slate-950 ${theadStickyClass}`}>
+                <th className={`${TH} w-12`}>
                   <input
                     type="checkbox"
                     checked={allOnPageSelected}
@@ -1447,33 +1566,37 @@ export function LeadsTablePage({
                     className="rounded border-slate-600 bg-slate-950"
                   />
                 </th>
-                <th className="py-3 px-3 w-[20%]">
+                <th className={`${TH} min-w-[200px]`}>
                   <button type="button" onClick={() => toggleSort("company_name")} className="hover:text-slate-300">
                     Company{sortIndicator("company_name")}
                   </button>
                 </th>
-                <th className="py-3 pr-3 w-[7%]">
+                <th className={`${TH} min-w-[88px]`}>
                   <button type="button" onClick={() => toggleSort("latest_score")} className="hover:text-slate-300">
                     Score{sortIndicator("latest_score")}
                   </button>
                 </th>
-                <th className="py-3 pr-3 w-[16%]">
+                <th className={`${TH} min-w-[140px]`}>
                   <button type="button" onClick={() => toggleSort("market_role")} className="hover:text-slate-300">
                     Role{sortIndicator("market_role")}
                   </button>
                 </th>
-                <th className="py-3 pr-3 w-[10%]">
+                <th className={`${TH} min-w-[130px]`}>
                   <button type="button" onClick={() => toggleSort("country")} className="hover:text-slate-300">
                     Country{sortIndicator("country")}
                   </button>
                 </th>
-                <th className="py-3 pr-3 w-[11%]">Contact</th>
-                <th className="py-3 pr-3 w-[15%]">Email</th>
-                <th className="py-3 pr-3 w-[9%]">Phone</th>
-                <th className="py-3 pr-3 w-[11%]">Website</th>
-                <th className="py-3 pr-3 w-[10%]">Socials</th>
-                {editMode && <th className="py-3 pr-3 w-[8%]">Edit</th>}
-                <th className="py-3 pr-3 w-[10%]">Actions</th>
+                <th className={`${TH} min-w-[130px]`}>Contact</th>
+                <th className={`${TH} min-w-[200px]`}>Email</th>
+                <th className={`${TH} min-w-[160px]`}>Phone</th>
+                <th className={`${TH} min-w-[150px]`}>Assigned To</th>
+                {canScheduleFollowUp && (
+                  <th className={`${TH} min-w-[190px]`}>Follow-up reminder</th>
+                )}
+                <th className={`${TH} min-w-[160px]`}>Website</th>
+                <th className={`${TH} min-w-[120px]`}>Socials</th>
+                {editMode && <th className={`${TH} min-w-[120px]`}>Edit</th>}
+                <th className={`${TH} min-w-[100px]`}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -1491,7 +1614,7 @@ export function LeadsTablePage({
                       editMode ? "" : "cursor-pointer hover:bg-slate-900/80"
                     } ${dirty ? "bg-amber-500/5" : ""} ${selected.has(row.id) ? "bg-slate-900/40" : ""}`}
                   >
-                    <td className="py-3 pl-3 pr-2" onClick={(e) => e.stopPropagation()}>
+                    <td className={TD} onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
                         checked={selected.has(row.id)}
@@ -1500,7 +1623,7 @@ export function LeadsTablePage({
                         className="rounded border-slate-600 bg-slate-950"
                       />
                     </td>
-                    <td className="py-3 px-3 text-slate-200 font-medium">
+                    <td className={TD_PRIMARY}>
                       {editMode ? (
                         <input
                           value={draft.company_name}
@@ -1517,10 +1640,10 @@ export function LeadsTablePage({
                         </>
                       )}
                     </td>
-                    <td className="py-3 pr-3">
+                    <td className={TD}>
                       <ScoreBadge score={scoreLabel(row.latest_score)} />
                     </td>
-                    <td className="py-3 pr-3">
+                    <td className={TD}>
                       <div className="flex flex-col gap-1">
                         <MarketRoleBadge role={row.market_role ?? "unknown"} />
                         {(row.market_role === "producer" || row.market_role === "hybrid") && (
@@ -1537,7 +1660,7 @@ export function LeadsTablePage({
                         </p>
                       )}
                     </td>
-                    <td className="py-3 pr-3 text-slate-400">
+                    <td className={TD_MUTED}>
                       {editMode ? (
                         <div onClick={(e) => e.stopPropagation()}>
                           <CountrySelect
@@ -1549,7 +1672,7 @@ export function LeadsTablePage({
                         <span className="truncate block">{formatCountryLabel(row.country)}</span>
                       )}
                     </td>
-                    <td className="py-3 pr-3 text-slate-400">
+                    <td className={TD_MUTED}>
                       {editMode ? (
                         <input
                           value={draft.contact_name ?? ""}
@@ -1562,7 +1685,7 @@ export function LeadsTablePage({
                       )}
                     </td>
                     <td
-                      className="py-3 pr-3 text-slate-400"
+                      className={TD_MUTED}
                       onClick={(e) => e.stopPropagation()}
                     >
                       {editMode ? (
@@ -1584,7 +1707,7 @@ export function LeadsTablePage({
                         "—"
                       )}
                     </td>
-                    <td className="py-3 pr-3 text-slate-400">
+                    <td className={TD_MUTED}>
                       {editMode ? (
                         <input
                           value={draft.contact_phone ?? ""}
@@ -1606,7 +1729,18 @@ export function LeadsTablePage({
                         "—"
                       )}
                     </td>
-                    <td className="py-3 pr-3 text-slate-400">
+                    <td className={TD_MUTED} onClick={(e) => e.stopPropagation()}>
+                      {renderAssignedToCell(row, draft)}
+                    </td>
+                    {canScheduleFollowUp && (
+                      <td className={TD_MUTED} onClick={(e) => e.stopPropagation()}>
+                        <FollowUpScheduleControl
+                          value={row.follow_up_at}
+                          onChange={(next) => saveFollowUpAt(row.id, next)}
+                        />
+                      </td>
+                    )}
+                    <td className={TD_MUTED}>
                       {editMode ? (
                         <input
                           value={draft.website_url ?? ""}
@@ -1629,7 +1763,7 @@ export function LeadsTablePage({
                         "—"
                       )}
                     </td>
-                    <td className="py-3 pr-3">
+                    <td className={TD}>
                       <SocialLinksCell
                         companyName={draft.company_name}
                         facebookUrl={draft.facebook_company_url}
@@ -1640,7 +1774,7 @@ export function LeadsTablePage({
                       />
                     </td>
                     {editMode && (
-                      <td className="py-3 pr-3 whitespace-nowrap">
+                      <td className={`${TD} whitespace-nowrap`}>
                         <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
                           <button
                             type="button"
@@ -1660,7 +1794,7 @@ export function LeadsTablePage({
                         </div>
                       </td>
                     )}
-                    <td className="py-3 pr-3 whitespace-nowrap">
+                    <td className={`${TD} whitespace-nowrap`}>
                       <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
                         <button
                           type="button"

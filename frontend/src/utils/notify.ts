@@ -12,7 +12,9 @@ export interface InterestedFollowUpPopupPayload {
   buyerId: number;
   companyName: string;
   contactName: string | null;
-  weeksSincePlacement: number;
+  dueAt: string;
+  daysSincePlacement: number;
+  tableSection?: "interested_clients" | "not_received_call_clients";
 }
 
 let audioCtx: AudioContext | null = null;
@@ -200,7 +202,9 @@ export function alertInterestedFollowUp(details: {
   buyerId: number;
   companyName: string;
   contactName?: string | null;
-  weeksSincePlacement: number;
+  dueAt: string;
+  daysSincePlacement?: number;
+  tableSection?: "interested_clients" | "not_received_call_clients";
 }) {
   unlockNotificationAudio();
   playNotificationChime();
@@ -208,17 +212,21 @@ export function alertInterestedFollowUp(details: {
   const label = details.contactName?.trim()
     ? `${details.contactName} (${details.companyName})`
     : details.companyName;
-  const weekLabel =
-    details.weeksSincePlacement === 1
-      ? "one week"
-      : `${details.weeksSincePlacement} weeks`;
+  const dueDate = new Date(details.dueAt);
+  const dueLabel = Number.isNaN(dueDate.getTime())
+    ? "today"
+    : dueDate.toLocaleDateString(undefined, {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+      });
 
-  const spoken = `Follow-up reminder. ${label} was marked interested ${weekLabel} ago. Please take follow-up action.`;
+  const spoken = `Follow-up reminder. ${label} is due for follow-up on ${dueLabel}. Please take follow-up action.`;
   window.setTimeout(() => speakInboxAlert(spoken), 350);
 
   showDesktopNotification(
-    "Interested client follow-up",
-    `${label} — follow-up due (${weekLabel} since placement)`,
+    "Follow up client reminder",
+    `${label} — follow-up due (${dueLabel})`,
   );
 
   emitInterestedFollowUpPopup({
@@ -226,6 +234,8 @@ export function alertInterestedFollowUp(details: {
     buyerId: details.buyerId,
     companyName: details.companyName,
     contactName: details.contactName ?? null,
-    weeksSincePlacement: details.weeksSincePlacement,
+    dueAt: details.dueAt,
+    daysSincePlacement: details.daysSincePlacement ?? 0,
+    tableSection: details.tableSection,
   });
 }

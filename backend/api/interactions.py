@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from api.deps import get_db
+from api.deps import get_current_user, get_db
 from api.schemas import (
     BulkApproveRequest,
     BulkApproveResponse,
@@ -19,7 +19,7 @@ from api.schemas import (
     ManualEmailSendResponse,
 )
 from config import settings
-from db.models import InteractionStatus
+from db.models import AppUser, InteractionStatus
 from modules.audit import log_action
 from modules.comms_generator import get_comms
 
@@ -134,8 +134,12 @@ def get_bulk_email_settings():
 
 @router.post("/bulk-manual-email-drafts", response_model=BulkEmailDraftResponse, status_code=201)
 def create_bulk_manual_email_drafts(
-    payload: BulkManualEmailDraftRequest, db: Session = Depends(get_db)
+    payload: BulkManualEmailDraftRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
 ):
+    from modules import activity as activity_module
+
     try:
         result = comms.create_bulk_manual_drafts(
             db,
@@ -152,6 +156,7 @@ def create_bulk_manual_email_drafts(
         entity_type="interaction",
         entity_id=0,
         action="bulk_emails_sent" if payload.send else "bulk_drafts_created",
+        actor=user.username,
         details={
             "mode": "manual",
             "created_count": result["created_count"],
@@ -161,11 +166,31 @@ def create_bulk_manual_email_drafts(
             "send": payload.send,
         },
     )
+    if payload.send:
+        sent_count = int(result.get("sent_count") or 0)
+        if sent_count > 0:
+            activity_module.log_activity(
+                db,
+                user_id=user.id,
+                activity_type=activity_module.BULK_EMAILS_SENT,
+                title="Bulk emails sent",
+                summary=f"Sent {sent_count} bulk email{'s' if sent_count != 1 else ''} (manual)",
+                quantity=sent_count,
+                entity_type="interaction",
+                entity_id=None,
+                details={"mode": "manual", "sent_count": sent_count},
+            )
     return BulkEmailDraftResponse(**result)
 
 
 @router.post("/bulk-email-drafts", response_model=BulkEmailDraftResponse, status_code=201)
-def create_bulk_email_drafts(payload: BulkEmailDraftRequest, db: Session = Depends(get_db)):
+def create_bulk_email_drafts(
+    payload: BulkEmailDraftRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    from modules import activity as activity_module
+
     result = comms.create_bulk_drafts_from_template(
         db,
         buyer_ids=payload.buyer_ids,
@@ -178,6 +203,7 @@ def create_bulk_email_drafts(payload: BulkEmailDraftRequest, db: Session = Depen
         entity_type="interaction",
         entity_id=0,
         action="bulk_emails_sent" if payload.send else "bulk_drafts_created",
+        actor=user.username,
         details={
             "template_id": payload.template_id,
             "created_count": result["created_count"],
@@ -187,11 +213,34 @@ def create_bulk_email_drafts(payload: BulkEmailDraftRequest, db: Session = Depen
             "send": payload.send,
         },
     )
+    if payload.send:
+        sent_count = int(result.get("sent_count") or 0)
+        if sent_count > 0:
+            activity_module.log_activity(
+                db,
+                user_id=user.id,
+                activity_type=activity_module.BULK_EMAILS_SENT,
+                title="Bulk emails sent",
+                summary=(
+                    f"Sent {sent_count} bulk email{'s' if sent_count != 1 else ''} "
+                    f"(template #{payload.template_id})"
+                ),
+                quantity=sent_count,
+                entity_type="email_template",
+                entity_id=payload.template_id,
+                details={"mode": "template", "sent_count": sent_count},
+            )
     return BulkEmailDraftResponse(**result)
 
 
 @router.post("/bulk-approve", response_model=BulkApproveResponse)
-def bulk_approve_interactions(payload: BulkApproveRequest, db: Session = Depends(get_db)):
+def bulk_approve_interactions(
+    payload: BulkApproveRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    from modules import activity as activity_module
+
     if len(payload.interaction_ids) > settings.bulk_email_max_per_request:
         raise HTTPException(
             400,
@@ -201,7 +250,7 @@ def bulk_approve_interactions(payload: BulkApproveRequest, db: Session = Depends
     result = comms.bulk_approve_drafts(
         db,
         payload.interaction_ids,
-        approved_by=payload.approved_by,
+        approved_by=payload.approved_by or user.username,
         send=payload.send,
     )
     log_action(
@@ -209,13 +258,27 @@ def bulk_approve_interactions(payload: BulkApproveRequest, db: Session = Depends
         entity_type="interaction",
         entity_id=0,
         action="bulk_approved",
-        actor=payload.approved_by,
+        actor=user.username,
         details={
             "send": payload.send,
             "sent_count": result["sent_count"],
             "failed_count": result["failed_count"],
         },
     )
+    if payload.send:
+        sent_count = int(result.get("sent_count") or 0)
+        if sent_count > 0:
+            activity_module.log_activity(
+                db,
+                user_id=user.id,
+                activity_type=activity_module.BULK_EMAILS_SENT,
+                title="Bulk emails sent",
+                summary=f"Approved and sent {sent_count} email{'s' if sent_count != 1 else ''}",
+                quantity=sent_count,
+                entity_type="interaction",
+                entity_id=None,
+                details={"mode": "bulk_approve", "sent_count": sent_count},
+            )
     return BulkApproveResponse(**result)
 
 
