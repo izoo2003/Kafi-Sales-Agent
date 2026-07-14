@@ -37,7 +37,7 @@ function CallInitBanner() {
       <p className="font-medium">Browser calling is not ready</p>
       <p className="mt-1 text-amber-200/80">{voice.initError}</p>
       <p className="mt-2 text-xs text-amber-200/60">
-        Restart the backend after running: <code className="text-amber-100">pip install -r requirements.txt</code>
+        Refresh the page, or open Calls and try again in a moment. Railway may still be warming up.
       </p>
     </div>
   );
@@ -397,7 +397,10 @@ function DashboardApp() {
             {error && (
               <div className="mb-7 p-4 rounded-lg bg-red-500/10 border border-red-500/30 text-red-200 text-sm">
                 {error}
-                <p className="mt-1 text-red-300/70">Is the backend running? (python run.py)</p>
+                <p className="mt-1 text-red-300/70">
+                  If this keeps appearing, hard-refresh or log in again — the API may still be
+                  warming up after a Railway deploy.
+                </p>
               </div>
             )}
 

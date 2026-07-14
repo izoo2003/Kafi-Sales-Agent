@@ -92,7 +92,18 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
       } catch (e) {
         if (!cancelled) {
           setReady(false);
-          setInitError(e instanceof Error ? e.message : "Failed to initialize calling");
+          const message = e instanceof Error ? e.message : "Failed to initialize calling";
+          // Don't treat one transient network blip as a permanent Twilio outage.
+          if (/cannot reach the api|failed to fetch|network/i.test(message)) {
+            setInitError("Calling is warming up — refresh in a few seconds if this persists.");
+            window.setTimeout(() => {
+              if (!cancelled) {
+                void initDevice().catch(() => undefined);
+              }
+            }, 2500);
+          } else {
+            setInitError(message);
+          }
         }
       }
     })();

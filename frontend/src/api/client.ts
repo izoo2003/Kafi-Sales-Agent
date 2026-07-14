@@ -43,28 +43,54 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     extra.forEach((value, key) => headers.set(key, value));
   }
 
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers,
-  });
-  if (res.status === 401 && path !== "/auth/login") {
-    clearSession();
-    if (!window.location.hash.includes("login")) {
-      window.dispatchEvent(new Event("kafi:auth-expired"));
+  const method = (options?.method || "GET").toUpperCase();
+  const canRetry = method === "GET" || method === "HEAD";
+  let lastNetworkError: Error | null = null;
+
+  for (let attempt = 0; attempt < (canRetry ? 2 : 1); attempt += 1) {
+    try {
+      const res = await fetch(`${API_BASE}${path}`, {
+        ...options,
+        headers,
+      });
+      if (res.status === 401 && path !== "/auth/login") {
+        clearSession();
+        if (!window.location.hash.includes("login")) {
+          window.dispatchEvent(new Event("kafi:auth-expired"));
+        }
+      }
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(parseErrorDetail(text, res.statusText));
+      }
+      if (res.status === 204) {
+        return undefined as T;
+      }
+      const text = await res.text();
+      if (!text) {
+        return undefined as T;
+      }
+      return JSON.parse(text) as T;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const isNetwork =
+        err instanceof TypeError ||
+        /failed to fetch|networkerror|load failed|fetch failed/i.test(message);
+      if (isNetwork && canRetry && attempt === 0) {
+        lastNetworkError = err instanceof Error ? err : new Error(message);
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        continue;
+      }
+      if (isNetwork) {
+        throw new Error(
+          "Cannot reach the API right now. Check your connection, then refresh. If this keeps happening, Railway may be restarting.",
+        );
+      }
+      throw err;
     }
   }
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(parseErrorDetail(text, res.statusText));
-  }
-  if (res.status === 204) {
-    return undefined as T;
-  }
-  const text = await res.text();
-  if (!text) {
-    return undefined as T;
-  }
-  return JSON.parse(text) as T;
+
+  throw lastNetworkError ?? new Error("Cannot reach the API right now.");
 }
 
 export interface InboxMailboxStatus {

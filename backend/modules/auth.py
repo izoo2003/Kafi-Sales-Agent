@@ -18,6 +18,38 @@ DEFAULT_ADMIN_FULL_NAME = "Administrator"
 
 SESSION_DAYS = 30
 _PBKDF2_ITERATIONS = 120_000
+_TOKEN_CACHE_TTL_SECONDS = 45
+_token_user_cache: dict[str, tuple[float, int, str]] = {}
+
+
+def _cache_auth_hit(token: str, user: AppUser) -> None:
+    role = user.role.value if isinstance(user.role, AppUserRole) else str(user.role)
+    _token_user_cache[token] = (
+        datetime.now(timezone.utc).timestamp() + _TOKEN_CACHE_TTL_SECONDS,
+        user.id,
+        role,
+    )
+
+
+def get_cached_auth(token: str | None) -> tuple[int, str] | None:
+    """Return (user_id, role) from short-lived cache to avoid a DB hit every request."""
+    if not token:
+        return None
+    row = _token_user_cache.get(token)
+    if not row:
+        return None
+    expires_at, user_id, role = row
+    if expires_at < datetime.now(timezone.utc).timestamp():
+        _token_user_cache.pop(token, None)
+        return None
+    return user_id, role
+
+
+def invalidate_token_cache(token: str | None = None) -> None:
+    if token:
+        _token_user_cache.pop(token, None)
+    else:
+        _token_user_cache.clear()
 
 
 def hash_password(password: str, *, salt: str | None = None) -> str:
@@ -112,6 +144,7 @@ def create_session(db: Session, user: AppUser) -> AppUserSession:
 
 def revoke_session(db: Session, token: str) -> None:
     db.query(AppUserSession).filter(AppUserSession.token == token).delete()
+    invalidate_token_cache(token)
     db.commit()
 
 
@@ -125,10 +158,13 @@ def get_user_by_token(db: Session, token: str | None) -> AppUser | None:
         .first()
     )
     if not row:
+        invalidate_token_cache(token)
         return None
     user = db.query(AppUser).filter(AppUser.id == row.user_id).first()
     if not user or not user.is_active:
+        invalidate_token_cache(token)
         return None
+    _cache_auth_hit(token, user)
     return user
 
 

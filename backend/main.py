@@ -151,10 +151,16 @@ async def require_api_auth(request, call_next):
 
         return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
 
+    from modules import auth as auth_module
+
+    cached = auth_module.get_cached_auth(token.strip())
+    if cached:
+        request.state.user_id = cached[0]
+        request.state.user_role = cached[1]
+        return await call_next(request)
+
     db = SessionLocal()
     try:
-        from modules import auth as auth_module
-
         user = auth_module.get_user_by_token(db, token.strip())
         if not user:
             from fastapi.responses import JSONResponse
@@ -173,6 +179,7 @@ async def require_api_auth(request, call_next):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
