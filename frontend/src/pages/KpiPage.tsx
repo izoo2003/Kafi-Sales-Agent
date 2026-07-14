@@ -7,6 +7,7 @@ import {
   type AppUser,
 } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { exportKpiReportPdf } from "../utils/exportKpiPdf";
 
 interface KpiPageProps {
   onError: (message: string) => void;
@@ -68,6 +69,7 @@ export function KpiPage({ onError }: KpiPageProps) {
   const [summarySource, setSummarySource] = useState<string | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const [pdfExporting, setPdfExporting] = useState(false);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -135,6 +137,24 @@ export function KpiPage({ onError }: KpiPageProps) {
       window.setTimeout(() => setCopyState("idle"), 2000);
     } catch {
       setCopyState("failed");
+    }
+  }
+
+  function exportPdf() {
+    if (!report) return;
+    setPdfExporting(true);
+    try {
+      exportKpiReportPdf({
+        report,
+        summary,
+        summarySubject,
+        scopeLabel,
+        periodLabel,
+      });
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to export KPI PDF");
+    } finally {
+      setPdfExporting(false);
     }
   }
 
@@ -219,6 +239,14 @@ export function KpiPage({ onError }: KpiPageProps) {
           >
             {summaryLoading ? "Generating…" : "Generate summary"}
           </button>
+          <button
+            type="button"
+            disabled={!report || loading || pdfExporting}
+            onClick={exportPdf}
+            className="rounded-lg border border-slate-600 bg-slate-800 px-4 py-2 text-sm font-medium text-slate-100 hover:bg-slate-700 disabled:opacity-50"
+          >
+            {pdfExporting ? "Exporting…" : "Export PDF"}
+          </button>
         </div>
       </div>
 
@@ -249,17 +277,27 @@ export function KpiPage({ onError }: KpiPageProps) {
                     </p>
                   )}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void copySummary()}
-                  className="rounded-lg border border-slate-600 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800"
-                >
-                  {copyState === "copied"
-                    ? "Copied"
-                    : copyState === "failed"
-                      ? "Copy failed"
-                      : "Copy for boss"}
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void copySummary()}
+                    className="rounded-lg border border-slate-600 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800"
+                  >
+                    {copyState === "copied"
+                      ? "Copied"
+                      : copyState === "failed"
+                        ? "Copy failed"
+                        : "Copy for boss"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={pdfExporting}
+                    onClick={exportPdf}
+                    className="rounded-lg border border-emerald-700/60 px-3 py-1.5 text-sm text-emerald-200 hover:bg-emerald-950/40 disabled:opacity-50"
+                  >
+                    Export PDF
+                  </button>
+                </div>
               </div>
               <pre className="whitespace-pre-wrap rounded-lg border border-slate-800 bg-slate-950/60 p-4 text-sm leading-relaxed text-slate-200">
                 {summary}
