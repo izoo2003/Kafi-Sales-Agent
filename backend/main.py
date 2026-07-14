@@ -48,13 +48,25 @@ def _run_daily_job():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Applying database migrations…", flush=True)
-    try:
-        run_migrations()
-    except Exception as exc:
-        print(f"Database migration failed: {exc}", flush=True)
-        raise
-    print("Migrations complete.", flush=True)
+    import os
+    from pathlib import Path
+
+    # Railway start.sh migrates once before workers; skip here to avoid startup races.
+    skip_migrate = os.environ.get("KAFI_SKIP_LIFESPAN_MIGRATE", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if not skip_migrate:
+        print("Applying database migrations…", flush=True)
+        try:
+            run_migrations()
+        except Exception as exc:
+            print(f"Database migration failed: {exc}", flush=True)
+            raise
+        print("Migrations complete.", flush=True)
+    else:
+        print("Skipping lifespan migrations (already applied by start.sh).", flush=True)
 
     try:
         import twilio  # noqa: F401
@@ -79,19 +91,21 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"WARNING: Twilio calling check failed: {exc}", flush=True)
 
-    db = SessionLocal()
+    # Seed/admin must not take down the whole process — that yields Railway 502s
+    # which browsers misreport as CORS (no Access-Control headers on the proxy error).
     try:
-        seed_sample_data(db)
-        ensure_default_admin(db)
-    finally:
-        db.close()
+        db = SessionLocal()
+        try:
+            seed_sample_data(db)
+            ensure_default_admin(db)
+        finally:
+            db.close()
+    except Exception as exc:
+        print(f"WARNING: startup seed/admin failed: {exc}", flush=True)
 
     print("Application startup complete.", flush=True)
 
-    # With --workers 2, only one process should own the daily scheduler.
-    import os
-    from pathlib import Path
-
+    # With --workers >1, only one process should own the daily scheduler.
     lock_path = Path("/tmp/kafi_apscheduler.lock")
     run_scheduler = True
     try:
@@ -176,9 +190,18 @@ async def require_api_auth(request, call_next):
 
 # CORS must be registered AFTER auth middleware so it stays outermost.
 # Otherwise unauthenticated 401s skip CORS headers and the browser shows "Failed to fetch".
+# Production origin listed explicitly; regex covers preview deployments (*.vercel.app).
+_CORS_ORIGINS = list(
+    dict.fromkeys(
+        [
+            *settings.cors_origin_list,
+            "https://kafi-sales-agent.vercel.app",
+        ]
+    )
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origin_list,
+    allow_origins=_CORS_ORIGINS,
     allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
