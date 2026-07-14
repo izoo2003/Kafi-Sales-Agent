@@ -96,15 +96,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origin_list,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
 _PUBLIC_API_PATHS = {"/api/health", "/api/auth/login"}
 _PUBLIC_API_PREFIXES = ("/api/webhooks/",)
 
@@ -143,6 +134,17 @@ async def require_api_auth(request, call_next):
         db.close()
 
     return await call_next(request)
+
+
+# CORS must be registered AFTER auth middleware so it stays outermost.
+# Otherwise unauthenticated 401s skip CORS headers and the browser shows "Failed to fetch".
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 app.include_router(auth.router, prefix="/api")
