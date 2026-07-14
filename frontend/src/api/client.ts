@@ -1286,6 +1286,27 @@ export const client = {
     request<void>(`/calls/${interactionId}`, { method: "DELETE" }),
   getCallRecordingUrl: (interactionId: number, download = false) =>
     `${API_BASE}/calls/${interactionId}/recording${download ? "?download=1" : ""}`,
+  /** Authenticated fetch — browser <audio>/<a href> cannot send Bearer tokens. */
+  fetchCallRecordingBlob: async (interactionId: number, download = false) => {
+    const token = getStoredToken();
+    const url = `${API_BASE}/calls/${interactionId}/recording${download ? "?download=1" : ""}`;
+    const res = await fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (res.status === 401) {
+      clearSession();
+      window.dispatchEvent(new Event("kafi:auth-expired"));
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(parseErrorDetail(text, res.statusText || "Failed to load recording"));
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get("Content-Disposition") || "";
+    const match = /filename="?([^"]+)"?/i.exec(disposition);
+    const filename = match?.[1] || `call-${interactionId}.mp3`;
+    return { blob, filename, contentType: blob.type || "audio/mpeg" };
+  },
   transcribeCall: (interactionId: number, wait = false) =>
     request<CallHistoryItem>(
       `/calls/${interactionId}/transcribe${wait ? "?wait=true" : ""}`,

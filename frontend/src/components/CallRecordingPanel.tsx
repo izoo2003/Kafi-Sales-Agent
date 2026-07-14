@@ -31,13 +31,47 @@ export function CallRecordingPanel({
   const [showCaptions, setShowCaptions] = useState(Boolean(call.transcript));
   const [transcribing, setTranscribing] = useState(false);
   const [polling, setPolling] = useState(false);
+  const [audioSrc, setAudioSrc] = useState<string | null>(null);
+  const [audioLoading, setAudioLoading] = useState(false);
+  const [downloading, setDownloading] = useState(false);
 
-  const recordingUrl = call.recording_available
-    ? client.getCallRecordingUrl(call.id, false)
-    : null;
-  const downloadUrl = call.recording_available
-    ? client.getCallRecordingUrl(call.id, true)
-    : null;
+  useEffect(() => {
+    if (!call.recording_available) {
+      setAudioSrc((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+      return;
+    }
+
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    setAudioLoading(true);
+
+    void client
+      .fetchCallRecordingBlob(call.id, false)
+      .then(({ blob }) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setAudioSrc((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return objectUrl;
+        });
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          onError(e instanceof Error ? e.message : "Failed to load recording");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setAudioLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [call.id, call.recording_available, onError]);
 
   useEffect(() => {
     if (!call.recording_available) return;
@@ -87,6 +121,25 @@ export function CallRecordingPanel({
     }
   }
 
+  async function downloadRecording() {
+    setDownloading(true);
+    try {
+      const { blob, filename } = await client.fetchCallRecordingBlob(call.id, true);
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to download recording");
+    } finally {
+      setDownloading(false);
+    }
+  }
+
   if (!call.recording_available) {
     if (compact) return null;
     return (
@@ -110,20 +163,24 @@ export function CallRecordingPanel({
             </span>
           ) : null}
         </div>
-        {recordingUrl && (
-          <audio controls preload="metadata" className="w-full h-10" src={recordingUrl}>
+        {audioLoading && !audioSrc ? (
+          <p className="text-xs text-slate-500">Loading recording…</p>
+        ) : audioSrc ? (
+          <audio controls preload="metadata" className="w-full h-10" src={audioSrc}>
             Your browser does not support audio playback.
           </audio>
+        ) : (
+          <p className="text-xs text-slate-500">Recording unavailable right now.</p>
         )}
         <div className="flex flex-wrap gap-2">
-          {downloadUrl && (
-            <a
-              href={downloadUrl}
-              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs text-slate-200 no-underline"
-            >
-              Download recording
-            </a>
-          )}
+          <button
+            type="button"
+            onClick={() => void downloadRecording()}
+            disabled={downloading}
+            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs text-slate-200 disabled:opacity-50"
+          >
+            {downloading ? "Downloading…" : "Download recording"}
+          </button>
           <button
             type="button"
             onClick={() => setShowCaptions((open) => !open)}
