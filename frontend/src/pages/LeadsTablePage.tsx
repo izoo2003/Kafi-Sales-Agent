@@ -16,6 +16,7 @@ import { AssignedToSelect, type AssigneeOption } from "../components/AssignedToS
 import { FollowUpScheduleControl } from "../components/FollowUpScheduleControl";
 import { LeadsTableCsvImport } from "../components/LeadsTableCsvImport";
 import { SocialLinksCell } from "../components/SocialLinksCell";
+import { BulkEmailModal } from "../components/BulkEmailModal";
 import { CallLeadButton } from "../components/CallLeadButton";
 import { EmailComposeButton } from "../components/EmailComposeLink";
 import { Pagination } from "../components/Pagination";

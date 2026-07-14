@@ -24,7 +24,7 @@ export function callOutcomeBadge(value: string | null | undefined): string {
   return "bg-slate-700/50 text-slate-300 border-slate-600";
 }
 
-export function callOutcomeListNotice(value: CallOutcome | null | undefined): string | null {
+export function callOutcomeListNotice(value: string | null | undefined): string | null {
   if (value === "interested") return "Client moved to Follow up clients.";
   if (value === "not_interested") return "Client moved to Not interested.";
   if (value === "not_received_call") return "Client moved to Did not receive call.";
