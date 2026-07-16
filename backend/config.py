@@ -31,7 +31,8 @@ class Settings(BaseSettings):
     inbox_since: str | None = None
     gmail_inbox_since: str | None = None  # legacy alias — use INBOX_SINCE instead
 
-    # Outlook shared inbox via IMAP (receive) + SMTP (send) — integrations/outlook_client.py
+    # Outlook shared inbox via IMAP (receive) + Microsoft Graph Mail.Send (send).
+    # SMTP is often disabled on personal @outlook.com (5.7.139) — do not rely on it.
     # Set MAILBOX_ENABLED=true when ready to use Inbox / Approve & Send.
     mailbox_enabled: bool = False
     mailbox_imap_host: str = "outlook.office365.com"

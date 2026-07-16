@@ -110,15 +110,21 @@ export interface InboxStatus {
 
 export interface InboxMessageSummary {
   uid: string;
+  folder?: string;
   provider?: string | null;
   subject: string;
   from_email: string | null;
   from_name: string | null;
+  to?: string[];
+  cc?: string[];
   date: string | null;
   preview: string;
   unread: boolean;
   has_attachments: boolean;
   message_id: string | null;
+  in_reply_to?: string | null;
+  references?: string | null;
+  direction?: "inbound" | "outbound" | string;
 }
 
 export interface InboxAttachment {
@@ -133,6 +139,24 @@ export interface InboxMessageDetail extends InboxMessageSummary {
   body_text: string | null;
   body_html: string | null;
   attachments: InboxAttachment[];
+}
+
+export interface InboxThreadSummary {
+  thread_id: string;
+  subject: string;
+  participants: string[];
+  message_count: number;
+  unread_count: number;
+  latest_date: string | null;
+  latest_preview: string;
+  latest_from_email: string | null;
+  latest_from_name: string | null;
+  has_attachments: boolean;
+  provider?: string | null;
+}
+
+export interface InboxThreadDetail extends InboxThreadSummary {
+  messages: InboxMessageDetail[];
 }
 
 export interface InboxReplyResponse {
@@ -1138,7 +1162,26 @@ export const client = {
   getInboxStatus: () => request<InboxStatus>("/inbox/status"),
   resetInboxCutoff: () =>
     request<{ showing_since: string }>("/inbox/reset-cutoff", { method: "POST" }),
+  clearInboxCutoff: () =>
+    request<{ showing_since: string | null }>("/inbox/clear-cutoff", { method: "POST" }),
   getInboxUnreadCount: () => request<{ count: number }>("/inbox/unread-count"),
+  listInboxThreads: (params: { limit?: number; unread_only?: boolean } = {}) => {
+    const search = new URLSearchParams();
+    if (params.limit) search.set("limit", String(params.limit));
+    if (params.unread_only) search.set("unread_only", "true");
+    const query = search.toString();
+    return request<InboxThreadSummary[]>(`/inbox/threads${query ? `?${query}` : ""}`);
+  },
+  getInboxThread: (threadId: string) =>
+    request<InboxThreadDetail>(`/inbox/threads/${encodeURIComponent(threadId)}`),
+  replyInboxThread: (
+    threadId: string,
+    payload: { body: string; to?: string; subject?: string; cc?: string },
+  ) =>
+    request<InboxReplyResponse>(`/inbox/threads/${encodeURIComponent(threadId)}/reply`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   listInboxMessages: (params: { limit?: number; unread_only?: boolean } = {}) => {
     const search = new URLSearchParams();
     if (params.limit) search.set("limit", String(params.limit));
@@ -1146,15 +1189,18 @@ export const client = {
     const query = search.toString();
     return request<InboxMessageSummary[]>(`/inbox/messages${query ? `?${query}` : ""}`);
   },
-  getInboxMessage: (uid: string) =>
-    request<InboxMessageDetail>(`/inbox/messages/${encodeURIComponent(uid)}`),
-  markInboxMessageRead: (uid: string) =>
-    request<{ count: number }>(`/inbox/messages/${encodeURIComponent(uid)}/read`, {
-      method: "POST",
-    }),
+  getInboxMessage: (uid: string, folder = "INBOX") =>
+    request<InboxMessageDetail>(
+      `/inbox/messages/${encodeURIComponent(uid)}?folder=${encodeURIComponent(folder)}`,
+    ),
+  markInboxMessageRead: (uid: string, folder = "INBOX") =>
+    request<{ count: number }>(
+      `/inbox/messages/${encodeURIComponent(uid)}/read?folder=${encodeURIComponent(folder)}`,
+      { method: "POST" },
+    ),
   replyInboxMessage: (
     uid: string,
-    payload: { body: string; to?: string; subject?: string; cc?: string },
+    payload: { body: string; to?: string; subject?: string; cc?: string; folder?: string },
   ) =>
     request<InboxReplyResponse>(`/inbox/messages/${encodeURIComponent(uid)}/reply`, {
       method: "POST",

@@ -1,7 +1,9 @@
 """One-time Outlook OAuth setup — prints a refresh token for backend/.env.
 
-Microsoft disabled app-password / basic auth for personal @outlook.com (2024+).
-OAuth is required for IMAP inbox access.
+Microsoft disabled SMTP AUTH for many personal @outlook.com mailboxes (error 5.7.139).
+This app therefore:
+  - sends via Microsoft Graph Mail.Send
+  - reads inbox via IMAP OAuth (outlook.office.com)
 
 === Azure app setup (one time, ~5 min) ===
 
@@ -22,8 +24,10 @@ OAuth is required for IMAP inbox access.
    - "Allow public client flows" → Yes → Save
 
 5. Left menu → API permissions → Add a permission:
-   - APIs my organization uses → Office 365 Exchange Online
-   - Delegated permissions → check IMAP.AccessAsUser.All and SMTP.Send → Add
+   - Microsoft APIs → Microsoft Graph → Delegated permissions → Mail.Send → Add
+   - (Optional) IMAP for inbox: if you can find Office 365 Exchange Online /
+     Legacy APIs, add IMAP.AccessAsUser.All — otherwise the script will request
+     it during browser consent.
 
 6. Run this script (from backend/):
    python scripts/get_outlook_refresh_token.py
@@ -39,10 +43,12 @@ from pathlib import Path
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_DIR))
 
-SCOPES = [
+# Different resources — consent separately (MSAL cannot mix audiences in one call).
+GRAPH_SEND_SCOPES = [
+    "https://graph.microsoft.com/Mail.Send",
+]
+IMAP_SCOPES = [
     "https://outlook.office.com/IMAP.AccessAsUser.All",
-    "https://outlook.office.com/SMTP.Send",
-    "offline_access",
 ]
 
 
@@ -56,7 +62,8 @@ def main() -> None:
     print("Outlook Inbox OAuth setup")
     print("=" * 50)
     print(
-        "Personal @outlook.com accounts MUST use OAuth (app passwords no longer work).\n"
+        "Personal @outlook.com accounts often have SMTP disabled.\n"
+        "This script consents to Graph Mail.Send (outbound) and IMAP (inbox).\n"
         "If you have not created an Azure app yet, read the steps at the top of:\n"
         "  scripts/get_outlook_refresh_token.py\n"
     )
@@ -78,14 +85,15 @@ def main() -> None:
     else:
         app = PublicClientApplication(client_id, authority=authority)
 
-    print("\nOpening browser — sign in as your Outlook mailbox (kaficommoditiespvtltd@outlook.com)…")
+    print("\n[1/2] Opening browser — consent to Microsoft Graph Mail.Send…")
+    print("Sign in as kaficommoditiespvtltd@outlook.com")
     result = app.acquire_token_interactive(
-        scopes=SCOPES,
+        scopes=GRAPH_SEND_SCOPES,
         prompt="consent",
     )
 
     if "access_token" not in result:
-        print("\nAuth failed:", result.get("error_description") or result, file=sys.stderr)
+        print("\nAuth failed (Graph):", result.get("error_description") or result, file=sys.stderr)
         print(
             "\nIf you see 'account does not exist in tenant': recreate the Azure app with\n"
             "'Personal Microsoft accounts' enabled (not Single tenant only).",
@@ -102,10 +110,25 @@ def main() -> None:
         )
         sys.exit(1)
 
+    print("\n[2/2] Opening browser — consent to IMAP inbox access…")
+    imap_result = app.acquire_token_interactive(
+        scopes=IMAP_SCOPES,
+        prompt="consent",
+    )
+    if "access_token" not in imap_result:
+        print(
+            "\nWARNING: IMAP consent failed — sending may still work, but Inbox may not.\n"
+            f"Detail: {imap_result.get('error_description') or imap_result}",
+            file=sys.stderr,
+        )
+    elif imap_result.get("refresh_token"):
+        refresh = imap_result["refresh_token"]
+
     default_email = "kaficommoditiespvtltd@outlook.com"
     email = input(f"\nMailbox email [{default_email}]: ").strip() or default_email
 
     print("\nAdd these lines to backend/.env (remove MAILBOX_PASSWORD if present):\n")
+    print("MAILBOX_ENABLED=true")
     print(f"MAILBOX_EMAIL={email}")
     print(f"MAILBOX_CLIENT_ID={client_id}")
     if client_secret:

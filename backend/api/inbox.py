@@ -10,6 +10,8 @@ from api.schemas import (
     InboxReplyRequest,
     InboxReplyResponse,
     InboxStatus,
+    InboxThreadDetail,
+    InboxThreadSummary,
     InboxUnreadCount,
 )
 from db.models import AppUser
@@ -46,6 +48,75 @@ def reset_inbox_cutoff():
     return inbox_module.reset_cutoff()
 
 
+@router.post("/clear-cutoff")
+def clear_inbox_cutoff():
+    """Show all mailbox mail again (undo 'New mail only')."""
+    _guard_configured()
+    return inbox_module.clear_cutoff()
+
+
+@router.get("/threads", response_model=list[InboxThreadSummary])
+def list_inbox_threads(
+    limit: int = Query(default=30, ge=1, le=100),
+    unread_only: bool = Query(default=False),
+):
+    _guard_configured()
+    try:
+        return inbox_module.list_threads(limit=limit, unread_only=unread_only)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, _inbox_error_message(exc)) from exc
+
+
+@router.get("/threads/{thread_id}", response_model=InboxThreadDetail)
+def get_inbox_thread(thread_id: str):
+    _guard_configured()
+    try:
+        thread = inbox_module.get_thread(thread_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"Could not read conversation: {exc}") from exc
+    if not thread:
+        raise HTTPException(404, "Conversation not found")
+    return thread
+
+
+@router.post("/threads/{thread_id}/reply", response_model=InboxReplyResponse)
+def reply_inbox_thread(
+    thread_id: str,
+    payload: InboxReplyRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    from modules import activity as activity_module
+
+    _guard_configured()
+    try:
+        result = inbox_module.reply_to_thread(
+            thread_id,
+            payload.body,
+            to=payload.to,
+            subject=payload.subject,
+            cc=payload.cc,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"Could not send reply: {exc}") from exc
+    if result.get("status") != "sent":
+        raise HTTPException(502, result.get("message", "Reply failed"))
+
+    subject = result.get("subject") or payload.subject or "(no subject)"
+    to_addr = result.get("to") or payload.to or ""
+    activity_module.log_activity(
+        db,
+        user_id=user.id,
+        activity_type=activity_module.INBOX_REPLIED,
+        title="Inbox reply sent",
+        summary=f"Replied to “{subject}”" + (f" → {to_addr}" if to_addr else ""),
+        entity_type="inbox_thread",
+        entity_id=None,
+        details={"thread_id": thread_id, "subject": subject, "to": to_addr},
+    )
+    return result
+
+
 @router.get("/messages", response_model=list[InboxMessageSummary])
 def list_inbox_messages(
     limit: int = Query(default=25, ge=1, le=100),
@@ -59,10 +130,13 @@ def list_inbox_messages(
 
 
 @router.get("/messages/{uid}", response_model=InboxMessageDetail)
-def get_inbox_message(uid: str):
+def get_inbox_message(
+    uid: str,
+    folder: str = Query(default="INBOX"),
+):
     _guard_configured()
     try:
-        message = inbox_module.get_message(uid)
+        message = inbox_module.get_message(uid, folder=folder)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"Could not read message: {exc}") from exc
     if not message:
@@ -71,10 +145,13 @@ def get_inbox_message(uid: str):
 
 
 @router.post("/messages/{uid}/read", response_model=InboxUnreadCount)
-def mark_inbox_message_read(uid: str):
+def mark_inbox_message_read(
+    uid: str,
+    folder: str = Query(default="INBOX"),
+):
     _guard_configured()
     try:
-        inbox_module.mark_read(uid, True)
+        inbox_module.mark_read(uid, True, folder=folder)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"Could not update message: {exc}") from exc
     return {"count": inbox_module.unread_count()}
@@ -94,6 +171,7 @@ def reply_inbox_message(
         result = inbox_module.reply(
             uid,
             payload.body,
+            folder=payload.folder or "INBOX",
             to=payload.to,
             subject=payload.subject,
             cc=payload.cc,

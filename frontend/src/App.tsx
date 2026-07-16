@@ -398,8 +398,9 @@ function DashboardApp() {
               <div className="mb-7 p-4 rounded-lg bg-red-500/10 border border-red-500/30 text-red-200 text-sm">
                 {error}
                 <p className="mt-1 text-red-300/70">
-                  If this keeps appearing, hard-refresh or log in again — the API may still be
-                  warming up after a Railway deploy.
+                  If this keeps appearing, hard-refresh the page or log in again. On localhost,
+                  make sure the backend is running (`cd backend && python run.py`) and restarted
+                  after code changes.
                 </p>
               </div>
             )}

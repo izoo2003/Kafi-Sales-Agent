@@ -1,4 +1,4 @@
-"""Outbound email — uses the company Outlook mailbox (SMTP)."""
+"""Outbound email — uses the company Outlook mailbox (Microsoft Graph Mail.Send)."""
 
 from __future__ import annotations
 

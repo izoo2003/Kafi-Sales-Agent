@@ -805,23 +805,45 @@ class InboxAttachment(BaseModel):
 
 class InboxMessageSummary(BaseModel):
     uid: str
+    folder: str = "INBOX"
     provider: Optional[str] = None
     subject: str
     from_email: Optional[str] = None
     from_name: Optional[str] = None
+    to: list[str] = Field(default_factory=list)
+    cc: list[str] = Field(default_factory=list)
     date: Optional[datetime] = None
     preview: str = ""
     unread: bool = False
     has_attachments: bool = False
     message_id: Optional[str] = None
+    in_reply_to: Optional[str] = None
+    references: Optional[str] = None
+    direction: str = "inbound"
 
 
 class InboxMessageDetail(InboxMessageSummary):
-    to: list[str] = Field(default_factory=list)
-    cc: list[str] = Field(default_factory=list)
     body_text: Optional[str] = None
     body_html: Optional[str] = None
     attachments: list[InboxAttachment] = Field(default_factory=list)
+
+
+class InboxThreadSummary(BaseModel):
+    thread_id: str
+    subject: str
+    participants: list[str] = Field(default_factory=list)
+    message_count: int = 1
+    unread_count: int = 0
+    latest_date: Optional[datetime] = None
+    latest_preview: str = ""
+    latest_from_email: Optional[str] = None
+    latest_from_name: Optional[str] = None
+    has_attachments: bool = False
+    provider: Optional[str] = None
+
+
+class InboxThreadDetail(InboxThreadSummary):
+    messages: list[InboxMessageDetail] = Field(default_factory=list)
 
 
 class InboxReplyRequest(BaseModel):
@@ -829,6 +851,7 @@ class InboxReplyRequest(BaseModel):
     to: Optional[str] = None
     subject: Optional[str] = None
     cc: Optional[str] = None
+    folder: Optional[str] = "INBOX"
 
 
 class InboxReplyResponse(BaseModel):

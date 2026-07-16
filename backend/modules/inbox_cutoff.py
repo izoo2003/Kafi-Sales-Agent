@@ -1,4 +1,4 @@
-"""Persist the inbox start moment — only messages at/after this time are shown."""
+"""Optional inbox start moment — only applied when explicitly set."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from config import settings
 
 _BACKEND_DIR = Path(__file__).resolve().parents[1]
 _CUTOFF_FILE = _BACKEND_DIR / "storage" / "inbox_cutoff.json"
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 def _parse_datetime(value: str) -> datetime | None:
@@ -46,11 +47,29 @@ def _write_file_cutoff(value: datetime) -> None:
     )
 
 
-def get_inbox_since(*, initialize: bool = True) -> datetime:
-    """Return the earliest message time to include. Auto-initializes to now if unset."""
-    env_value = _parse_datetime(
-        settings.inbox_since or settings.gmail_inbox_since or ""
+def clear_inbox_cutoff() -> None:
+    """Remove the optional cutoff so all mailbox mail is eligible again."""
+    try:
+        if _CUTOFF_FILE.is_file():
+            _CUTOFF_FILE.unlink()
+    except OSError:
+        pass
+
+
+def has_active_cutoff() -> bool:
+    return bool(
+        _parse_datetime(settings.inbox_since or settings.gmail_inbox_since or "")
+        or _read_file_cutoff()
     )
+
+
+def get_inbox_since(*, initialize: bool = False) -> datetime:
+    """Earliest message time to include.
+
+    Unlike before, this does NOT auto-create a "now" cutoff on first use —
+    that hid all existing mail. With no cutoff configured, returns epoch (show all).
+    """
+    env_value = _parse_datetime(settings.inbox_since or settings.gmail_inbox_since or "")
     if env_value:
         return env_value
 
@@ -58,14 +77,14 @@ def get_inbox_since(*, initialize: bool = True) -> datetime:
     if stored:
         return stored
 
-    now = datetime.now(timezone.utc)
     if initialize:
-        _write_file_cutoff(now)
-    return now
+        # Kept for callers that still pass initialize=True; still do not hide mail.
+        return _EPOCH
+    return _EPOCH
 
 
 def set_inbox_since_to_now() -> datetime:
-    """Ignore all mail before right now."""
+    """Ignore all mail before right now (explicit user action)."""
     now = datetime.now(timezone.utc)
     _write_file_cutoff(now)
     return now
@@ -78,6 +97,8 @@ def gmail_after_query(since: datetime | None = None) -> str:
 
 
 def message_is_after_cutoff(message_date: datetime | None) -> bool:
+    if not has_active_cutoff():
+        return True
     if message_date is None:
         return True
     cutoff = get_inbox_since()
