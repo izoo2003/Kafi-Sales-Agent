@@ -19,8 +19,10 @@ export type LeadsTableSection =
   | "not_interested_clients"
   | "not_received_call_clients";
 
+export type MailSection = "inbox" | "sent" | "trash" | "archive";
+
 export type NavChild = {
-  id: LeadsTableSection;
+  id: string;
   label: string;
   count: number;
 };
@@ -40,8 +42,10 @@ interface AppSidebarProps {
   navItems: NavItem[];
   activeTab: Tab;
   tableSection?: LeadsTableSection;
+  mailSection?: MailSection;
   onSelectTab: (tab: Tab) => void;
   onSelectTableSection?: (section: LeadsTableSection) => void;
+  onSelectMailSection?: (section: MailSection) => void;
   onRefresh: () => void;
   userLabel?: string;
   userRole?: string;
@@ -52,18 +56,27 @@ export function AppSidebar({
   navItems,
   activeTab,
   tableSection = "all",
+  mailSection = "inbox",
   onSelectTab,
   onSelectTableSection,
+  onSelectMailSection,
   onRefresh,
   userLabel,
   userRole,
   onLogout,
 }: AppSidebarProps) {
   const [leadsMenuOpen, setLeadsMenuOpen] = useState(activeTab === "table");
+  const [mailMenuOpen, setMailMenuOpen] = useState(activeTab === "inbox");
 
   useEffect(() => {
     if (activeTab === "table") {
       setLeadsMenuOpen(true);
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab === "inbox") {
+      setMailMenuOpen(true);
     }
   }, [activeTab]);
 
@@ -97,10 +110,20 @@ export function AppSidebar({
           const hasAlert = Boolean(item.alert);
           const hasChildren = Boolean(item.children?.length);
           const isTableParent = item.id === "table" && hasChildren;
+          const isMailParent = item.id === "inbox" && hasChildren;
+          const isExpandableParent = isTableParent || isMailParent;
+          const menuOpen = isTableParent ? leadsMenuOpen : isMailParent ? mailMenuOpen : false;
+          const setMenuOpen = isTableParent
+            ? setLeadsMenuOpen
+            : isMailParent
+              ? setMailMenuOpen
+              : undefined;
+          const defaultChildId = isTableParent ? "all" : "inbox";
+          const activeChildId = isTableParent ? tableSection : isMailParent ? mailSection : null;
           const parentHighlighted =
-            isTableParent && isActive && tableSection === "all"
+            isExpandableParent && isActive && activeChildId === defaultChildId
               ? true
-              : !isTableParent && isActive;
+              : !isExpandableParent && isActive;
 
           return (
             <div key={item.id} className="space-y-1">
@@ -108,7 +131,7 @@ export function AppSidebar({
                 className={`w-full flex items-center rounded-lg text-sm font-medium transition ${
                   parentHighlighted
                     ? "bg-emerald-600 text-white shadow-sm shadow-emerald-900/30"
-                    : isTableParent && isActive
+                    : isExpandableParent && isActive
                       ? "bg-emerald-700/35 text-emerald-100"
                       : "text-slate-300 hover:bg-slate-800 hover:text-slate-100"
                 }`}
@@ -120,6 +143,12 @@ export function AppSidebar({
                       setLeadsMenuOpen(true);
                       onSelectTab("table");
                       onSelectTableSection?.("all");
+                      return;
+                    }
+                    if (isMailParent) {
+                      setMailMenuOpen(true);
+                      onSelectTab("inbox");
+                      onSelectMailSection?.("inbox");
                       return;
                     }
                     onSelectTab(item.id);
@@ -154,37 +183,48 @@ export function AppSidebar({
                   </span>
                 </button>
 
-                {isTableParent && (
+                {isExpandableParent && setMenuOpen && (
                   <button
                     type="button"
-                    aria-label={leadsMenuOpen ? "Collapse Leads table menu" : "Expand Leads table menu"}
+                    aria-label={
+                      menuOpen
+                        ? `Collapse ${item.label} menu`
+                        : `Expand ${item.label} menu`
+                    }
                     onClick={(e) => {
                       e.stopPropagation();
-                      setLeadsMenuOpen((open) => !open);
+                      setMenuOpen((open) => !open);
                     }}
                     className={`shrink-0 px-2.5 py-2.5 rounded-r-lg text-xs ${
-                      parentHighlighted || (isTableParent && isActive)
+                      parentHighlighted || (isExpandableParent && isActive)
                         ? "text-emerald-50/90 hover:bg-emerald-500/20"
                         : "text-slate-400 hover:text-slate-200"
                     }`}
                   >
-                    {leadsMenuOpen ? "▾" : "▸"}
+                    {menuOpen ? "▾" : "▸"}
                   </button>
                 )}
               </div>
 
-              {isTableParent && leadsMenuOpen && item.children && (
+              {isExpandableParent && menuOpen && item.children && (
                 <div className="ml-3 pl-2 border-l border-slate-700 space-y-0.5">
                   {item.children.map((child) => {
-                    const childActive = activeTab === "table" && tableSection === child.id;
+                    const childActive =
+                      isActive && activeChildId === child.id;
                     return (
                       <button
                         key={child.id}
                         type="button"
                         onClick={() => {
-                          setLeadsMenuOpen(true);
-                          onSelectTab("table");
-                          onSelectTableSection?.(child.id);
+                          if (isTableParent) {
+                            setLeadsMenuOpen(true);
+                            onSelectTab("table");
+                            onSelectTableSection?.(child.id as LeadsTableSection);
+                          } else if (isMailParent) {
+                            setMailMenuOpen(true);
+                            onSelectTab("inbox");
+                            onSelectMailSection?.(child.id as MailSection);
+                          }
                         }}
                         className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm text-left transition ${
                           childActive

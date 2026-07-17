@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { client, QUOTATION_AGENT_URL } from "./api/client";
 import { useAuth } from "./auth/AuthContext";
-import { AppSidebar, type LeadsTableSection, type NavItem, type Tab } from "./components/AppSidebar";
+import {
+  AppSidebar,
+  type LeadsTableSection,
+  type MailSection,
+  type NavItem,
+  type Tab,
+} from "./components/AppSidebar";
 import { InboxAlertToasts } from "./components/InboxAlertToasts";
 import { InterestedFollowUpAlertToasts } from "./components/InterestedFollowUpAlertToasts";
 import { EmailActivityPage } from "./pages/EmailActivityPage";
@@ -47,12 +53,19 @@ function DashboardApp() {
   const { user, isAdmin, logout } = useAuth();
   const [tab, setTab] = useState<Tab>("activity");
   const [tableSection, setTableSection] = useState<LeadsTableSection>("all");
+  const [mailSection, setMailSection] = useState<MailSection>("inbox");
   const [tableCounts, setTableCounts] = useState({
     all: 0,
     old_clients: 0,
     interested_clients: 0,
     not_interested_clients: 0,
     not_received_call_clients: 0,
+  });
+  const [mailCounts, setMailCounts] = useState({
+    inbox: 0,
+    sent: 0,
+    trash: 0,
+    archive: 0,
   });
   const [leadsTableRefreshToken, setLeadsTableRefreshToken] = useState(0);
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
@@ -158,6 +171,21 @@ function DashboardApp() {
     }
   }, []);
 
+  const loadMailCounts = useCallback(async () => {
+    try {
+      const result = await client.listInboxFolders();
+      const next = { inbox: 0, sent: 0, trash: 0, archive: 0 };
+      for (const folder of result.folders) {
+        if (folder.key === "inbox" || folder.key === "sent" || folder.key === "trash" || folder.key === "archive") {
+          next[folder.key] = folder.count;
+        }
+      }
+      setMailCounts(next);
+    } catch {
+      /* optional badges */
+    }
+  }, []);
+
   const pollInbox = useCallback(() => {
     client
       .getInboxStatus()
@@ -226,6 +254,7 @@ function DashboardApp() {
     setError(null);
     void loadDiscoverLeadsCount();
     void loadTableCounts();
+    void loadMailCounts();
     void loadEmailTemplateCount();
     client.getConsentSummary().then(setConsentSummary).catch(() => setConsentSummary(null));
     client
@@ -234,11 +263,19 @@ function DashboardApp() {
       .catch(() => setEmailActivityUnread(0));
     pollInbox();
     pollInterestedFollowUps();
-  }, [loadDiscoverLeadsCount, loadEmailTemplateCount, loadTableCounts, pollInbox, pollInterestedFollowUps]);
+  }, [
+    loadDiscoverLeadsCount,
+    loadEmailTemplateCount,
+    loadMailCounts,
+    loadTableCounts,
+    pollInbox,
+    pollInterestedFollowUps,
+  ]);
 
   useEffect(() => {
     client.getConsentSummary().then(setConsentSummary).catch(() => setConsentSummary(null));
     void loadTableCounts();
+    void loadMailCounts();
     void loadDiscoverLeadsCount();
     void loadEmailTemplateCount();
     requestNotificationPermission();
@@ -268,7 +305,14 @@ function DashboardApp() {
       window.removeEventListener("click", unlock);
       window.removeEventListener("keydown", unlock);
     };
-  }, [loadDiscoverLeadsCount, loadEmailTemplateCount, loadTableCounts, pollInbox, pollInterestedFollowUps]);
+  }, [
+    loadDiscoverLeadsCount,
+    loadEmailTemplateCount,
+    loadMailCounts,
+    loadTableCounts,
+    pollInbox,
+    pollInterestedFollowUps,
+  ]);
 
   function handleSelectLead(leadId: number) {
     setError(null);
@@ -279,6 +323,7 @@ function DashboardApp() {
     setSelectedLeadId(null);
     void loadDiscoverLeadsCount();
     void loadTableCounts();
+    void loadMailCounts();
     void loadEmailTemplateCount();
   }
 
@@ -293,6 +338,22 @@ function DashboardApp() {
     setTableSection(section);
     setSelectedLeadId(null);
   }
+
+  function handleSelectMailSection(section: MailSection) {
+    setMailSection(section);
+  }
+
+  const handleMailCountsChange = useCallback(
+    (counts: {
+      inbox: number;
+      sent: number;
+      trash: number;
+      archive: number;
+    }) => {
+      setMailCounts(counts);
+    },
+    [],
+  );
 
   function handleCallFollowUpSaved(_outcome: string | null | undefined) {
     void loadTableCounts();
@@ -347,7 +408,18 @@ function DashboardApp() {
         },
       ],
     },
-    { id: "inbox", label: "Inbox", count: inboxUnread, alert: inboxUnread > 0 },
+    {
+      id: "inbox",
+      label: "Mail",
+      count: inboxUnread,
+      alert: inboxUnread > 0,
+      children: [
+        { id: "inbox", label: "Inbox", count: mailCounts.inbox },
+        { id: "sent", label: "Sent", count: mailCounts.sent },
+        { id: "trash", label: "Trash", count: mailCounts.trash },
+        { id: "archive", label: "Archive", count: mailCounts.archive },
+      ],
+    },
     { id: "calls", label: "Calls", count: 0 },
     {
       id: "quotation-agent",
@@ -374,7 +446,12 @@ function DashboardApp() {
         }}
       />
       <div className="min-h-screen flex">
-        <InboxAlertToasts onOpenInbox={() => handleSelectTab("inbox")} />
+        <InboxAlertToasts
+          onOpenInbox={() => {
+            setMailSection("inbox");
+            handleSelectTab("inbox");
+          }}
+        />
         <InterestedFollowUpAlertToasts
           onViewClient={handleViewInterestedClient}
           onAcknowledge={handleAcknowledgeInterestedFollowUp}
@@ -383,8 +460,10 @@ function DashboardApp() {
           navItems={navItems}
           activeTab={tab}
           tableSection={tableSection}
+          mailSection={mailSection}
           onSelectTab={handleSelectTab}
           onSelectTableSection={handleSelectTableSection}
+          onSelectMailSection={handleSelectMailSection}
           onRefresh={refreshAll}
           userLabel={user?.full_name || user?.username}
           userRole={user?.role}
@@ -449,7 +528,12 @@ function DashboardApp() {
               />
             )}
             {tab === "inbox" && (
-              <InboxPage onError={setError} onUnreadChange={setInboxUnread} />
+              <InboxPage
+                section={mailSection}
+                onError={setError}
+                onUnreadChange={setInboxUnread}
+                onFolderCountsChange={handleMailCountsChange}
+              />
             )}
             {tab === "calls" && selectedLeadId !== null && (
               <BuyerProfile

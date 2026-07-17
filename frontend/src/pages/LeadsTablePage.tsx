@@ -23,6 +23,7 @@ import { Pagination } from "../components/Pagination";
 import { exportLeadsTableCsv } from "../utils/exportCsv";
 
 const TABLE_PAGE_SIZE = 20;
+const TABLE_VIEW_STORAGE_PREFIX = "kafi_leads_table_view";
 
 interface LeadsTablePageProps {
   section: LeadsTableSection;
@@ -43,6 +44,60 @@ type SortField =
   | "country"
   | "latest_score"
   | "market_role";
+
+interface StoredTableView {
+  score: string;
+  marketRole: string;
+  country: string;
+  search: string;
+  sortBy: SortField;
+  sortDir: "asc" | "desc";
+}
+
+const DEFAULT_TABLE_VIEW: StoredTableView = {
+  score: "",
+  marketRole: "",
+  country: "",
+  search: "",
+  sortBy: "company_name",
+  sortDir: "desc",
+};
+
+function tableViewStorageKey(userId: number | undefined, section: LeadsTableSection): string {
+  return `${TABLE_VIEW_STORAGE_PREFIX}:${userId ?? "anonymous"}:${section}`;
+}
+
+function readStoredTableView(
+  userId: number | undefined,
+  section: LeadsTableSection,
+): StoredTableView {
+  try {
+    const raw = sessionStorage.getItem(tableViewStorageKey(userId, section));
+    if (!raw) return { ...DEFAULT_TABLE_VIEW };
+    const parsed = JSON.parse(raw) as Partial<StoredTableView>;
+    const validSortFields: SortField[] = [
+      "company_name",
+      "country",
+      "latest_score",
+      "market_role",
+    ];
+    return {
+      score: typeof parsed.score === "string" ? parsed.score : "",
+      marketRole: typeof parsed.marketRole === "string" ? parsed.marketRole : "",
+      country: typeof parsed.country === "string" ? parsed.country : "",
+      search: typeof parsed.search === "string" ? parsed.search : "",
+      sortBy:
+        parsed.sortBy && validSortFields.includes(parsed.sortBy)
+          ? parsed.sortBy
+          : DEFAULT_TABLE_VIEW.sortBy,
+      sortDir: parsed.sortDir === "asc" || parsed.sortDir === "desc"
+        ? parsed.sortDir
+        : DEFAULT_TABLE_VIEW.sortDir,
+    };
+  } catch {
+    return { ...DEFAULT_TABLE_VIEW };
+  }
+}
 
 const EDIT_INPUT =
   "w-full min-w-0 rounded-md bg-slate-950 border border-slate-700 px-2 py-1 text-sm text-slate-200";
@@ -227,7 +282,10 @@ export function LeadsTablePage({
   onSelectLead,
   onSectionCountsChange,
 }: LeadsTablePageProps) {
-  const { isAdmin } = useAuth();
+  const { isAdmin, user } = useAuth();
+  const initialTableViewRef = useRef(readStoredTableView(user?.id, section));
+  const restoringSectionRef = useRef(false);
+  const previousSectionRef = useRef(section);
   const [assigneeOptions, setAssigneeOptions] = useState<AssigneeOption[]>([]);
   const [filters, setFilters] = useState<LeadTableFilters | null>(null);
   const [rows, setRows] = useState<LeadTableRow[]>([]);
@@ -305,12 +363,12 @@ export function LeadsTablePage({
     };
   }, [isFullscreen]);
 
-  const [score, setScore] = useState("");
-  const [marketRole, setMarketRole] = useState("");
-  const [country, setCountry] = useState("");
-  const [search, setSearch] = useState("");
-  const [sortBy, setSortBy] = useState<SortField>("company_name");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [score, setScore] = useState(initialTableViewRef.current.score);
+  const [marketRole, setMarketRole] = useState(initialTableViewRef.current.marketRole);
+  const [country, setCountry] = useState(initialTableViewRef.current.country);
+  const [search, setSearch] = useState(initialTableViewRef.current.search);
+  const [sortBy, setSortBy] = useState<SortField>(initialTableViewRef.current.sortBy);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">(initialTableViewRef.current.sortDir);
 
   const isOldClients = section === "old_clients";
   const canScheduleFollowUp =
@@ -414,6 +472,40 @@ export function LeadsTablePage({
   }, [clearSelection, section, score, marketRole, country, search, sortBy, sortDir]);
 
   useEffect(() => {
+    if (previousSectionRef.current === section) return;
+
+    previousSectionRef.current = section;
+    restoringSectionRef.current = true;
+    const stored = readStoredTableView(user?.id, section);
+    setScore(stored.score);
+    setMarketRole(stored.marketRole);
+    setCountry(stored.country);
+    setSearch(stored.search);
+    setSortBy(stored.sortBy);
+    setSortDir(stored.sortDir);
+  }, [section, user?.id]);
+
+  useEffect(() => {
+    if (restoringSectionRef.current) {
+      restoringSectionRef.current = false;
+      return;
+    }
+    try {
+      const view: StoredTableView = {
+        score,
+        marketRole,
+        country,
+        search,
+        sortBy,
+        sortDir,
+      };
+      sessionStorage.setItem(tableViewStorageKey(user?.id, section), JSON.stringify(view));
+    } catch {
+      /* Storage may be unavailable; the table still works with in-memory state. */
+    }
+  }, [country, marketRole, score, search, section, sortBy, sortDir, user?.id]);
+
+  useEffect(() => {
     client
       .listLeadTableFilters()
       .then(setFilters)
@@ -439,10 +531,6 @@ export function LeadsTablePage({
     setBulkResults(null);
     setSaveNotice(null);
     setShowCsvImport(false);
-    setScore("");
-    setMarketRole("");
-    setCountry("");
-    setSearch("");
     clearSelection();
   }, [clearSelection, section]);
 

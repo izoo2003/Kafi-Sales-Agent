@@ -861,6 +861,68 @@ class InboxReplyResponse(BaseModel):
     subject: Optional[str] = None
 
 
+class InboxAnalyzeRequest(BaseModel):
+    goal: Optional[str] = Field(
+        default=None,
+        description="Optional instruction for the draft, e.g. politely decline / ask for specs",
+    )
+    folder: Optional[str] = Field(
+        default="INBOX",
+        description="IMAP folder for single-message analyze",
+    )
+
+
+class InboxAnalyzeResponse(BaseModel):
+    summary: str
+    draft_reply: str
+    suggested_subject: Optional[str] = None
+    to: Optional[str] = None
+    source: str = "llm"
+
+
+class InboxFolderInfo(BaseModel):
+    key: str
+    imap_name: Optional[str] = None
+    available: bool = False
+    count: int = 0
+    unread_count: int = 0
+
+
+class InboxFoldersResponse(BaseModel):
+    configured: bool
+    folders: list[InboxFolderInfo] = Field(default_factory=list)
+
+
+class InboxMoveRequest(BaseModel):
+    from_folder: str = Field(min_length=1, description="IMAP folder name the message is currently in")
+    to_folder: str = Field(
+        min_length=1,
+        description="Logical destination: inbox | sent | trash | archive",
+    )
+
+
+class InboxMoveResponse(BaseModel):
+    status: str
+    message: str
+    from_folder: Optional[str] = None
+    to_folder: Optional[str] = None
+    to_folder_key: Optional[str] = None
+    moved_count: int = 0
+
+
+class InboxEmptyTrashResponse(BaseModel):
+    status: str
+    message: str
+    deleted_count: int = 0
+
+
+class InboxThreadMoveRequest(BaseModel):
+    to_folder: str = Field(
+        min_length=1,
+        description="Logical destination: inbox | trash | archive",
+    )
+
+
 # ── Daily KPI Generation ──────────────────────────────────────────────────────
 
 

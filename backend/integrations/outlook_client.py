@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import re
+import threading
 from datetime import datetime
 from typing import Any
 
@@ -18,6 +19,13 @@ from modules.inbox_cutoff import get_inbox_since, message_is_after_cutoff
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
+
+# Outlook personal IMAP often breaks under concurrent sessions from the same account.
+_IMAP_LOCK = threading.RLock()
+_FOLDER_COUNT_CACHE: dict[str, Any] = {"at": 0.0, "data": None}
+_FOLDER_COUNT_TTL_SEC = 45.0
+_UNREAD_CACHE: dict[str, Any] = {"at": 0.0, "count": 0}
+_UNREAD_TTL_SEC = 20.0
 
 # Separate audiences — MSAL refreshes one resource at a time.
 IMAP_SCOPES = [
@@ -37,6 +45,33 @@ _SENT_FOLDER_CANDIDATES = (
     "INBOX.Sent",
     "INBOX/Sent",
 )
+
+_TRASH_FOLDER_CANDIDATES = (
+    "Deleted Items",
+    "Trash",
+    "Deleted",
+    "INBOX.Trash",
+    "INBOX/Trash",
+    "INBOX.Deleted Items",
+)
+
+_ARCHIVE_FOLDER_CANDIDATES = (
+    "Archive",
+    "Archives",
+    "Archived",
+    "INBOX.Archive",
+    "INBOX/Archive",
+)
+
+# Logical folder keys used by the API / UI.
+FOLDER_KEYS = ("inbox", "sent", "trash", "archive")
+
+_FOLDER_CANDIDATES: dict[str, tuple[str, ...]] = {
+    "inbox": ("INBOX",),
+    "sent": _SENT_FOLDER_CANDIDATES,
+    "trash": _TRASH_FOLDER_CANDIDATES,
+    "archive": _ARCHIVE_FOLDER_CANDIDATES,
+}
 
 
 def _html_to_preview(html: str) -> str:
@@ -141,20 +176,265 @@ class OutlookClient:
             mailbox.folder.set(folder)
         return mailbox
 
-    def _resolve_sent_folder(self, mailbox) -> str | None:
+    def _folder_status_counts(self, mailbox, imap_name: str) -> tuple[int, int]:
+        """Return (total_messages, unseen) via IMAP STATUS — avoids fetching bodies."""
         try:
-            names = {f.name for f in mailbox.folder.list()}
+            code, data = mailbox.client.status(imap_name, "(MESSAGES UNSEEN)")
+            if code != "OK" or not data:
+                return 0, 0
+            raw = data[0]
+            text = raw.decode("utf-8", errors="ignore") if isinstance(raw, (bytes, bytearray)) else str(raw)
+            messages = 0
+            unseen = 0
+            match_msg = re.search(r"MESSAGES\s+(\d+)", text, re.IGNORECASE)
+            match_unseen = re.search(r"UNSEEN\s+(\d+)", text, re.IGNORECASE)
+            if match_msg:
+                messages = int(match_msg.group(1))
+            if match_unseen:
+                unseen = int(match_unseen.group(1))
+            return messages, unseen
         except Exception:  # noqa: BLE001
-            names = set()
-        for candidate in _SENT_FOLDER_CANDIDATES:
+            return 0, 0
+
+    def _list_folder_names(self, mailbox) -> set[str]:
+        try:
+            return {f.name for f in mailbox.folder.list()}
+        except Exception:  # noqa: BLE001
+            return set()
+
+    def _resolve_folder_name(
+        self,
+        mailbox,
+        folder_key: str,
+        *,
+        names: set[str] | None = None,
+    ) -> str | None:
+        """Map a logical folder key (inbox/sent/trash/archive) to an IMAP folder name."""
+        key = (folder_key or "inbox").strip().lower()
+        if key == "inbox":
+            return "INBOX"
+        candidates = _FOLDER_CANDIDATES.get(key)
+        if not candidates:
+            return None
+        if names is None:
+            names = self._list_folder_names(mailbox)
+        for candidate in candidates:
             if candidate in names:
                 return candidate
-        # Case-insensitive fallback
         lower_map = {n.lower(): n for n in names}
-        for candidate in _SENT_FOLDER_CANDIDATES:
+        for candidate in candidates:
             if candidate.lower() in lower_map:
                 return lower_map[candidate.lower()]
+        # Fuzzy: folder name contains the key word (e.g. "Deleted Items")
+        needles = {
+            "sent": ("sent",),
+            "trash": ("trash", "deleted"),
+            "archive": ("archive",),
+        }.get(key, ())
+        for needle in needles:
+            for name in names:
+                if needle in name.lower():
+                    return name
         return None
+
+    def _resolve_sent_folder(self, mailbox) -> str | None:
+        return self._resolve_folder_name(mailbox, "sent")
+
+    def resolve_folders(self) -> dict[str, str | None]:
+        """Return logical key → IMAP folder name (or None if missing)."""
+        with _IMAP_LOCK:
+            mailbox = self._mailbox("INBOX")
+            try:
+                names = self._list_folder_names(mailbox)
+                return {
+                    key: self._resolve_folder_name(mailbox, key, names=names)
+                    for key in FOLDER_KEYS
+                }
+            finally:
+                try:
+                    mailbox.logout()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def folder_counts(self, *, limit: int = 100) -> dict[str, dict[str, Any]]:
+        """Counts + resolved IMAP names for sidebar badges."""
+        import time
+
+        now = time.monotonic()
+        cached = _FOLDER_COUNT_CACHE.get("data")
+        if cached is not None and now - float(_FOLDER_COUNT_CACHE.get("at") or 0) < _FOLDER_COUNT_TTL_SEC:
+            return cached
+
+        with _IMAP_LOCK:
+            mailbox = self._mailbox("INBOX")
+            try:
+                names = self._list_folder_names(mailbox)
+                resolved = {
+                    key: self._resolve_folder_name(mailbox, key, names=names)
+                    for key in FOLDER_KEYS
+                }
+                out: dict[str, dict[str, Any]] = {}
+                for key, imap_name in resolved.items():
+                    if not imap_name:
+                        out[key] = {
+                            "key": key,
+                            "imap_name": None,
+                            "available": False,
+                            "count": 0,
+                            "unread_count": 0,
+                        }
+                        continue
+                    total, unseen = self._folder_status_counts(mailbox, imap_name)
+                    # STATUS returns mailbox totals (fine for badges). Cap display noise.
+                    out[key] = {
+                        "key": key,
+                        "imap_name": imap_name,
+                        "available": True,
+                        "count": total if total > 0 else min(limit, total),
+                        "unread_count": unseen,
+                    }
+                _FOLDER_COUNT_CACHE["at"] = time.monotonic()
+                _FOLDER_COUNT_CACHE["data"] = out
+                return out
+            finally:
+                try:
+                    mailbox.logout()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def list_folder_messages(
+        self,
+        folder_key: str = "inbox",
+        *,
+        limit: int = 50,
+        unread_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        key = (folder_key or "inbox").strip().lower()
+        if key not in FOLDER_KEYS:
+            raise ValueError(f"Unknown folder: {folder_key}")
+
+        with _IMAP_LOCK:
+            mailbox = self._mailbox("INBOX")
+            try:
+                imap_name = self._resolve_folder_name(mailbox, key)
+                if not imap_name:
+                    return []
+                # Sent/Trash/Archive ignore the "new mail only" cutoff so history stays visible.
+                apply_cutoff = key == "inbox"
+                summaries = self._fetch_folder(
+                    mailbox,
+                    imap_name,
+                    limit=limit,
+                    unread_only=unread_only,
+                    since_date=None if apply_cutoff else datetime(2000, 1, 1).date(),
+                )
+            finally:
+                try:
+                    mailbox.logout()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        if key == "inbox":
+            summaries = [m for m in summaries if message_is_after_cutoff(m.get("date"))]
+        return summaries[:limit]
+
+    def move_message(
+        self,
+        uid: str,
+        *,
+        from_folder: str,
+        to_folder_key: str,
+    ) -> dict[str, Any]:
+        """Move a message from an IMAP folder name into a logical destination folder."""
+        to_key = (to_folder_key or "").strip().lower()
+        if to_key not in FOLDER_KEYS:
+            return {"status": "error", "message": f"Unknown destination folder: {to_folder_key}"}
+
+        source = (from_folder or "INBOX").strip() or "INBOX"
+        with _IMAP_LOCK:
+            mailbox = self._mailbox(source)
+            try:
+                dest = self._resolve_folder_name(mailbox, to_key)
+                if not dest:
+                    return {
+                        "status": "error",
+                        "message": f"Destination folder '{to_key}' was not found on this mailbox",
+                    }
+                if source.lower() == dest.lower():
+                    return {
+                        "status": "ok",
+                        "message": "Already in destination folder",
+                        "from_folder": source,
+                        "to_folder": dest,
+                        "to_folder_key": to_key,
+                    }
+                mailbox.folder.set(source)
+                mailbox.move(str(uid), dest)
+                _FOLDER_COUNT_CACHE["data"] = None
+                _UNREAD_CACHE["at"] = 0.0
+                return {
+                    "status": "ok",
+                    "message": f"Moved to {to_key}",
+                    "from_folder": source,
+                    "to_folder": dest,
+                    "to_folder_key": to_key,
+                }
+            except Exception as exc:  # noqa: BLE001
+                return {"status": "error", "message": f"Could not move message: {exc}"}
+            finally:
+                try:
+                    mailbox.logout()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def empty_trash(self) -> dict[str, Any]:
+        """Permanently delete all messages currently in Trash / Deleted Items."""
+        with _IMAP_LOCK:
+            mailbox = self._mailbox("INBOX")
+            try:
+                trash = self._resolve_folder_name(mailbox, "trash")
+                if not trash:
+                    return {
+                        "status": "error",
+                        "message": "Trash folder was not found on this mailbox",
+                        "deleted_count": 0,
+                    }
+                mailbox.folder.set(trash)
+                from imap_tools import AND
+
+                uids = [
+                    str(m.uid)
+                    for m in mailbox.fetch(AND(all=True), mark_seen=False, bulk=True)
+                ]
+                if not uids:
+                    return {
+                        "status": "ok",
+                        "message": "Trash is already empty",
+                        "deleted_count": 0,
+                    }
+                mailbox.delete(uids)
+                try:
+                    mailbox.expunge()
+                except Exception:  # noqa: BLE001
+                    pass
+                _FOLDER_COUNT_CACHE["data"] = None
+                _UNREAD_CACHE["at"] = 0.0
+                return {
+                    "status": "ok",
+                    "message": f"Deleted {len(uids)} message{'s' if len(uids) != 1 else ''}",
+                    "deleted_count": len(uids),
+                }
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "status": "error",
+                    "message": f"Could not empty trash: {exc}",
+                    "deleted_count": 0,
+                }
+            finally:
+                try:
+                    mailbox.logout()
+                except Exception:  # noqa: BLE001
+                    pass
 
     def _header(self, msg, *names: str) -> str | None:
         obj = msg.obj
@@ -271,16 +551,17 @@ class OutlookClient:
         return [self._summarize(m, folder=folder) for m in messages]
 
     def list_messages(self, *, limit: int = 25, unread_only: bool = False) -> list[dict[str, Any]]:
-        mailbox = self._mailbox("INBOX")
-        try:
-            summaries = self._fetch_folder(
-                mailbox, "INBOX", limit=limit, unread_only=unread_only
-            )
-        finally:
+        with _IMAP_LOCK:
+            mailbox = self._mailbox("INBOX")
             try:
-                mailbox.logout()
-            except Exception:  # noqa: BLE001
-                pass
+                summaries = self._fetch_folder(
+                    mailbox, "INBOX", limit=limit, unread_only=unread_only
+                )
+            finally:
+                try:
+                    mailbox.logout()
+                except Exception:  # noqa: BLE001
+                    pass
         filtered = [m for m in summaries if message_is_after_cutoff(m.get("date"))]
         return filtered[:limit]
 
@@ -288,24 +569,25 @@ class OutlookClient:
         self, *, limit: int = 50, unread_only: bool = False
     ) -> list[dict[str, Any]]:
         """Inbox + Sent messages for conversation threading."""
-        mailbox = self._mailbox("INBOX")
-        try:
-            per_folder = max(limit, 50)
-            inbox = self._fetch_folder(
-                mailbox, "INBOX", limit=per_folder, unread_only=unread_only
-            )
-            sent: list[dict[str, Any]] = []
-            # Unread-only applies to inbox; still include sent for thread context.
-            sent_folder = self._resolve_sent_folder(mailbox)
-            if sent_folder:
-                sent = self._fetch_folder(
-                    mailbox, sent_folder, limit=per_folder, unread_only=False
-                )
-        finally:
+        with _IMAP_LOCK:
+            mailbox = self._mailbox("INBOX")
             try:
-                mailbox.logout()
-            except Exception:  # noqa: BLE001
-                pass
+                per_folder = max(limit, 50)
+                inbox = self._fetch_folder(
+                    mailbox, "INBOX", limit=per_folder, unread_only=unread_only
+                )
+                sent: list[dict[str, Any]] = []
+                # Unread-only applies to inbox; still include sent for thread context.
+                sent_folder = self._resolve_sent_folder(mailbox)
+                if sent_folder:
+                    sent = self._fetch_folder(
+                        mailbox, sent_folder, limit=per_folder, unread_only=False
+                    )
+            finally:
+                try:
+                    mailbox.logout()
+                except Exception:  # noqa: BLE001
+                    pass
 
         combined = inbox + sent
         filtered = [m for m in combined if message_is_after_cutoff(m.get("date"))]
@@ -324,14 +606,15 @@ class OutlookClient:
     def get_message(self, uid: str, *, folder: str = "INBOX") -> dict[str, Any] | None:
         from imap_tools import AND
 
-        mailbox = self._mailbox(folder)
-        try:
-            messages = list(mailbox.fetch(AND(uid=str(uid)), mark_seen=False, bulk=False))
-        finally:
+        with _IMAP_LOCK:
+            mailbox = self._mailbox(folder)
             try:
-                mailbox.logout()
-            except Exception:  # noqa: BLE001
-                pass
+                messages = list(mailbox.fetch(AND(uid=str(uid)), mark_seen=False, bulk=False))
+            finally:
+                try:
+                    mailbox.logout()
+                except Exception:  # noqa: BLE001
+                    pass
         if not messages:
             return None
         return self._detail_from_msg(messages[0], folder=folder)
@@ -349,44 +632,65 @@ class OutlookClient:
             grouped.setdefault(folder, []).append(uid)
 
         out: list[dict[str, Any]] = []
-        mailbox = self._mailbox("INBOX")
-        try:
-            for folder, uids in grouped.items():
-                try:
-                    mailbox.folder.set(folder)
-                except Exception:  # noqa: BLE001
-                    continue
-                for uid in uids:
+        with _IMAP_LOCK:
+            mailbox = self._mailbox("INBOX")
+            try:
+                for folder, uids in grouped.items():
                     try:
-                        messages = list(
-                            mailbox.fetch(AND(uid=str(uid)), mark_seen=False, bulk=False)
-                        )
+                        mailbox.folder.set(folder)
                     except Exception:  # noqa: BLE001
                         continue
-                    if messages:
-                        out.append(self._detail_from_msg(messages[0], folder=folder))
-        finally:
-            try:
-                mailbox.logout()
-            except Exception:  # noqa: BLE001
-                pass
+                    for uid in uids:
+                        try:
+                            messages = list(
+                                mailbox.fetch(AND(uid=str(uid)), mark_seen=False, bulk=False)
+                            )
+                        except Exception:  # noqa: BLE001
+                            continue
+                        if messages:
+                            out.append(self._detail_from_msg(messages[0], folder=folder))
+            finally:
+                try:
+                    mailbox.logout()
+                except Exception:  # noqa: BLE001
+                    pass
         out.sort(key=lambda m: m.get("date") or "")
         return out
 
     def unread_count(self) -> int:
-        return sum(1 for m in self.list_messages(limit=100, unread_only=True) if m.get("unread"))
+        import time
+
+        now = time.monotonic()
+        if now - float(_UNREAD_CACHE.get("at") or 0) < _UNREAD_TTL_SEC:
+            return int(_UNREAD_CACHE.get("count") or 0)
+
+        with _IMAP_LOCK:
+            mailbox = self._mailbox("INBOX")
+            try:
+                _total, unseen = self._folder_status_counts(mailbox, "INBOX")
+            finally:
+                try:
+                    mailbox.logout()
+                except Exception:  # noqa: BLE001
+                    pass
+        _UNREAD_CACHE["at"] = time.monotonic()
+        _UNREAD_CACHE["count"] = unseen
+        return unseen
 
     def mark_read(self, uid: str, seen: bool = True, *, folder: str = "INBOX") -> None:
         from imap_tools import MailMessageFlags
 
-        mailbox = self._mailbox(folder)
-        try:
-            mailbox.flag(str(uid), MailMessageFlags.SEEN, seen)
-        finally:
+        with _IMAP_LOCK:
+            mailbox = self._mailbox(folder)
             try:
-                mailbox.logout()
-            except Exception:  # noqa: BLE001
-                pass
+                mailbox.flag(str(uid), MailMessageFlags.SEEN, seen)
+                _UNREAD_CACHE["at"] = 0.0
+                _FOLDER_COUNT_CACHE["data"] = None
+            finally:
+                try:
+                    mailbox.logout()
+                except Exception:  # noqa: BLE001
+                    pass
 
     def _graph_file_attachments(self, attachments: list[dict]) -> list[dict[str, Any]] | dict[str, Any]:
         """Build Graph fileAttachment payloads, or return an error dict."""

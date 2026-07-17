@@ -166,6 +166,44 @@ export interface InboxReplyResponse {
   subject: string | null;
 }
 
+export type MailFolderKey = "inbox" | "sent" | "trash" | "archive";
+
+export interface InboxFolderInfo {
+  key: MailFolderKey | string;
+  imap_name: string | null;
+  available: boolean;
+  count: number;
+  unread_count: number;
+}
+
+export interface InboxFoldersResponse {
+  configured: boolean;
+  folders: InboxFolderInfo[];
+}
+
+export interface InboxMoveResponse {
+  status: string;
+  message: string;
+  from_folder?: string | null;
+  to_folder?: string | null;
+  to_folder_key?: string | null;
+  moved_count?: number;
+}
+
+export interface InboxEmptyTrashResponse {
+  status: string;
+  message: string;
+  deleted_count: number;
+}
+
+export interface InboxAnalyzeResponse {
+  summary: string;
+  draft_reply: string;
+  suggested_subject: string | null;
+  to: string | null;
+  source: string;
+}
+
 export interface AppUser {
   id: number;
   username: string;
@@ -1160,6 +1198,7 @@ export const client = {
     }),
 
   getInboxStatus: () => request<InboxStatus>("/inbox/status"),
+  listInboxFolders: () => request<InboxFoldersResponse>("/inbox/folders"),
   resetInboxCutoff: () =>
     request<{ showing_since: string }>("/inbox/reset-cutoff", { method: "POST" }),
   clearInboxCutoff: () =>
@@ -1182,10 +1221,23 @@ export const client = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
-  listInboxMessages: (params: { limit?: number; unread_only?: boolean } = {}) => {
+  moveInboxThread: (threadId: string, toFolder: "inbox" | "trash" | "archive") =>
+    request<InboxMoveResponse>(`/inbox/threads/${encodeURIComponent(threadId)}/move`, {
+      method: "POST",
+      body: JSON.stringify({ to_folder: toFolder }),
+    }),
+  analyzeInboxThread: (threadId: string, payload: { goal?: string } = {}) =>
+    request<InboxAnalyzeResponse>(`/inbox/threads/${encodeURIComponent(threadId)}/analyze`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  listInboxMessages: (
+    params: { limit?: number; unread_only?: boolean; folder?: MailFolderKey | string } = {},
+  ) => {
     const search = new URLSearchParams();
     if (params.limit) search.set("limit", String(params.limit));
     if (params.unread_only) search.set("unread_only", "true");
+    if (params.folder) search.set("folder", params.folder);
     const query = search.toString();
     return request<InboxMessageSummary[]>(`/inbox/messages${query ? `?${query}` : ""}`);
   },
@@ -1198,6 +1250,24 @@ export const client = {
       `/inbox/messages/${encodeURIComponent(uid)}/read?folder=${encodeURIComponent(folder)}`,
       { method: "POST" },
     ),
+  moveInboxMessage: (
+    uid: string,
+    payload: { from_folder: string; to_folder: MailFolderKey | string },
+  ) =>
+    request<InboxMoveResponse>(`/inbox/messages/${encodeURIComponent(uid)}/move`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  analyzeInboxMessage: (
+    uid: string,
+    payload: { goal?: string; folder?: string } = {},
+  ) =>
+    request<InboxAnalyzeResponse>(`/inbox/messages/${encodeURIComponent(uid)}/analyze`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  emptyInboxTrash: () =>
+    request<InboxEmptyTrashResponse>("/inbox/trash/empty", { method: "POST" }),
   replyInboxMessage: (
     uid: string,
     payload: { body: string; to?: string; subject?: string; cc?: string; folder?: string },

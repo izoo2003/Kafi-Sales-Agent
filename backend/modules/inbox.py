@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from config import settings
-from integrations.outlook_client import outlook_client
+from integrations.outlook_client import FOLDER_KEYS, outlook_client
 from modules.email_threads import group_messages_into_threads, message_key
 from modules.inbox_cutoff import get_inbox_since, set_inbox_since_to_now
 
@@ -49,8 +49,62 @@ def status() -> dict[str, Any]:
     }
 
 
-def list_messages(*, limit: int = 25, unread_only: bool = False) -> list[dict[str, Any]]:
-    messages = outlook_client.list_messages(limit=limit, unread_only=unread_only)
+def list_folders() -> dict[str, Any]:
+    """Sidebar folder metadata and approximate counts."""
+    if not outlook_client.is_configured:
+        return {
+            "configured": False,
+            "folders": [
+                {
+                    "key": key,
+                    "imap_name": None,
+                    "available": False,
+                    "count": 0,
+                    "unread_count": 0,
+                }
+                for key in FOLDER_KEYS
+            ],
+        }
+    try:
+        counts = outlook_client.folder_counts(limit=100)
+    except Exception:  # noqa: BLE001
+        counts = {
+            key: {
+                "key": key,
+                "imap_name": "INBOX" if key == "inbox" else None,
+                "available": key == "inbox",
+                "count": 0,
+                "unread_count": 0,
+            }
+            for key in FOLDER_KEYS
+        }
+    return {
+        "configured": True,
+        "folders": [
+            counts.get(
+                key,
+                {"key": key, "available": False, "count": 0, "unread_count": 0},
+            )
+            for key in FOLDER_KEYS
+        ],
+    }
+
+
+def list_messages(
+    *,
+    limit: int = 25,
+    unread_only: bool = False,
+    folder: str = "inbox",
+) -> list[dict[str, Any]]:
+    key = (folder or "inbox").strip().lower()
+    if key not in FOLDER_KEYS:
+        raise ValueError(f"Unknown folder: {folder}")
+    if key == "inbox":
+        messages = outlook_client.list_messages(limit=limit, unread_only=unread_only)
+    else:
+        messages = outlook_client.list_folder_messages(
+            key, limit=limit, unread_only=unread_only
+        )
     return [{**message, "provider": "outlook"} for message in messages]
 
 
@@ -69,6 +123,74 @@ def unread_count() -> int:
 
 def mark_read(uid: str, seen: bool = True, *, folder: str = "INBOX") -> None:
     outlook_client.mark_read(uid, seen, folder=folder)
+
+
+def move_message(
+    uid: str,
+    *,
+    from_folder: str,
+    to_folder: str,
+) -> dict[str, Any]:
+    return outlook_client.move_message(
+        uid,
+        from_folder=from_folder,
+        to_folder_key=to_folder,
+    )
+
+
+def move_thread_messages(
+    thread_id: str,
+    *,
+    to_folder: str,
+) -> dict[str, Any]:
+    """Move all inbound (non-Sent) messages in a thread to trash/archive/inbox."""
+    to_key = (to_folder or "").strip().lower()
+    if to_key not in ("trash", "archive", "inbox"):
+        return {
+            "status": "error",
+            "message": "Threads can only be moved to inbox, trash, or archive",
+            "moved_count": 0,
+        }
+
+    thread = get_thread(thread_id, mark_seen=False)
+    if not thread or not thread.get("messages"):
+        return {"status": "error", "message": "Conversation not found", "moved_count": 0}
+
+    moved = 0
+    errors: list[str] = []
+    for msg in thread["messages"]:
+        folder = (msg.get("folder") or "INBOX").strip()
+        # Skip messages already in Sent — keep sent history intact.
+        if folder.lower().startswith("sent"):
+            continue
+        if to_key == "trash" and ("trash" in folder.lower() or "deleted" in folder.lower()):
+            continue
+        if to_key == "archive" and "archive" in folder.lower():
+            continue
+        if to_key == "inbox" and folder.upper() == "INBOX":
+            continue
+        result = move_message(str(msg["uid"]), from_folder=folder, to_folder=to_key)
+        if result.get("status") == "ok":
+            moved += 1
+        else:
+            errors.append(result.get("message") or "move failed")
+
+    if moved == 0 and errors:
+        return {
+            "status": "error",
+            "message": errors[0],
+            "moved_count": 0,
+        }
+    return {
+        "status": "ok",
+        "message": f"Moved {moved} message{'s' if moved != 1 else ''} to {to_key}",
+        "moved_count": moved,
+        "to_folder": to_key,
+    }
+
+
+def empty_trash() -> dict[str, Any]:
+    return outlook_client.empty_trash()
 
 
 def reset_cutoff() -> dict[str, str]:
