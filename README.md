@@ -1,95 +1,44 @@
-# Kafi Commodities — International Sales AI Agent
+# Kafi Sales Agent
 
-Monorepo with **`backend/`** (Python/FastAPI) and **`frontend/`** (React/Vite). Deploy each separately on Railway and Vercel by setting the root directory.
+**AI Sales Co-Pilot for Kafi Commodities (Pvt) Ltd**
 
-## Repository layout
+Kafi Sales Agent is an AI-powered sales co-pilot streamlining B2B outreach for Kafi Commodities. It helps teams discover, score, and convert global buyers for staples like spices and Essence pink salt. Featuring AI lead intelligence, automated email drafting, and smart product matching, it accelerates workflows while maintaining human-in-the-loop control.
 
-```
-Sales-Agent/
-├── run.py                  # optional: start backend from repo root
-├── README.md
-│
-├── backend/                # Python / FastAPI — all server code
-│   ├── main.py
-│   ├── run.py              # python run.py (migrate + start)
-│   ├── config.py
-│   ├── requirements.txt
-│   ├── alembic.ini
-│   ├── docker-compose.yml
-│   ├── .env.example
-│   ├── api/
-│   ├── modules/
-│   ├── integrations/
-│   ├── db/
-│   ├── jobs/
-│   ├── prompts/
-│   └── storage/
-│
-└── frontend/               # React / Vite dashboard
-    ├── package.json
-    ├── .env.example
-    └── src/
-        ├── api/client.ts   # only place that knows backend URL
-        ├── hooks/
-        ├── pages/
-        └── components/
-```
+### 🌟 Core Features
 
-## Dependency rule (backend)
+**Lead Generation & Intelligence**
 
-```
-api/  →  modules/  →  integrations/ + db/
-```
+* **Automated Trade Show Ingestion:** Custom data extraction pipelines instantly parse, enrich, and verify raw attendee lists from global food expos or CSV imports.
+* **Lead Scoring & Classification:** The agent researches each lead's website and public presence, classifying them as HOT, WARM, or COLD against Kafi's 177-SKU catalog with transparent reasoning.
+* **Social Signals Tracking:** Monitors target buyer platforms for intent signals, automatically piping new prospects into the sales funnel.
 
-## How backend and frontend connect
+**Smart Communication & Workflow**
 
-| Layer | Role |
-|-------|------|
-| Backend | REST at `/api/leads`, `/api/quotations`, `/api/interactions`, `/api/jobs` |
-| Frontend | `frontend/src/api/client.ts` wraps all fetch calls |
-| Local dev | Vite proxies `/api` → `http://localhost:8000` |
-| Production | `frontend/.env`: `VITE_API_BASE_URL=https://your-backend.railway.app/api` |
-| CORS | `backend/.env`: add Vercel URL to `CORS_ORIGINS` |
+* **Unified AI Mailbox:** Connects directly to the company inbox to instantly summarize incoming emails and generate context-aware, editable draft replies.
+* **Human-in-the-Loop:** Zero auto-sends. Every AI-generated email, DM, or WhatsApp message remains a draft until explicitly approved by a representative via the dashboard.
+* **Calls & Follow-Ups:** Quick-dial capabilities, recent-call tracking, and scheduled follow-ups for quotation expiries and post-delivery relationship touchpoints.
 
-## Deploy
+**Product Matching & Integration**
 
-| Service | Platform | Root directory | Start command |
-|---------|----------|----------------|---------------|
-| Backend | Railway | `backend/` | `python run.py` |
-| Frontend | Vercel | `frontend/` | `npm run build` |
+* **Natural Language Catalog Search (RAG):** A retrieval-augmented generation interface allowing reps to query the entire product catalog and historical sales data using conversational prompts.
+* **Smart Quoting:** Matches buyer signals to relevant product categories, generating FCL-optimized PDF quotations complete with category pricing and carton dimensions.
+* **Secure ERP/CRM Sync:** Idempotent webhook endpoints featuring HMAC signature verification to securely and instantly sync approved leads, communications, and orders with external systems.
 
-## Quick start
+**Compliance & Security**
 
-### Backend
+* **Compliance by Design:** Respects `robots.txt`, exclusively utilizes official APIs, requires explicit consent for personal outreach, and maintains a strict audit log of all AI drafts, edits, and sends.
 
-```bash
-cd backend
-cp .env.example .env
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-python run.py
-```
+### 🛠️ Tech Stack
 
-Or from repo root: `python run.py` (uses root launcher).
+* **Backend:** Python, FastAPI, PostgreSQL (Supabase)
+* **Frontend:** React, Vite
+* **AI Engine:** LLM-powered analysis (Gemini)
+* **Deployment:** Railway (Backend), Vercel (Frontend)
 
-- API docs: http://localhost:8000/docs
+### 🚀 Access & Environments
 
-### Frontend
-
-```bash
-cd frontend
-cp .env.example .env
-npm install
-npm run dev
-```
-
-- Dashboard: http://localhost:5173
-
-## Migrations
-
-`python run.py` runs `alembic upgrade head` automatically on every start. No manual migration needed unless you prefer to run it separately from `backend/`:
-
-```bash
-alembic upgrade head
-```
+| Environment | Link / Endpoint | Notes |
+| --- | --- | --- |
+| **Live Dashboard** | [https://kafi-sales-agent.vercel.app](https://www.google.com/search?q=https://kafi-sales-agent.vercel.app) | Production environment |
+| **Local Dashboard** | `http://localhost:5173` | Accessible after running `npm run dev` |
+| **API Docs (Swagger)** | `[http://127.0.0.1:8001/docs](http://127.0.0.1:8001/docs)` | Accessible after backend startup |
