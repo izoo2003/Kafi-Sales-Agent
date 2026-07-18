@@ -15,9 +15,17 @@ export interface PendingCallFollowUp {
   label: string;
 }
 
+/** Identifies which dialed number currently owns the live call UI. */
+export interface ActiveCallTarget {
+  buyerId: number | null;
+  contactId: number | null;
+  phone: string | null;
+}
+
 interface TwilioVoiceContextValue {
   ready: boolean;
   active: boolean;
+  activeCall: ActiveCallTarget | null;
   initError: string | null;
   pendingFollowUp: PendingCallFollowUp | null;
   clearPendingFollowUp: () => void;
@@ -32,12 +40,33 @@ interface TwilioVoiceContextValue {
 
 const TwilioVoiceContext = createContext<TwilioVoiceContextValue | null>(null);
 
+function normalizePhoneDigits(phone: string | null | undefined): string {
+  if (!phone) return "";
+  return phone.replace(/\D/g, "");
+}
+
+/** True when two phone strings refer to the same dialed number. */
+export function phonesMatch(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): boolean {
+  const da = normalizePhoneDigits(a);
+  const db = normalizePhoneDigits(b);
+  if (!da || !db) return false;
+  if (da === db) return true;
+  // Match when one is a national form of the other (last 8–12 digits).
+  const shorter = da.length <= db.length ? da : db;
+  const longer = da.length <= db.length ? db : da;
+  return shorter.length >= 8 && longer.endsWith(shorter);
+}
+
 export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
   const deviceRef = useRef<Device | null>(null);
   const callRef = useRef<Call | null>(null);
   const activePrepRef = useRef<CallInitiateResult | null>(null);
   const [ready, setReady] = useState(false);
   const [active, setActive] = useState(false);
+  const [activeCall, setActiveCall] = useState<ActiveCallTarget | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
   const [pendingFollowUp, setPendingFollowUp] = useState<PendingCallFollowUp | null>(null);
 
@@ -130,6 +159,7 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
     callRef.current?.disconnect();
     callRef.current = null;
     setActive(false);
+    setActiveCall(null);
   }, []);
 
   const connectPreparedCall = useCallback((activeDevice: Device, prep: CallInitiateResult) => {
@@ -145,11 +175,17 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
       .then((call) => {
         callRef.current = call;
         setActive(true);
+        setActiveCall({
+          buyerId: prep.buyer_id ?? null,
+          contactId: prep.contact_id ?? null,
+          phone: prep.lead_phone ?? null,
+        });
 
         const finishCall = () => {
           if (callRef.current === call) {
             callRef.current = null;
             setActive(false);
+            setActiveCall(null);
           }
           const endedPrep = activePrepRef.current;
           activePrepRef.current = null;
@@ -187,7 +223,7 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
         throw new Error("Lead phone number missing");
       }
 
-      return connectPreparedCall(activeDevice, prep);
+      return connectPreparedCall(activeDevice, { ...prep, buyer_id: leadId });
     },
     [connectPreparedCall, initDevice],
   );
@@ -222,6 +258,7 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
       value={{
         ready,
         active,
+        activeCall,
         initError,
         pendingFollowUp,
         clearPendingFollowUp,

@@ -425,6 +425,7 @@ export interface CallInitiateResult extends DraftInteraction {
   call_status?: string | null;
   lead_phone?: string | null;
   message?: string | null;
+  buyer_id?: number | null;
 }
 
 export interface CallHistoryItem {

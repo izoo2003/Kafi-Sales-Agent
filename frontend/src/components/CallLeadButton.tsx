@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { client, type CallConfig, type CallInitiateResult } from "../api/client";
-import { useTwilioVoiceOptional } from "../hooks/useTwilioVoice";
+import { phonesMatch, useTwilioVoiceOptional } from "../hooks/useTwilioVoice";
 
 interface CallLeadButtonProps {
   leadId: number;
@@ -77,7 +77,15 @@ export function CallLeadButton({
     ? "px-2 py-0.5 rounded text-xs bg-sky-600 hover:bg-sky-500 text-white disabled:opacity-50"
     : "px-3 py-1.5 rounded-lg text-sm bg-sky-600 hover:bg-sky-500 text-white font-medium disabled:opacity-50";
 
-  const inCall = twilioVoice?.active ?? false;
+  const activeCall = twilioVoice?.activeCall ?? null;
+  const inCall = Boolean(twilioVoice?.active);
+  const isThisCall =
+    inCall &&
+    phonesMatch(phone, activeCall?.phone) &&
+    (activeCall?.buyerId == null || activeCall.buyerId === leadId) &&
+    (contactId == null ||
+      activeCall?.contactId == null ||
+      activeCall.contactId === contactId);
   const showInitError = twilioVoice && !twilioVoice.ready && twilioVoice.initError;
 
   return (
@@ -89,20 +97,7 @@ export function CallLeadButton({
       )}
       {twilioVoice ? (
         <>
-          <button
-            type="button"
-            onClick={handleTwilioCall}
-            disabled={calling || inCall || !twilioVoice.ready}
-            className={btnClass}
-            title={
-              twilioVoice.ready
-                ? "Call client directly from your browser (allow microphone)"
-                : callBlockedReason ?? "Calling is not ready yet"
-            }
-          >
-            {calling ? "Connecting…" : inCall ? "On call" : compact ? "Call" : "Call now"}
-          </button>
-          {inCall && (
+          {isThisCall ? (
             <button
               type="button"
               onClick={() => twilioVoice.hangUp()}
@@ -111,8 +106,25 @@ export function CallLeadButton({
                   ? "px-2 py-0.5 rounded text-xs bg-red-600 hover:bg-red-500 text-white"
                   : "px-2 py-1 rounded-lg text-xs bg-red-600 hover:bg-red-500 text-white"
               }
+              title="End this call"
             >
               End
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleTwilioCall}
+              disabled={calling || inCall || !twilioVoice.ready}
+              className={btnClass}
+              title={
+                inCall
+                  ? "Another call is already in progress"
+                  : twilioVoice.ready
+                    ? "Call client directly from your browser (allow microphone)"
+                    : callBlockedReason ?? "Calling is not ready yet"
+              }
+            >
+              {calling ? "Connecting…" : compact ? "Call" : "Call now"}
             </button>
           )}
         </>
