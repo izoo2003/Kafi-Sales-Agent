@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from db.models import AppUser, AppUserRole, Buyer, Contact, LeadScore
 from modules import buyers as buyers_module
+from modules.call_timing import get_call_recommendation
 from modules.countries import country_matches, list_countries
 from modules.orchestrator import Orchestrator
 from modules.research import BuyerProfile, ResearchModule
@@ -245,16 +246,45 @@ def list_quotation_eligible_leads(db: Session) -> list[dict]:
     return eligible
 
 
-def get_lead_table_filters(db: Session) -> dict[str, list[str]]:
-    buyers = buyers_module.list_buyers(db)
-    industries = sorted({b.industry.strip() for b in buyers if b.industry and b.industry.strip()})
-    sources = sorted({b.source.strip() for b in buyers if b.source and b.source.strip()})
+def _unique_sorted_labels(values: list[str | None]) -> list[str]:
+    """Case-insensitive unique labels, preferring the first-seen casing."""
+    seen: dict[str, str] = {}
+    for raw in values:
+        if not raw:
+            continue
+        label = raw.strip()
+        if not label or label == "-":
+            continue
+        key = label.lower()
+        if key not in seen:
+            seen[key] = label
+    return sorted(seen.values(), key=str.lower)
+
+
+def get_lead_table_filters(
+    db: Session, *, source: str | None = None
+) -> dict[str, list[str]]:
+    all_buyers = buyers_module.list_buyers(db)
+    buyers = all_buyers
+    if source:
+        source_key = source.strip().lower()
+        buyers = [
+            b for b in all_buyers if (b.source or "").strip().lower() == source_key
+        ]
+    industries = _unique_sorted_labels([b.industry for b in buyers])
+    sources = _unique_sorted_labels([b.source for b in all_buyers])
+    company_gradings = _unique_sorted_labels([b.company_grading for b in buyers])
+    products = _unique_sorted_labels([b.product_interest for b in buyers])
+    cities = _unique_sorted_labels([b.city for b in buyers])
     return {
         "countries": [country["name"] for country in list_countries()],
         "industries": industries,
         "sources": sources,
         "scores": ["HOT", "WARM", "COLD", "Unscored"],
         "market_roles": ["consumer", "producer", "hybrid", "unknown"],
+        "company_gradings": company_gradings,
+        "products": products,
+        "cities": cities,
     }
 
 
@@ -264,6 +294,10 @@ def _filtered_lead_table_rows(
     score: str | None = None,
     country: str | None = None,
     industry: str | None = None,
+    company_grading: str | None = None,
+    product_interest: str | None = None,
+    city: str | None = None,
+    call_recommended: str | None = None,
     source: str | None = None,
     exclude_source: str | None = None,
     call_outcome: str | None = None,
@@ -344,11 +378,16 @@ def _filtered_lead_table_rows(
         latest = score_by_buyer.get(buyer.id)
         latest_score = latest.score.value if latest else None
         contact = contact_by_buyer.get(buyer.id)
+        call_timing = get_call_recommendation(buyer.country)
         rows.append(
             {
                 "id": buyer.id,
                 "company_name": buyer.company_name,
                 "country": buyer.country,
+                "call_recommended": call_timing["call_recommended"],
+                "call_local_time": call_timing["call_local_time"],
+                "call_timezone": call_timing["call_timezone"],
+                "call_reason": call_timing["call_reason"],
                 "industry": buyer.industry,
                 "website_url": buyer.website_url,
                 "linkedin_company_url": buyer.linkedin_company_url,
@@ -406,10 +445,14 @@ def _filtered_lead_table_rows(
             or query in (row.get("company_grading") or "").lower()
             or query in (row.get("product_interest") or "").lower()
             or query in (row.get("city") or "").lower()
+            or query in (row.get("address") or "").lower()
             or query in (row.get("remarks") or "").lower()
             or query in (row.get("assigned_to") or "").lower()
             or query in (row.get("contact_phone") or "").lower()
+            or query in (row.get("contact_secondary_mobile") or "").lower()
             or query in (row.get("contact_primary_phone") or "").lower()
+            or query in (row.get("contact_secondary_phone") or "").lower()
+            or query in (row.get("contact_designation") or "").lower()
             or query in (row.get("contact_secondary_email") or "").lower()
         ]
 
@@ -423,7 +466,45 @@ def _filtered_lead_table_rows(
         rows = [row for row in rows if country_matches(str(row["country"] or ""), country)]
 
     if industry:
-        rows = [row for row in rows if (row["industry"] or "").lower() == industry.lower()]
+        industry_key = industry.strip().lower()
+        rows = [
+            row
+            for row in rows
+            if (row["industry"] or "").strip().lower() == industry_key
+        ]
+
+    if company_grading:
+        grading_key = company_grading.strip().lower()
+        rows = [
+            row
+            for row in rows
+            if (row.get("company_grading") or "").strip().lower() == grading_key
+        ]
+
+    if product_interest:
+        product_key = product_interest.strip().lower()
+        rows = [
+            row
+            for row in rows
+            if (row.get("product_interest") or "").strip().lower() == product_key
+        ]
+
+    if city:
+        city_key = city.strip().lower()
+        rows = [
+            row
+            for row in rows
+            if (row.get("city") or "").strip().lower() == city_key
+        ]
+
+    if call_recommended:
+        want = call_recommended.strip().lower()
+        if want in {"yes", "true", "recommended"}:
+            rows = [row for row in rows if row.get("call_recommended") is True]
+        elif want in {"no", "false", "not_now", "not-now"}:
+            rows = [row for row in rows if row.get("call_recommended") is False]
+        elif want in {"unknown", "none"}:
+            rows = [row for row in rows if row.get("call_recommended") is None]
 
     if market_role:
         rows = [row for row in rows if (row["market_role"] or "unknown") == market_role]
@@ -451,6 +532,10 @@ def list_leads_table_ids(
     score: str | None = None,
     country: str | None = None,
     industry: str | None = None,
+    company_grading: str | None = None,
+    product_interest: str | None = None,
+    city: str | None = None,
+    call_recommended: str | None = None,
     source: str | None = None,
     exclude_source: str | None = None,
     call_outcome: str | None = None,
@@ -465,6 +550,10 @@ def list_leads_table_ids(
         score=score,
         country=country,
         industry=industry,
+        company_grading=company_grading,
+        product_interest=product_interest,
+        city=city,
+        call_recommended=call_recommended,
         source=source,
         exclude_source=exclude_source,
         call_outcome=call_outcome,
@@ -486,6 +575,10 @@ def list_leads_table(
     score: str | None = None,
     country: str | None = None,
     industry: str | None = None,
+    company_grading: str | None = None,
+    product_interest: str | None = None,
+    city: str | None = None,
+    call_recommended: str | None = None,
     source: str | None = None,
     exclude_source: str | None = None,
     call_outcome: str | None = None,
@@ -505,6 +598,10 @@ def list_leads_table(
         score=score,
         country=country,
         industry=industry,
+        company_grading=company_grading,
+        product_interest=product_interest,
+        city=city,
+        call_recommended=call_recommended,
         source=source,
         exclude_source=exclude_source,
         call_outcome=call_outcome,
@@ -540,11 +637,16 @@ def get_lead_table_row(db: Session, buyer_id: int) -> dict[str, object] | None:
     latest = get_latest_score(db, buyer_id)
     contacts = buyers_module.list_contacts_for_buyer(db, buyer_id)
     contact = next((c for c in contacts if c.email), contacts[0] if contacts else None)
+    call_timing = get_call_recommendation(buyer.country)
 
     return {
         "id": buyer.id,
         "company_name": buyer.company_name,
         "country": buyer.country,
+        "call_recommended": call_timing["call_recommended"],
+        "call_local_time": call_timing["call_local_time"],
+        "call_timezone": call_timing["call_timezone"],
+        "call_reason": call_timing["call_reason"],
         "industry": buyer.industry,
         "website_url": buyer.website_url,
         "linkedin_company_url": buyer.linkedin_company_url,

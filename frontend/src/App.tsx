@@ -12,6 +12,10 @@ import { InboxAlertToasts } from "./components/InboxAlertToasts";
 import { InterestedFollowUpAlertToasts } from "./components/InterestedFollowUpAlertToasts";
 import { EmailActivityPage } from "./pages/EmailActivityPage";
 import { EmailTemplatesPage } from "./pages/EmailTemplatesPage";
+// WhatsApp Cloud API — temporarily disabled
+// import { WhatsAppTemplatesPage } from "./pages/WhatsAppTemplatesPage";
+// import { WhatsAppInboxPage } from "./pages/WhatsAppInboxPage";
+// import { ApprovalQueuePage } from "./pages/ApprovalQueuePage";
 import { BuyerProfile } from "./pages/BuyerProfile";
 import { CallsPage } from "./pages/CallsPage";
 import { ConsentPage } from "./pages/ConsentPage";
@@ -72,6 +76,9 @@ function DashboardApp() {
   const [error, setError] = useState<string | null>(null);
   const [emailActivityUnread, setEmailActivityUnread] = useState(0);
   const [emailTemplateCount, setEmailTemplateCount] = useState(0);
+  // WhatsApp Cloud API — temporarily disabled
+  // const [whatsappTemplateCount, setWhatsappTemplateCount] = useState(0);
+  // const [approvalQueueCount, setApprovalQueueCount] = useState(0);
   const [discoverLeadsCount, setDiscoverLeadsCount] = useState(0);
 
   const [consentSummary, setConsentSummary] = useState<{ unknown: number } | null>(null);
@@ -118,6 +125,25 @@ function DashboardApp() {
       setEmailTemplateCount(0);
     }
   }, []);
+
+  // WhatsApp Cloud API — temporarily disabled
+  // const loadWhatsappTemplateCount = useCallback(async () => {
+  //   try {
+  //     const rows = await client.listWhatsAppTemplates();
+  //     setWhatsappTemplateCount(rows.filter((t) => t.status === "approved").length);
+  //   } catch {
+  //     setWhatsappTemplateCount(0);
+  //   }
+  // }, []);
+  //
+  // const loadApprovalQueueCount = useCallback(async () => {
+  //   try {
+  //     const result = await client.listDrafts({ page: 1, page_size: 1 });
+  //     setApprovalQueueCount(result.total);
+  //   } catch {
+  //     setApprovalQueueCount(0);
+  //   }
+  // }, []);
 
   const loadTableCounts = useCallback(async () => {
     try {
@@ -256,6 +282,8 @@ function DashboardApp() {
     void loadTableCounts();
     void loadMailCounts();
     void loadEmailTemplateCount();
+    // void loadWhatsappTemplateCount();
+    // void loadApprovalQueueCount();
     client.getConsentSummary().then(setConsentSummary).catch(() => setConsentSummary(null));
     client
       .getEmailActivityUnreadCount()
@@ -266,6 +294,8 @@ function DashboardApp() {
   }, [
     loadDiscoverLeadsCount,
     loadEmailTemplateCount,
+    // loadWhatsappTemplateCount,
+    // loadApprovalQueueCount,
     loadMailCounts,
     loadTableCounts,
     pollInbox,
@@ -278,6 +308,8 @@ function DashboardApp() {
     void loadMailCounts();
     void loadDiscoverLeadsCount();
     void loadEmailTemplateCount();
+    // void loadWhatsappTemplateCount();
+    // void loadApprovalQueueCount();
     requestNotificationPermission();
 
     const unlock = () => unlockNotificationAudio();
@@ -298,16 +330,22 @@ function DashboardApp() {
         .then((r) => setEmailActivityUnread(r.unread_count))
         .catch(() => undefined);
     }, INBOX_POLL_INTERVAL_MS);
+    // const approvalTimer = window.setInterval(() => {
+    //   void loadApprovalQueueCount();
+    // }, INBOX_POLL_INTERVAL_MS);
     return () => {
       window.clearInterval(inboxTimer);
       window.clearInterval(followUpTimer);
       window.clearInterval(activityTimer);
+      // window.clearInterval(approvalTimer);
       window.removeEventListener("click", unlock);
       window.removeEventListener("keydown", unlock);
     };
   }, [
     loadDiscoverLeadsCount,
     loadEmailTemplateCount,
+    // loadWhatsappTemplateCount,
+    // loadApprovalQueueCount,
     loadMailCounts,
     loadTableCounts,
     pollInbox,
@@ -381,7 +419,16 @@ function DashboardApp() {
 
   const navItems: NavItem[] = [
     { id: "activity", label: "Email Activity", count: emailActivityUnread, alert: emailActivityUnread > 0 },
+    // WhatsApp Cloud API — temporarily disabled
+    // {
+    //   id: "approvals",
+    //   label: "Approval queue",
+    //   count: approvalQueueCount,
+    //   alert: approvalQueueCount > 0,
+    // },
     { id: "email-templates", label: "Email templates", count: emailTemplateCount },
+    // { id: "whatsapp-templates", label: "WhatsApp templates", count: whatsappTemplateCount },
+    // { id: "whatsapp-inbox", label: "WhatsApp inbox", count: 0 },
     ...(isAdmin
       ? [{ id: "leads" as const, label: "Discover Leads", count: discoverLeadsCount }]
       : []),
@@ -493,6 +540,18 @@ function DashboardApp() {
                 onCountChange={setEmailTemplateCount}
               />
             )}
+            {/* WhatsApp Cloud API — temporarily disabled
+            {tab === "whatsapp-templates" && (
+              <WhatsAppTemplatesPage
+                onError={setError}
+                onCountChange={setWhatsappTemplateCount}
+              />
+            )}
+            {tab === "approvals" && (
+              <ApprovalQueuePage onError={setError} onCountChange={setApprovalQueueCount} />
+            )}
+            {tab === "whatsapp-inbox" && <WhatsAppInboxPage onError={setError} />}
+            */}
             {tab === "leads" && isAdmin && selectedLeadId !== null && (
               <BuyerProfile
                 leadId={selectedLeadId}

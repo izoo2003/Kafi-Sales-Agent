@@ -295,6 +295,9 @@ def approve_interaction(
             content=payload.content,
             approved_by=payload.approved_by,
             send=payload.send,
+            template_name=payload.template_name,
+            template_language=payload.template_language,
+            template_variables=payload.template_variables or None,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

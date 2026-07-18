@@ -151,6 +151,15 @@ def primary_contact_with_email(db: Session, buyer_id: int) -> Contact | None:
     return None
 
 
+def primary_contact_with_phone(db: Session, buyer_id: int) -> Contact | None:
+    from integrations.voice_client import normalize_e164
+
+    for contact in list_contacts_for_buyer(db, buyer_id):
+        if normalize_e164(contact.phone):
+            return contact
+    return None
+
+
 def list_buyers(db: Session) -> list[Buyer]:
     return db.query(Buyer).order_by(Buyer.created_at.desc()).all()
 
@@ -249,6 +258,8 @@ def update_contact(db: Session, contact_id: int, data: dict) -> Contact | None:
             "preferred_language",
             "date_of_birth",
             "nationality",
+            "wa_id",
+            "whatsapp_opt_in",
         }:
             setattr(contact, key, value)
     db.commit()

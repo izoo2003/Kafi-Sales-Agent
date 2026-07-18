@@ -9,6 +9,7 @@ import { CallLeadButton } from "../components/CallLeadButton";
 import { CallManualDialer } from "../components/CallManualDialer";
 import { CallRemarksForm } from "../components/CallRemarksForm";
 import { CallRecordingPanel } from "../components/CallRecordingPanel";
+import { CallRecommendationBadge } from "../components/CallRecommendationBadge";
 import { CountrySelect } from "../components/CountrySelect";
 import { Pagination } from "../components/Pagination";
 import { type CallOutcome, callOutcomeBadge, callOutcomeLabel, callOutcomeListNotice } from "../utils/callOutcomes";
@@ -314,6 +315,13 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
                       {lead.contact_name ?? "Contact"} · {lead.contact_phone}
                       {lead.country ? ` · ${lead.country}` : ""}
                     </p>
+                    <div className="mt-1">
+                      <CallRecommendationBadge
+                        recommended={lead.call_recommended}
+                        localTime={lead.call_local_time}
+                        reason={lead.call_reason}
+                      />
+                    </div>
                   </button>
                   <CallLeadButton
                     leadId={lead.id}

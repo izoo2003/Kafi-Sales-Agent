@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     )
 
     serpapi_api_key: str | None = None
+    # Optional comma-separated extra keys. When the active key hits monthly/hourly
+    # limits, web_search rotates to the next key and later returns to the first
+    # once account.json reports searches left again.
+    serpapi_api_keys: str | None = None
     gmail_client_id: str | None = None
     gmail_client_secret: str | None = None
     gmail_refresh_token: str | None = None
@@ -101,6 +105,20 @@ class Settings(BaseSettings):
     bulk_email_message_delay_seconds: float = 3.0
     bulk_email_batch_pause_seconds: float = 60.0
     bulk_email_max_per_request: int = 50
+
+    # WhatsApp Cloud API (Meta) — integrations/whatsapp_client.py
+    whatsapp_access_token: str | None = None
+    whatsapp_phone_number_id: str | None = None
+    whatsapp_business_account_id: str | None = None
+    whatsapp_app_secret: str | None = None
+    # Shared secret you choose and enter into Meta's webhook subscription setup.
+    whatsapp_webhook_verify_token: str | None = None
+    whatsapp_api_version: str = "v21.0"
+    # Verify X-Hub-Signature-256 on webhooks (set false only for local debugging).
+    whatsapp_validate_webhooks: bool = True
+    # Bulk WhatsApp throttling — Meta's messaging tier limits unique conversations/24h.
+    bulk_whatsapp_message_delay_seconds: float = 2.0
+    bulk_whatsapp_max_per_request: int = 250
 
     @field_validator("mailbox_imap_port", "mailbox_smtp_port", mode="before")
     @classmethod

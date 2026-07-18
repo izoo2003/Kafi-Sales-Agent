@@ -57,6 +57,24 @@ _SKIP_DOMAINS = (
     "google.com",
     "amazon.com",
     "ebay.com",
+    # Firmographic / lead-gen directories — never treat as the company website
+    "growjo.com",
+    "compworth.com",
+    "zoominfo.com",
+    "datanyze.com",
+    "rocketreach.co",
+    "rocketreach.com",
+    "apollo.io",
+    "clearbit.com",
+    "craft.co",
+    "owler.com",
+    "signalhire.com",
+    "pitchbook.com",
+    "cbinsights.com",
+    "dnb.com",
+    "appsruntheworld.com",
+    "owler.com",
+    "zoominfo.com",
 )
 # Trade-data / customs-intelligence platforms — not product importers we can sell to.
 _SKIP_TRADE_DATA_DOMAINS = (
@@ -127,6 +145,13 @@ _DIRECTORY_PROFILE_DOMAINS = (
     "wogibtswas.ch",
     "search.ch",
     "tel.search.ch",
+    "panjiva.com",
+    "volza.com",
+    "importgenius.com",
+    "datanyze.com",
+    "signalhire.com",
+    "crunchbase.com",
+    "pitchbook.com",
 )
 # Free/webmail providers — acceptable contact emails for small businesses even when
 # they don't match the company's own domain.
@@ -242,10 +267,15 @@ _CONTACT_PATHS = (
     "",
     "/contact",
     "/contact-us",
+    "/contact-us/contact-us",
+    "/contactus",
+    "/en/contact",
+    "/nl/contact",
     "/about",
     "/about-us",
+    "/over-ons",
+    "/impressum",
     "/company",
-    "/products",
 )
 _NOT_FOUND = "Not found"
 MAX_DISCOVERY_INDUSTRIES = 3
@@ -739,6 +769,422 @@ def _infer_country_from_pages(
     return fallback_resolved or best_name
 
 
+_POSTAL_CODE_RE = re.compile(
+    r"^\d{4,6}(-\d{3,4})?$"  # US / numeric
+    r"|^[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}$"  # UK
+    r"|^[A-Z]\d[A-Z]\s*\d[A-Z]\d$",  # Canada
+    re.I,
+)
+_STREET_HINT_RE = re.compile(
+    r"\b(street|st\.?|road|rd\.?|avenue|ave\.?|blvd|boulevard|lane|ln\.?|"
+    r"drive|dr\.?|suite|ste\.?|floor|fl\.?|building|bldg|unit|plot|"
+    r"industrial|zone|area|block|p\.?\s*o\.?\s*box|po box)\b",
+    re.I,
+)
+
+
+def _is_plausible_city(city: str | None) -> bool:
+    if not city:
+        return False
+    text = re.sub(r"\s+", " ", str(city)).strip(" ,.")
+    if len(text) < 3 or len(text) > 50:
+        return False
+    if re.fullmatch(r"\d+[A-Z]{0,2}", text, re.I):
+        return False
+    if text.isupper() and len(text) <= 3:
+        return False
+    if text.lower() in {
+        "the",
+        "de",
+        "company",
+        "group",
+        "organic",
+        "contact",
+        "address",
+        "netherlands",
+        "holland",
+    }:
+        return False
+    if text.lower().startswith("gemeente "):
+        return _is_plausible_city(text.split(" ", 1)[-1])
+    return bool(re.search(r"[A-Za-z]{3,}", text))
+
+
+def _clean_city_value(city: str | None) -> str | None:
+    if not city:
+        return None
+    text = re.sub(r"\s+", " ", str(city)).strip(" ,.")
+    if text.lower().startswith("gemeente "):
+        text = text.split(" ", 1)[-1].strip()
+    return text if _is_plausible_city(text) else None
+
+
+def _looks_like_country_label(text: str, country: str | None = None) -> bool:
+    """True when a comma segment is a country name/alias — not a city that implies one.
+
+    ``resolve_country_name('Dubai')`` returns UAE, so we must not treat every
+    resolving token as a country label to strip from the address.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    resolved = resolve_country_name(t)
+    if not resolved:
+        return False
+    t_l = t.lower()
+    r_l = resolved.lower()
+    if t_l == r_l:
+        return True
+    country_norm = (resolve_country_name(country) or country or "").strip().lower()
+    if country_norm and t_l == country_norm:
+        return True
+    # Short aliases: UAE, UK, USA, KSA, etc.
+    compact = re.sub(r"[^a-z]", "", t_l)
+    return bool(resolved) and 2 <= len(compact) <= 4
+
+
+def _parse_city_from_address(address: str | None, country: str | None = None) -> str | None:
+    """Best-effort city from a postal address like '…, Dubai, United Arab Emirates'."""
+    if not address or not str(address).strip():
+        return None
+    text = re.sub(r"\s+", " ", str(address).strip())
+    parts = [p.strip(" ,") for p in text.split(",") if p.strip(" ,")]
+    if not parts:
+        return None
+
+    # Drop trailing country / region labels (not cities like Dubai that map to a country).
+    while parts and _looks_like_country_label(parts[-1], country):
+        parts.pop()
+
+    for part in reversed(parts):
+        if _POSTAL_CODE_RE.match(part.replace(" ", "")):
+            continue
+        if _STREET_HINT_RE.search(part) and re.search(r"\d", part):
+            continue
+        if len(part) < 2 or len(part) > 80:
+            continue
+        # Prefer short locality-looking tokens (1–4 words).
+        if len(part.split()) <= 4 and _is_plausible_city(part):
+            return _clean_city_value(part)
+    return None
+
+
+def _extract_postal_address(soup: BeautifulSoup) -> dict[str, str | None]:
+    """Pull street / city / country from schema.org PostalAddress microdata."""
+    out: dict[str, str | None] = {"address": None, "city": None, "country": None}
+
+    def _prop(name: str) -> str | None:
+        for element in soup.find_all(attrs={"itemprop": re.compile(rf"^{name}$", re.I)}):
+            value = (element.get("content") or element.get_text(" ", strip=True) or "").strip()
+            if value:
+                return value
+        return None
+
+    street = _prop("streetAddress")
+    locality = _prop("addressLocality")
+    region = _prop("addressRegion")
+    postal = _prop("postalCode")
+    country = _prop("addressCountry")
+
+    if locality:
+        out["city"] = locality
+    if country:
+        out["country"] = resolve_country_name(country) or country
+
+    parts = [p for p in (street, locality, region, postal, country) if p]
+    if parts:
+        out["address"] = ", ".join(parts)
+    elif soup.find("address"):
+        # Fallback: first <address> block that looks like a postal address.
+        for tag in soup.find_all("address"):
+            text = re.sub(r"\s+", " ", tag.get_text(" ", strip=True))
+            if 12 <= len(text) <= 220 and (
+                "," in text or _STREET_HINT_RE.search(text) or re.search(r"\d", text)
+            ):
+                out["address"] = text
+                break
+
+    if out["address"] and not out["city"]:
+        out["city"] = _parse_city_from_address(out["address"], out["country"])
+    return out
+
+
+def _apply_lookup_location(candidate: DiscoveryCandidate, lookup: dict[str, Any]) -> None:
+    """Copy address/city (and country if missing) from a company search lookup."""
+    if not candidate.address and lookup.get("address"):
+        candidate.address = str(lookup["address"]).strip() or None
+    if not candidate.country and lookup.get("country"):
+        candidate.country = lookup["country"]
+    if not candidate.city:
+        city = _clean_city_value(lookup.get("city")) if lookup.get("city") else None
+        if not city and candidate.address:
+            city = _parse_city_from_address(candidate.address, candidate.country)
+        if city:
+            candidate.city = city
+
+
+_PANJIVA_ADDR_RE = re.compile(
+    r"(?:Address|Direcci[oó]n|Bezoekadres)?\s*"
+    r"([A-Z0-9][A-Za-z0-9\s\.\-']{2,60}?\d[A-Za-z0-9\s\.\-]{0,20}?)"
+    r"\s*[-–]\s*"
+    r"([A-Za-z][A-Za-z\s\-']{1,40}?)"
+    r"\s*[-–]\s*(?:[-–]\s*)?"
+    r"(\d{3,6})?",
+    re.I,
+)
+_NL_POSTAL_ADDR_RE = re.compile(
+    r"("
+    r"(?:[A-Z][A-Za-z0-9\.\-']*(?:straat|laan|weg|plein|singel|kade|gracht|dreef)"
+    r"|[A-Z][A-Za-z]+(?:Street|Road|Avenue|Lane|Drive|Boulevard|Square)"
+    r"|[A-Z][a-z]+\s+(?:Street|Road|Avenue|Lane|Drive|Boulevard|Square|Plein))"
+    r"\s+\d{1,4}(?:\s*[-–]\s*\d{1,4})?"
+    r")\s+"
+    r"(\d{4}\s*[A-Z]{2})\s+"
+    r"([A-Z][a-z]+(?:[\s\-][A-Z][a-z]+)*)"
+    r"(?:\s*,?\s*(?:The\s+)?Netherlands|\s*,?\s*NL\b)?",
+    re.I,
+)
+_LABELED_ADDR_RE = re.compile(
+    r"(?:address|adress|bezoekadres|vestigingsadres|hoofdvestiging|"
+    r"head\s*office|headquarters|registered\s*office|location)\s*[:\-]\s*"
+    r"([A-Z0-9][^|\n]{12,120})",
+    re.I,
+)
+
+
+def _normalize_found_address(raw: str, country: str | None = None) -> str | None:
+    text = re.sub(r"\s+", " ", (raw or "").strip(" ,;|"))
+    if len(text) < 8 or len(text) > 220:
+        return None
+    lower = text.lower()
+    if any(
+        junk in lower
+        for junk in (
+            "linkedin",
+            "professional community",
+            "sign up",
+            "billion members",
+            "www.",
+            "http",
+        )
+    ):
+        return None
+    # Require a number (street/postal) — plain city names are handled separately.
+    if not re.search(r"\d", text):
+        return None
+    # Drop trailing directory brand noise.
+    text = re.sub(
+        r"\s*[-–|]\s*(?:Panjiva|Volza|ZoomInfo|Datanyze|Crunchbase|Sign up|Contact).*$",
+        "",
+        text,
+        flags=re.I,
+    ).strip(" ,;|")
+    if country and not detect_countries_in_text(text):
+        country_label = resolve_country_name(country) or country
+        if country_label and country_label.lower() not in text.lower():
+            text = f"{text}, {country_label}"
+    return text or None
+
+
+def _extract_city_mention(
+    title: str, snippet: str, company_name: str, country: str | None = None
+) -> str | None:
+    """Pull a city mention from search text when a full street address is unavailable."""
+    blob = f"{title or ''} {snippet or ''}"
+    if not blob.strip():
+        return None
+    name_norm = _normalize_name(_clean_company_name(company_name) or company_name)
+    if name_norm and name_norm not in _normalize_name(blob):
+        tokens = [t for t in name_norm.split() if len(t) >= 4][:2]
+        if not tokens or not all(t in _normalize_name(blob) for t in tokens):
+            return None
+    patterns = (
+        r"\b(?:based in|located in|headquartered in|gevestigd (?:te|in)|intrek in)\s+"
+        r"(?:De\s+)?([A-Z][A-Za-z\s\-']{1,40})",
+        r"\b([A-Z][A-Za-z\s\-']{1,40}),\s*(?:The\s+)?Netherlands\b",
+        r"\b([A-Z][A-Za-z\s\-']{1,40}),\s*(?:United Kingdom|Germany|France|Belgium|UAE)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, blob)
+        if not match:
+            continue
+        city = re.sub(r"\s+", " ", match.group(1)).strip(" ,.")
+        if len(city.split()) > 3:
+            continue
+        if _looks_like_country_label(city, country):
+            continue
+        if city.lower() in {"the", "de", "company", "group", "organic"}:
+            continue
+        return _clean_city_value(city)
+    return None
+
+
+def _extract_address_from_search_text(
+    title: str,
+    snippet: str,
+    company_name: str,
+    country: str | None = None,
+) -> str | None:
+    """Pull a postal address from directory-style search titles/snippets (e.g. Panjiva)."""
+    blob = f"{title or ''} {snippet or ''}"
+    if not blob.strip():
+        return None
+    name_token = _normalize_name(_clean_company_name(company_name) or company_name)
+    if name_token and name_token not in _normalize_name(blob):
+        # Require the company to be mentioned so we don't take a random address page.
+        short = name_token.split()[:2]
+        if not short or not all(tok in _normalize_name(blob) for tok in short if len(tok) >= 3):
+            return None
+
+    for match in _PANJIVA_ADDR_RE.finditer(blob):
+        street, city, postal = match.group(1), match.group(2), match.group(3)
+        city = re.sub(r"\s+", " ", city).strip(" -")
+        if _looks_like_country_label(city, country):
+            continue
+        parts = [street.strip(), city]
+        if postal:
+            parts.insert(1, postal.strip())
+        normalized = _normalize_found_address(", ".join(parts), country)
+        if normalized:
+            return normalized
+
+    for match in _NL_POSTAL_ADDR_RE.finditer(blob):
+        street, postal, city = match.group(1), match.group(2), match.group(3)
+        city = re.sub(r"\s+", " ", city).strip(" ,")
+        if _looks_like_country_label(city, country):
+            continue
+        normalized = _normalize_found_address(
+            f"{street.strip()}, {postal.strip()}, {city}", country
+        )
+        if normalized:
+            return normalized
+
+    for match in _LABELED_ADDR_RE.finditer(blob):
+        normalized = _normalize_found_address(match.group(1), country)
+        if normalized and (
+            re.search(r"\d", normalized) or _parse_city_from_address(normalized, country)
+        ):
+            return normalized
+    return None
+
+
+def _extract_addresses_from_page_text(
+    text: str, country: str | None = None
+) -> dict[str, str | None]:
+    """Best-effort street/city from contact-page plain text (no microdata required)."""
+    out: dict[str, str | None] = {"address": None, "city": None}
+    if not text:
+        return out
+    compact = re.sub(r"\s+", " ", text)
+
+    for match in _NL_POSTAL_ADDR_RE.finditer(compact):
+        street, postal, city = match.group(1), match.group(2), match.group(3)
+        city = re.sub(r"\s+", " ", city).strip(" ,")
+        city = re.split(
+            r"\b(?:The\s+)?Netherlands\b|\bUnited\s+Kingdom\b|\bGermany\b|\bBelgium\b|"
+            r"\bNL\b|\bCONTACT\b|\bTel\b|\bPhone\b|\bEmail\b|\bwww\b",
+            city,
+            maxsplit=1,
+            flags=re.I,
+        )[0].strip(" ,")
+        city = _clean_city_value(city)
+        if not city or _looks_like_country_label(city, country):
+            continue
+        address = _normalize_found_address(
+            f"{street.strip()}, {postal.strip()}, {city}", country
+        )
+        if address:
+            out["address"] = address
+            out["city"] = city
+            return out
+
+    for match in _LABELED_ADDR_RE.finditer(compact):
+        address = _normalize_found_address(match.group(1), country)
+        if not address:
+            continue
+        city = _parse_city_from_address(address, country)
+        if city or re.search(r"\d", address):
+            out["address"] = address
+            out["city"] = city
+            return out
+
+    # HQ Amsterdam … Stationsplein 61 - 65 1012 AB Amsterdam
+    hq = re.search(
+        r"HQ\s+([A-Z][A-Za-z\s\-']{1,40}?)\s+.{0,80}?"
+        r"([A-Z][A-Za-z0-9\s\.\-']{3,50}?\d{1,4}(?:\s*[-–]\s*\d{1,4})?\s+"
+        r"\d{4}\s*[A-Z]{2}\s+[A-Z][A-Za-z\s\-']{1,40})",
+        compact,
+        re.I,
+    )
+    if hq:
+        city_hint = hq.group(1).strip()
+        address = _normalize_found_address(hq.group(2), country)
+        if address:
+            out["address"] = address
+            out["city"] = _parse_city_from_address(address, country) or city_hint
+            return out
+    return out
+
+
+def _nominatim_company_location(
+    company_name: str, country: str | None = None
+) -> dict[str, str | None]:
+    """OpenStreetMap Nominatim fallback when SerpAPI knowledge/local panels are unavailable."""
+    out: dict[str, str | None] = {"address": None, "city": None, "country": None}
+    query = company_name.strip()
+    if country:
+        query = f"{query}, {country}"
+    if len(query) < 3:
+        return out
+    try:
+        response = httpx.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={
+                "q": query,
+                "format": "json",
+                "addressdetails": 1,
+                "limit": 5,
+            },
+            headers={"User-Agent": "KafiSalesAgent/1.0 (lead-enrichment)"},
+            timeout=12,
+        )
+        response.raise_for_status()
+        rows = response.json()
+    except Exception:
+        return out
+
+    name_norm = _normalize_name(_clean_company_name(company_name) or company_name)
+    for row in rows or []:
+        display = str(row.get("display_name") or "")
+        if name_norm and name_norm not in _normalize_name(display):
+            tokens = [t for t in name_norm.split() if len(t) >= 4][:2]
+            if not tokens or not all(t in _normalize_name(display) for t in tokens):
+                continue
+        addr = row.get("address") or {}
+        city = (
+            addr.get("city")
+            or addr.get("town")
+            or addr.get("village")
+            or addr.get("municipality")
+            or addr.get("county")
+        )
+        road = addr.get("road") or addr.get("pedestrian")
+        house = addr.get("house_number")
+        postcode = addr.get("postcode")
+        country_name = addr.get("country")
+        street = " ".join(p for p in (house, road) if p).strip() or None
+        parts = [p for p in (street, postcode, city, country_name) if p]
+        if not parts and display:
+            parts = [display]
+        if not parts:
+            continue
+        out["address"] = _normalize_found_address(", ".join(parts), country or country_name)
+        out["city"] = city
+        out["country"] = resolve_country_name(country_name) or country_name
+        return out
+    return out
+
+
 _COMPANY_STOP_WORDS = frozenset(
     {
         "the",
@@ -956,6 +1402,7 @@ def _company_lookup(
         "phone": None,
         "country": None,
         "address": None,
+        "city": None,
         "directory_url": None,
         "source_detail": None,
         "linkedin_url": None,
@@ -984,7 +1431,8 @@ def _company_lookup(
     queries = [f'"{company_name}"']
     if country:
         queries.append(f'"{company_name}" {country}')
-    # Cap at 2 queries so Research & Score stays interactive.
+    # Cap at 2 initial queries so Research & Score stays interactive; an
+    # address-focused query is appended later only when location is still missing.
     queries = queries[:2]
 
     best_url: str | None = None
@@ -1000,12 +1448,11 @@ def _company_lookup(
             return False
         return name_norm in other or other in name_norm
 
-    for query in queries:
-        found = web_search.search_combined(query, num=10, gl_code=gl)
+    def _consume_search(found) -> None:
+        nonlocal best_url, best_score, soft_url, soft_score
         if found.provider:
             providers_used.update(found.provider.split("+"))
 
-        # 1. Knowledge panel — the most authoritative single source (when provided).
         kg = found.knowledge_graph or {}
         if kg and (
             _name_close(kg.get("title"))
@@ -1037,7 +1484,6 @@ def _company_lookup(
                 if not result.get(key) and kg.get(key):
                     result[key] = str(kg[key]).strip()
 
-        # 2. Local business results — reliable phone/address for physical companies.
         for place in found.local:
             if not _name_close(place.get("title")):
                 continue
@@ -1047,7 +1493,6 @@ def _company_lookup(
                 result["address"] = str(place["address"]).strip()
             break
 
-        # 3. Organic results — strict name-matched website + directory profile fallback.
         for item in found.organic:
             link = item.get("link") or ""
             title = item.get("title") or ""
@@ -1057,6 +1502,29 @@ def _company_lookup(
                 continue
             if any(part in link.lower() for part in _SKIP_URL_PARTS):
                 continue
+
+            # Address / city from directory/trade titles & snippets even when the site
+            # is not the company's own website (SerpAPI KG often unavailable).
+            if (
+                _name_close(_clean_company_name(title))
+                or _result_matches_name(company_name, title, link, snippet)
+            ):
+                if not result["address"]:
+                    parsed_addr = _extract_address_from_search_text(
+                        title, snippet, company_name, country
+                    )
+                    if parsed_addr:
+                        result["address"] = parsed_addr
+                        result["source_detail"] = (
+                            result["source_detail"] or "Address from search result"
+                        )
+                if not result["city"]:
+                    city = _clean_city_value(
+                        _extract_city_mention(title, snippet, company_name, country)
+                    )
+                    if city:
+                        result["city"] = city
+
             if _domain_matches_blocklist(domain, _DIRECTORY_PROFILE_DOMAINS):
                 if not result["directory_url"] and _name_close(_clean_company_name(title)):
                     result["directory_url"] = link
@@ -1079,23 +1547,52 @@ def _company_lookup(
                 if score > best_score:
                     best_score = score
                     best_url = _homepage_url(link) or link
-            elif allow_soft_website_match and score >= 55 and score > soft_score:
-                soft_score = score
-                soft_url = _homepage_url(link) or link
+            elif allow_soft_website_match and score >= 70 and score > soft_score:
+                # Soft match only when the domain looks geographically plausible
+                # for the known country (e.g. .nl for Netherlands) — blocks
+                # firmographic junk sites that merely mention the company name.
+                gl = _country_gl_code(country)
+                tld_ok = bool(gl and domain.endswith(f".{gl}"))
+                if tld_ok or score >= 90:
+                    soft_score = score
+                    soft_url = _homepage_url(link) or link
 
-        if result["website"] and result["phone"]:
+    for query in queries:
+        found = web_search.search_combined(query, num=10, gl_code=gl)
+        _consume_search(found)
+        if result["website"] and result["phone"] and result["address"]:
             break
-        if best_score >= 60:
+        if best_score >= 60 and result["address"]:
             break
+
+    if not result["address"] or not result["city"]:
+        address_query = f'"{company_name}" address OR headquarters OR bezoekadres'
+        if country:
+            address_query = (
+                f'"{company_name}" {country} '
+                f'(address OR headquarters OR bezoekadres OR Panjiva OR Europages)'
+            )
+        found = web_search.search_combined(address_query, num=8, gl_code=gl)
+        _consume_search(found)
 
     if not result["website"] and best_url and best_score >= 40:
         result["website"] = best_url
         result["source_detail"] = result["source_detail"] or "Website found via web search"
-    elif not result["website"] and soft_url and soft_score >= 55:
+    elif not result["website"] and soft_url and soft_score >= 70:
         result["website"] = soft_url
         result["source_detail"] = (
             result["source_detail"] or "Website found via soft name match (search)"
         )
+
+    if not result["address"]:
+        nominatim = _nominatim_company_location(company_name, country)
+        if nominatim.get("address"):
+            result["address"] = nominatim["address"]
+            if not result["country"] and nominatim.get("country"):
+                result["country"] = nominatim["country"]
+            result["source_detail"] = (
+                f"{result['source_detail']}; OpenStreetMap" if result["source_detail"] else "OpenStreetMap"
+            )
 
     if providers_used:
         label = " + ".join(sorted(providers_used))
@@ -1103,6 +1600,10 @@ def _company_lookup(
         result["source_detail"] = (
             f"{result['source_detail']}; {combined}" if result["source_detail"] else combined
         )
+
+    if result["address"] and not result["city"]:
+        result["city"] = _parse_city_from_address(result["address"], country or result["country"])
+    result["city"] = _clean_city_value(result.get("city"))
 
     if result["address"] and not result["country"]:
         detected = detect_countries_in_text(result["address"])
@@ -1113,8 +1614,8 @@ def _company_lookup(
 
 
 def _scrape_directory_profile(profile_url: str) -> dict[str, str | None]:
-    """Pull phone (and phone-derived country) from a B2B directory profile page."""
-    details: dict[str, str | None] = {"phone": None}
+    """Pull phone/address from a B2B directory profile page."""
+    details: dict[str, str | None] = {"phone": None, "address": None, "city": None}
     if not profile_url or not can_fetch(profile_url):
         return details
     try:
@@ -1129,6 +1630,14 @@ def _scrape_directory_profile(profile_url: str) -> dict[str, str | None]:
         return details
     soup = BeautifulSoup(response.text, "html.parser")
     details["phone"] = _best_phone(_extract_phones(soup))
+    postal = _extract_postal_address(soup)
+    if postal.get("address"):
+        details["address"] = postal["address"]
+        details["city"] = postal.get("city")
+    else:
+        from_text = _extract_addresses_from_page_text(soup.get_text(" ", strip=True))
+        details["address"] = from_text.get("address")
+        details["city"] = from_text.get("city")
     return details
 
 
@@ -1223,8 +1732,18 @@ def _flag_invalid_candidates(candidates: list[DiscoveryCandidate]) -> int:
 
 def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool = False) -> bool:
     homepage = _homepage_url(candidate.website_url)
+    # Drop firmographic junk that was soft-matched as a "website" on earlier runs.
+    if homepage and (
+        _domain_matches_blocklist(_domain(homepage), _SKIP_DOMAINS)
+        or _domain_matches_blocklist(_domain(homepage), _DIRECTORY_PROFILE_DOMAINS)
+        or _is_trade_data_platform(_domain(homepage), candidate.company_name)
+    ):
+        homepage = None
+        candidate.website_url = None
+
     directory_url: str | None = None
     soft_match = keep_row or candidate.source in {"csv", "old_clients", "manual"}
+    needs_location = not (candidate.address and candidate.city)
 
     if not homepage:
         # Search via SerpAPI + DuckDuckGo + Google CSE + Wikidata and pull only
@@ -1252,6 +1771,7 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
             candidate.phone = _clean_found(lookup["phone"])
         if not candidate.country and lookup.get("country"):
             candidate.country = lookup["country"]
+        _apply_lookup_location(candidate, lookup)
         if candidate.linkedin_url == _NOT_FOUND and lookup.get("linkedin_url"):
             candidate.linkedin_url = _clean_found(lookup["linkedin_url"])
         if candidate.facebook_url == _NOT_FOUND and lookup.get("facebook_url"):
@@ -1259,7 +1779,8 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
         if candidate.instagram_url == _NOT_FOUND and lookup.get("instagram_url"):
             candidate.instagram_url = _clean_found(lookup["instagram_url"])
     else:
-        # Website already known — still ask Wikidata for missing social links.
+        # Website already known — still ask Wikidata for missing social links,
+        # and company search for missing city/address (KG / local results).
         try:
             from modules.company_enrichment import lookup_wikidata_company
 
@@ -1273,15 +1794,47 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
         except Exception:
             pass
 
+        if needs_location and candidate.company_name:
+            try:
+                lookup = _company_lookup(
+                    candidate.company_name,
+                    candidate.country,
+                    candidate.industry,
+                    allow_soft_website_match=soft_match,
+                )
+                directory_url = lookup.get("directory_url") or directory_url
+                if candidate.phone == _NOT_FOUND and lookup.get("phone"):
+                    candidate.phone = _clean_found(lookup["phone"])
+                _apply_lookup_location(candidate, lookup)
+                if lookup.get("address") or lookup.get("city"):
+                    detail = "Address found via company search"
+                    candidate.source_detail = (
+                        f"{candidate.source_detail}; {detail}"
+                        if candidate.source_detail
+                        else detail
+                    )
+            except Exception:
+                pass
+
     if not homepage:
         # No own website, but a directory profile or knowledge-panel phone may still
         # give us a verified contact for this exact company.
-        if candidate.phone == _NOT_FOUND and directory_url:
+        if directory_url and (
+            candidate.phone == _NOT_FOUND or not candidate.address
+        ):
             profile = _scrape_directory_profile(directory_url)
-            if profile.get("phone"):
+            if candidate.phone == _NOT_FOUND and profile.get("phone"):
                 candidate.phone = _clean_found(profile["phone"])
                 if not candidate.country:
                     candidate.country = country_from_phone(candidate.phone) or candidate.country
+            if not candidate.address and profile.get("address"):
+                candidate.address = profile["address"]
+            if not candidate.city and profile.get("city"):
+                candidate.city = profile["city"]
+            elif candidate.address and not candidate.city:
+                candidate.city = _parse_city_from_address(
+                    candidate.address, candidate.country
+                )
         if keep_row:
             return True
         if _value_or_none(candidate.phone):
@@ -1294,6 +1847,7 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
     socials: dict[str, str] = {}
     page_texts: list[str] = []
     address_countries: list[str] = []
+    scraped_addresses: list[dict[str, str | None]] = []
     company_domain = _domain(homepage)
     fallback_country = candidate.country
 
@@ -1314,9 +1868,9 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
             return None
 
     # Fetch homepage + key contact/about paths in parallel.
-    paths = list(_CONTACT_PATHS[:5])
+    paths = list(_CONTACT_PATHS[:8])
     fetched: list[tuple[str, str]] = []
-    with ThreadPoolExecutor(max_workers=min(5, len(paths))) as pool:
+    with ThreadPoolExecutor(max_workers=min(6, len(paths))) as pool:
         futures = [pool.submit(_fetch_page, path) for path in paths]
         for future in as_completed(futures):
             try:
@@ -1336,6 +1890,12 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
             value = element.get("content") or element.get_text(" ", strip=True)
             if value:
                 address_countries.append(value.strip())
+
+        postal = _extract_postal_address(soup)
+        if postal.get("address") or postal.get("city"):
+            scraped_addresses.append(postal)
+            if postal.get("country"):
+                address_countries.append(str(postal["country"]))
 
         for anchor in soup.find_all("a", href=True):
             href = anchor["href"].strip()
@@ -1364,10 +1924,14 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
             candidate.instagram_url = _clean_found(socials.get("instagram_url"))
         if candidate.linkedin_url == _NOT_FOUND:
             candidate.linkedin_url = _clean_found(socials.get("linkedin_url"))
-    if candidate.phone == _NOT_FOUND and directory_url:
+    if directory_url and (candidate.phone == _NOT_FOUND or not candidate.address):
         profile = _scrape_directory_profile(directory_url)
-        if profile.get("phone"):
+        if candidate.phone == _NOT_FOUND and profile.get("phone"):
             candidate.phone = _clean_found(profile["phone"])
+        if not candidate.address and profile.get("address"):
+            candidate.address = profile["address"]
+        if not candidate.city and profile.get("city"):
+            candidate.city = profile["city"]
     if not candidate.country:
         candidate.country = _infer_country_from_pages(
             page_texts=page_texts,
@@ -1376,6 +1940,33 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
             fallback=fallback_country,
             address_countries=address_countries,
         )
+
+    # Prefer schema.org / <address> blocks from the company site for location.
+    if scraped_addresses and (not candidate.address or not candidate.city):
+        best = next(
+            (row for row in scraped_addresses if row.get("address") and row.get("city")),
+            scraped_addresses[0],
+        )
+        if not candidate.address and best.get("address"):
+            candidate.address = best["address"]
+        if not candidate.city and best.get("city"):
+            candidate.city = best["city"]
+        elif not candidate.city and candidate.address:
+            candidate.city = _parse_city_from_address(candidate.address, candidate.country)
+        if not candidate.country and best.get("country"):
+            candidate.country = best["country"]
+    if (not candidate.address or not candidate.city) and page_texts:
+        from_pages = _extract_addresses_from_page_text(
+            " ".join(page_texts)[:20000], candidate.country
+        )
+        if not candidate.address and from_pages.get("address"):
+            candidate.address = from_pages["address"]
+        if not candidate.city and from_pages.get("city"):
+            candidate.city = from_pages["city"]
+        elif candidate.address and not candidate.city:
+            candidate.city = _parse_city_from_address(candidate.address, candidate.country)
+    elif candidate.address and not candidate.city:
+        candidate.city = _parse_city_from_address(candidate.address, candidate.country)
 
     # CompanyLens domain enrichment for remaining contact/social gaps.
     try:
@@ -1785,26 +2376,41 @@ def enrich_existing_buyer(db: Session, buyer_id: int) -> dict[str, Any]:
     contacts = buyers_module.list_contacts_for_buyer(db, buyer_id)
     contact = next((c for c in contacts if c.email or c.phone), contacts[0] if contacts else None)
 
-    has_website = bool((buyer.website_url or "").strip())
+    def _is_junk_website(url: str | None) -> bool:
+        if not (url or "").strip():
+            return False
+        host = _domain(url)
+        return bool(
+            _domain_matches_blocklist(host, _SKIP_DOMAINS)
+            or _domain_matches_blocklist(host, _DIRECTORY_PROFILE_DOMAINS)
+            or _is_trade_data_platform(host, buyer.company_name)
+        )
+
+    has_website = bool((buyer.website_url or "").strip()) and not _is_junk_website(buyer.website_url)
     has_social = bool(
         (buyer.facebook_company_url or "").strip()
         or (buyer.instagram_company_url or "").strip()
         or (buyer.linkedin_company_url or "").strip()
     )
     has_contact = bool(contact and ((contact.email or "").strip() or (contact.phone or "").strip()))
-    if has_website and has_social and has_contact:
+    has_location = bool(
+        _clean_city_value(buyer.city) and (buyer.address or "").strip()
+    )
+    # Still enrich when city/address are missing — old clients often already have
+    # website + contact + country but no street/city from the CSV import.
+    if has_website and has_social and has_contact and has_location:
         return {
             "buyer_id": buyer_id,
             "filled_fields": [],
             "website_url": buyer.website_url,
-            "source_detail": "Skipped enrichment — website, contact, and socials already present",
+            "source_detail": "Skipped enrichment — website, contact, socials, and location already present",
             "skipped": True,
         }
 
     candidate = DiscoveryCandidate(
         candidate_id=f"buyer-{buyer_id}",
         company_name=buyer.company_name,
-        website_url=buyer.website_url,
+        website_url=None if _is_junk_website(buyer.website_url) else buyer.website_url,
         contact_name=(contact.full_name if contact else None),
         email=(contact.email if contact and contact.email else _NOT_FOUND),
         phone=(contact.phone if contact and contact.phone else _NOT_FOUND),
@@ -1813,7 +2419,7 @@ def enrich_existing_buyer(db: Session, buyer_id: int) -> dict[str, Any]:
         linkedin_url=buyer.linkedin_company_url or _NOT_FOUND,
         country=buyer.country,
         industry=buyer.industry,
-        city=buyer.city,
+        city=_clean_city_value(buyer.city),
         address=buyer.address,
         source=(buyer.source or "old_clients"),
         source_detail="Existing lead enrichment",
@@ -1835,8 +2441,12 @@ def enrich_existing_buyer(db: Session, buyer_id: int) -> dict[str, Any]:
     _enrich_candidate_contact(candidate, keep_row=True)
 
     buyer_updates: dict[str, Any] = {}
-    if not buyer.website_url and candidate.website_url:
+    existing_site_junk = _is_junk_website(buyer.website_url)
+    if candidate.website_url and (not buyer.website_url or existing_site_junk):
         buyer_updates["website_url"] = candidate.website_url
+    elif existing_site_junk and not candidate.website_url:
+        # Clear firmographic junk even when we don't have a replacement yet.
+        buyer_updates["website_url"] = None
     if not buyer.facebook_company_url and _value_or_none(candidate.facebook_url):
         buyer_updates["facebook_company_url"] = _value_or_none(candidate.facebook_url)
     if not buyer.instagram_company_url and _value_or_none(candidate.instagram_url):
@@ -1848,6 +2458,8 @@ def enrich_existing_buyer(db: Session, buyer_id: int) -> dict[str, Any]:
     if not buyer.industry and candidate.industry:
         buyer_updates["industry"] = candidate.industry
     if not buyer.city and candidate.city:
+        buyer_updates["city"] = candidate.city
+    elif buyer.city and not _is_plausible_city(buyer.city) and candidate.city:
         buyer_updates["city"] = candidate.city
     if not buyer.address and candidate.address:
         buyer_updates["address"] = candidate.address

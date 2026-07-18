@@ -45,6 +45,7 @@ def list_contacts_compliance(
             "preferred_language": contact.preferred_language,
             "birthday_outreach_ok": contact.consent_status == ConsentStatus.granted
             and contact.date_of_birth is not None,
+            "whatsapp_opt_in": bool(contact.whatsapp_opt_in),
         }
         if search:
             haystack = " ".join(
@@ -77,6 +78,23 @@ def bulk_update_consent(
         if not contact:
             continue
         contact.consent_status = status
+        updated += 1
+    if updated:
+        db.commit()
+    return updated
+
+
+def bulk_update_whatsapp_opt_in(
+    db: Session,
+    contact_ids: list[int],
+    opt_in: bool,
+) -> int:
+    updated = 0
+    for contact_id in contact_ids:
+        contact = db.get(Contact, contact_id)
+        if not contact:
+            continue
+        contact.whatsapp_opt_in = opt_in
         updated += 1
     if updated:
         db.commit()

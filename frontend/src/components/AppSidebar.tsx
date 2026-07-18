@@ -3,6 +3,10 @@ import { useEffect, useState } from "react";
 export type Tab =
   | "activity"
   | "email-templates"
+  // WhatsApp Cloud API — temporarily disabled
+  // | "whatsapp-templates"
+  // | "whatsapp-inbox"
+  // | "approvals"
   | "leads"
   | "table"
   | "inbox"

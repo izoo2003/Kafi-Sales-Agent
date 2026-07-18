@@ -274,8 +274,11 @@ def list_product_types():
 
 
 @router.get("/table/filters", response_model=LeadTableFiltersRead)
-def get_leads_table_filters(db: Session = Depends(get_db)):
-    return LeadTableFiltersRead(**leads_module.get_lead_table_filters(db))
+def get_leads_table_filters(
+    source: str | None = None,
+    db: Session = Depends(get_db),
+):
+    return LeadTableFiltersRead(**leads_module.get_lead_table_filters(db, source=source))
 
 
 @router.get("/table", response_model=LeadTableResponse)
@@ -283,6 +286,10 @@ def list_leads_table(
     score: str | None = None,
     country: str | None = None,
     industry: str | None = None,
+    company_grading: str | None = None,
+    product_interest: str | None = None,
+    city: str | None = None,
+    call_recommended: str | None = None,
     source: str | None = None,
     exclude_source: str | None = None,
     call_outcome: str | None = None,
@@ -300,6 +307,10 @@ def list_leads_table(
         score=score,
         country=country,
         industry=industry,
+        company_grading=company_grading,
+        product_interest=product_interest,
+        city=city,
+        call_recommended=call_recommended,
         source=source,
         exclude_source=exclude_source,
         call_outcome=call_outcome,
@@ -319,6 +330,10 @@ def list_leads_table_ids(
     score: str | None = None,
     country: str | None = None,
     industry: str | None = None,
+    company_grading: str | None = None,
+    product_interest: str | None = None,
+    city: str | None = None,
+    call_recommended: str | None = None,
     source: str | None = None,
     exclude_source: str | None = None,
     call_outcome: str | None = None,
@@ -334,6 +349,10 @@ def list_leads_table_ids(
         score=score,
         country=country,
         industry=industry,
+        company_grading=company_grading,
+        product_interest=product_interest,
+        city=city,
+        call_recommended=call_recommended,
         source=source,
         exclude_source=exclude_source,
         call_outcome=call_outcome,

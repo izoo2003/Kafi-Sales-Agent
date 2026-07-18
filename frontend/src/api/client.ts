@@ -392,6 +392,7 @@ export interface DraftInteraction {
   id: number;
   contact_id: number;
   channel: string;
+  direction?: string;
   subject: string | null;
   content: string;
   status: string;
@@ -399,6 +400,9 @@ export interface DraftInteraction {
   company_name?: string | null;
   contact_name?: string | null;
   contact_email?: string | null;
+  contact_phone?: string | null;
+  template_name?: string | null;
+  wa_status?: string | null;
   attachments?: EmailAttachment[];
 }
 
@@ -588,6 +592,7 @@ export interface ComplianceContact {
   consent_status: string;
   preferred_language: string | null;
   birthday_outreach_ok: boolean;
+  whatsapp_opt_in: boolean;
 }
 
 export interface ProductType {
@@ -627,6 +632,8 @@ export interface Contact {
   phone: string | null;
   preferred_language: string | null;
   consent_status: string;
+  whatsapp_opt_in: boolean;
+  wa_id?: string | null;
 }
 
 export interface ContactCreate {
@@ -637,6 +644,7 @@ export interface ContactCreate {
   phone?: string;
   preferred_language?: string;
   consent_status?: string;
+  whatsapp_opt_in?: boolean;
 }
 
 export interface ContactUpdate {
@@ -646,6 +654,7 @@ export interface ContactUpdate {
   phone?: string;
   preferred_language?: string;
   consent_status?: string;
+  whatsapp_opt_in?: boolean;
 }
 
 export interface DiscoveryCandidate {
@@ -773,6 +782,10 @@ export interface LeadTableRow {
   id: number;
   company_name: string;
   country: string | null;
+  call_recommended: boolean | null;
+  call_local_time: string | null;
+  call_timezone: string | null;
+  call_reason: string | null;
   industry: string | null;
   website_url: string | null;
   linkedin_company_url: string | null;
@@ -863,12 +876,19 @@ export interface LeadTableFilters {
   sources: string[];
   scores: string[];
   market_roles: string[];
+  company_gradings: string[];
+  products: string[];
+  cities: string[];
 }
 
 export interface LeadTableQuery {
   score?: string;
   country?: string;
   industry?: string;
+  company_grading?: string;
+  product_interest?: string;
+  city?: string;
+  call_recommended?: string;
   source?: string;
   exclude_source?: string;
   call_outcome?: string;
@@ -881,6 +901,82 @@ export interface LeadTableQuery {
 }
 
 export type LeadTableSectionScope = Pick<LeadTableQuery, "source" | "exclude_source">;
+
+export interface WhatsAppConfig {
+  configured: boolean;
+  webhook_configured: boolean;
+  phone_number_id_set: boolean;
+  business_account_id_set: boolean;
+  missing_env: string[];
+}
+
+export interface WhatsAppTemplate {
+  id: number;
+  meta_template_id: string | null;
+  name: string;
+  category: string | null;
+  language: string;
+  status: "approved" | "pending" | "rejected" | "paused" | "disabled" | string;
+  body_text: string | null;
+  variable_count: number;
+  synced_at: string;
+}
+
+export interface WhatsAppTemplateSyncResult {
+  status: string;
+  message: string;
+  synced_count: number;
+}
+
+export interface WhatsAppCampaignDraftResponse {
+  created_count: number;
+  skipped_count: number;
+  sent_count: number;
+  failed_count: number;
+  created: Array<{
+    buyer_id: number;
+    company_name: string;
+    interaction_id: number;
+    contact_id: number;
+    sent?: boolean;
+    send_status?: string | null;
+    send_message?: string | null;
+  }>;
+  skipped: Array<{
+    buyer_id: number;
+    company_name?: string | null;
+    reason: string;
+  }>;
+}
+
+export interface WhatsAppConversation {
+  contact_id: number;
+  buyer_id: number;
+  company_name: string | null;
+  contact_name: string | null;
+  contact_phone: string | null;
+  whatsapp_opt_in: boolean;
+  within_session_window: boolean;
+  window_expires_at: string | null;
+  last_message: string | null;
+  last_message_at: string | null;
+  last_direction: string | null;
+}
+
+export interface WhatsAppConversationListResponse {
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  rows: WhatsAppConversation[];
+}
+
+export interface WhatsAppReplyResponse {
+  interaction: DraftInteraction;
+  sent: boolean;
+  send_status?: string | null;
+  send_message?: string | null;
+}
 
 export const client = {
   health: () => request<{ status: string }>("/health"),
@@ -927,12 +1023,21 @@ export const client = {
     const query = search.toString();
     return request<LeadListResponse>(`/leads${query ? `?${query}` : ""}`);
   },
-  listLeadTableFilters: () => request<LeadTableFilters>("/leads/table/filters"),
+  listLeadTableFilters: (params: { source?: string } = {}) => {
+    const search = new URLSearchParams();
+    if (params.source) search.set("source", params.source);
+    const query = search.toString();
+    return request<LeadTableFilters>(`/leads/table/filters${query ? `?${query}` : ""}`);
+  },
   listLeadsTable: (params: LeadTableQuery = {}) => {
     const search = new URLSearchParams();
     if (params.score) search.set("score", params.score);
     if (params.country) search.set("country", params.country);
     if (params.industry) search.set("industry", params.industry);
+    if (params.company_grading) search.set("company_grading", params.company_grading);
+    if (params.product_interest) search.set("product_interest", params.product_interest);
+    if (params.city) search.set("city", params.city);
+    if (params.call_recommended) search.set("call_recommended", params.call_recommended);
     if (params.source) search.set("source", params.source);
     if (params.exclude_source) search.set("exclude_source", params.exclude_source);
     if (params.call_outcome) search.set("call_outcome", params.call_outcome);
@@ -950,6 +1055,10 @@ export const client = {
     if (params.score) search.set("score", params.score);
     if (params.country) search.set("country", params.country);
     if (params.industry) search.set("industry", params.industry);
+    if (params.company_grading) search.set("company_grading", params.company_grading);
+    if (params.product_interest) search.set("product_interest", params.product_interest);
+    if (params.city) search.set("city", params.city);
+    if (params.call_recommended) search.set("call_recommended", params.call_recommended);
     if (params.source) search.set("source", params.source);
     if (params.exclude_source) search.set("exclude_source", params.exclude_source);
     if (params.call_outcome) search.set("call_outcome", params.call_outcome);
@@ -1082,10 +1191,26 @@ export const client = {
     const query = search.toString();
     return request<DraftListResponse>(`/interactions/drafts${query ? `?${query}` : ""}`);
   },
-  approveDraft: (id: number, content?: string, send = true) =>
+  approveDraft: (
+    id: number,
+    content?: string,
+    send = true,
+    templateOptions?: {
+      template_name?: string;
+      template_language?: string;
+      template_variables?: string[];
+    },
+  ) =>
     request<ApproveDraftResult>(`/interactions/${id}/approve`, {
       method: "POST",
-      body: JSON.stringify({ content, approved_by: "dashboard_user", send }),
+      body: JSON.stringify({
+        content,
+        approved_by: "dashboard_user",
+        send,
+        template_name: templateOptions?.template_name,
+        template_language: templateOptions?.template_language ?? "en_US",
+        template_variables: templateOptions?.template_variables ?? [],
+      }),
     }),
   rejectDraft: (id: number) =>
     request<DraftInteraction>(`/interactions/${id}/reject`, { method: "POST" }),
@@ -1470,5 +1595,66 @@ export const client = {
     request<CallInitiateResult>("/calls/dial", {
       method: "POST",
       body: JSON.stringify(data),
+    }),
+
+  getWhatsAppConfig: () => request<WhatsAppConfig>("/whatsapp/config"),
+  listWhatsAppTemplates: (approvedOnly = false) =>
+    request<WhatsAppTemplate[]>(
+      `/whatsapp/templates${approvedOnly ? "?approved_only=true" : ""}`,
+    ),
+  syncWhatsAppTemplates: () =>
+    request<WhatsAppTemplateSyncResult>("/whatsapp/templates/sync", { method: "POST" }),
+  createWhatsAppCampaignDrafts: (data: {
+    template_id: number;
+    buyer_ids: number[];
+    template_variables?: string[];
+    require_opt_in?: boolean;
+    send?: boolean;
+  }) =>
+    request<WhatsAppCampaignDraftResponse>("/whatsapp/campaign-drafts", {
+      method: "POST",
+      body: JSON.stringify({
+        template_id: data.template_id,
+        buyer_ids: data.buyer_ids,
+        template_variables: data.template_variables ?? [],
+        require_opt_in: data.require_opt_in ?? true,
+        send: data.send ?? true,
+      }),
+    }),
+  bulkUpdateWhatsAppOptIn: (contactIds: number[], optIn: boolean) =>
+    request<{ updated_count: number }>("/whatsapp/contacts/bulk-opt-in", {
+      method: "PATCH",
+      body: JSON.stringify({ contact_ids: contactIds, opt_in: optIn }),
+    }),
+  listWhatsAppConversations: (params: { page?: number; page_size?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.page) query.set("page", String(params.page));
+    if (params.page_size) query.set("page_size", String(params.page_size));
+    const qs = query.toString();
+    return request<WhatsAppConversationListResponse>(
+      `/whatsapp/conversations${qs ? `?${qs}` : ""}`,
+    );
+  },
+  listWhatsAppConversationMessages: (contactId: number) =>
+    request<DraftInteraction[]>(`/whatsapp/conversations/${contactId}/messages`),
+  replyToWhatsAppConversation: (
+    contactId: number,
+    data: {
+      content: string;
+      send?: boolean;
+      template_name?: string;
+      template_language?: string;
+      template_variables?: string[];
+    },
+  ) =>
+    request<WhatsAppReplyResponse>(`/whatsapp/conversations/${contactId}/reply`, {
+      method: "POST",
+      body: JSON.stringify({
+        content: data.content,
+        send: data.send ?? true,
+        template_name: data.template_name,
+        template_language: data.template_language ?? "en_US",
+        template_variables: data.template_variables ?? [],
+      }),
     }),
 };

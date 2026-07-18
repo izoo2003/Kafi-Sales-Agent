@@ -17,6 +17,8 @@ from api import (
     kpi,
     leads,
     scheduler,
+    # WhatsApp Cloud API — temporarily disabled; re-enable with routers below.
+    # whatsapp,
 )
 from config import settings
 from modules.auth import ensure_default_admin
@@ -222,6 +224,9 @@ app.include_router(inbox.router, prefix="/api")
 app.include_router(calls.webhooks_router, prefix="/api")
 app.include_router(chatbot.router, prefix="/api")
 app.include_router(kpi.router, prefix="/api")
+# WhatsApp Cloud API — temporarily disabled (templates, campaigns, webhooks).
+# app.include_router(whatsapp.router, prefix="/api")
+# app.include_router(whatsapp.webhooks_router, prefix="/api")
 
 
 OLD_CLIENTS_IMPORT_PARSER = "old_clients_v2"
@@ -232,6 +237,7 @@ def health():
     from integrations.mail_client import mail_client
     from integrations.outlook_client import outlook_client
     from integrations.voice_client import voice_client
+    # from integrations.whatsapp_client import whatsapp_client
 
     return {
         "status": "ok",
@@ -244,4 +250,6 @@ def health():
         "twilio_configured": voice_client.is_configured,
         "twilio_webhooks_ready": voice_client.webhooks_ready,
         "twilio_browser_ready": voice_client.browser_ready,
+        # "whatsapp_configured": whatsapp_client.is_configured,
+        # "whatsapp_webhook_configured": whatsapp_client.webhook_configured,
     }

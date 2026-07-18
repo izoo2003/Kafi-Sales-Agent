@@ -58,6 +58,7 @@ class ContactCreate(BaseModel):
     date_of_birth: Optional[date] = None
     preferred_language: Optional[str] = "en"
     consent_status: str = "unknown"
+    whatsapp_opt_in: bool = False
 
 
 class ContactUpdate(BaseModel):
@@ -69,6 +70,7 @@ class ContactUpdate(BaseModel):
     consent_status: Optional[str] = None
     date_of_birth: Optional[date] = None
     nationality: Optional[str] = None
+    whatsapp_opt_in: Optional[bool] = None
 
 
 class ConsentSummaryRead(BaseModel):
@@ -93,11 +95,17 @@ class ComplianceContactRead(BaseModel):
     consent_status: str
     preferred_language: Optional[str] = None
     birthday_outreach_ok: bool = False
+    whatsapp_opt_in: bool = False
 
 
 class BulkConsentUpdate(BaseModel):
     contact_ids: list[int] = Field(min_length=1)
     consent_status: str
+
+
+class BulkWhatsAppOptInUpdate(BaseModel):
+    contact_ids: list[int] = Field(min_length=1)
+    opt_in: bool
 
 
 class ContactRead(BaseModel):
@@ -111,6 +119,8 @@ class ContactRead(BaseModel):
     phone: Optional[str]
     preferred_language: Optional[str]
     consent_status: str = "unknown"
+    whatsapp_opt_in: bool = False
+    wa_id: Optional[str] = None
 
 
 class ProductCreate(BaseModel):
@@ -213,6 +223,9 @@ class InteractionRead(BaseModel):
     company_name: Optional[str] = None
     contact_name: Optional[str] = None
     contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+    template_name: Optional[str] = None
+    wa_status: Optional[str] = None
     attachments: list["EmailAttachmentRead"] = Field(default_factory=list)
 
 
@@ -231,6 +244,9 @@ class InteractionApprove(BaseModel):
     content: Optional[str] = None
     approved_by: str = "sales_rep"
     send: bool = True
+    template_name: Optional[str] = None
+    template_language: str = "en_US"
+    template_variables: list[str] = Field(default_factory=list)
 
 
 class InteractionApproveResponse(BaseModel):
@@ -389,6 +405,10 @@ class LeadTableRowRead(BaseModel):
     id: int
     company_name: str
     country: Optional[str] = None
+    call_recommended: Optional[bool] = None
+    call_local_time: Optional[str] = None
+    call_timezone: Optional[str] = None
+    call_reason: Optional[str] = None
     industry: Optional[str] = None
     website_url: Optional[str] = None
     linkedin_company_url: Optional[str] = None
@@ -515,6 +535,9 @@ class LeadTableFiltersRead(BaseModel):
     sources: list[str]
     scores: list[str]
     market_roles: list[str]
+    company_gradings: list[str] = []
+    products: list[str] = []
+    cities: list[str] = []
 
 
 class LeadScoreRead(BaseModel):
@@ -993,3 +1016,102 @@ class KpiSummaryResponse(BaseModel):
     source: str
     subject: str
     report: DailyKpiReportRead
+
+
+# ── WhatsApp Cloud API ────────────────────────────────────────────────────────
+
+
+class WhatsAppConfigRead(BaseModel):
+    configured: bool
+    webhook_configured: bool
+    phone_number_id_set: bool
+    business_account_id_set: bool
+    missing_env: list[str] = Field(default_factory=list)
+
+
+class WhatsAppTemplateRead(BaseModel):
+    id: int
+    meta_template_id: Optional[str] = None
+    name: str
+    category: Optional[str] = None
+    language: str
+    status: str
+    body_text: Optional[str] = None
+    variable_count: int = 0
+    synced_at: datetime
+
+
+class WhatsAppTemplateSyncResponse(BaseModel):
+    status: str
+    message: str
+    synced_count: int = 0
+
+
+class WhatsAppCampaignDraftRequest(BaseModel):
+    template_id: int
+    buyer_ids: list[int] = Field(min_length=1)
+    template_variables: list[str] = Field(default_factory=list)
+    require_opt_in: bool = True
+    send: bool = True
+
+
+class WhatsAppCampaignDraftResultItem(BaseModel):
+    buyer_id: int
+    company_name: str
+    interaction_id: int
+    contact_id: int
+    sent: bool = False
+    send_status: Optional[str] = None
+    send_message: Optional[str] = None
+
+
+class WhatsAppCampaignSkippedItem(BaseModel):
+    buyer_id: int
+    company_name: Optional[str] = None
+    reason: str
+
+
+class WhatsAppCampaignDraftResponse(BaseModel):
+    created_count: int
+    skipped_count: int
+    sent_count: int = 0
+    failed_count: int = 0
+    created: list[WhatsAppCampaignDraftResultItem]
+    skipped: list[WhatsAppCampaignSkippedItem]
+
+
+class WhatsAppConversationRead(BaseModel):
+    contact_id: int
+    buyer_id: int
+    company_name: Optional[str] = None
+    contact_name: Optional[str] = None
+    contact_phone: Optional[str] = None
+    whatsapp_opt_in: bool = False
+    within_session_window: bool = False
+    window_expires_at: Optional[datetime] = None
+    last_message: Optional[str] = None
+    last_message_at: Optional[datetime] = None
+    last_direction: Optional[str] = None
+
+
+class WhatsAppConversationListResponse(BaseModel):
+    total: int
+    page: int = 1
+    page_size: int = 20
+    total_pages: int = 1
+    rows: list[WhatsAppConversationRead]
+
+
+class WhatsAppReplyRequest(BaseModel):
+    content: str
+    send: bool = True
+    template_name: Optional[str] = None
+    template_language: Optional[str] = "en_US"
+    template_variables: list[str] = Field(default_factory=list)
+
+
+class WhatsAppReplyResponse(BaseModel):
+    interaction: InteractionRead
+    sent: bool
+    send_status: Optional[str] = None
+    send_message: Optional[str] = None

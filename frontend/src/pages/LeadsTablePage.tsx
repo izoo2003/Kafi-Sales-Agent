@@ -11,12 +11,15 @@ import type { LeadsTableSection } from "../components/AppSidebar";
 import { formatCountryLabel } from "../data/countries";
 import { ScoreBadge } from "../components/ScoreBadge";
 import { MarketRoleBadge } from "../components/MarketRoleBadge";
+import { CallRecommendationBadge } from "../components/CallRecommendationBadge";
 import { ProducerTierBadge } from "../components/ProducerTierBadge";
 import { AssignedToSelect, type AssigneeOption } from "../components/AssignedToSelect";
 import { FollowUpScheduleControl } from "../components/FollowUpScheduleControl";
 import { LeadsTableCsvImport } from "../components/LeadsTableCsvImport";
 import { SocialLinksCell } from "../components/SocialLinksCell";
 import { BulkEmailModal } from "../components/BulkEmailModal";
+// WhatsApp Cloud API — temporarily disabled
+// import { BulkWhatsAppModal } from "../components/BulkWhatsAppModal";
 import { CallLeadButton } from "../components/CallLeadButton";
 import { EmailComposeButton } from "../components/EmailComposeLink";
 import { Pagination } from "../components/Pagination";
@@ -49,6 +52,11 @@ interface StoredTableView {
   score: string;
   marketRole: string;
   country: string;
+  industry: string;
+  companyGrading: string;
+  productInterest: string;
+  city: string;
+  callRecommended: string;
   search: string;
   sortBy: SortField;
   sortDir: "asc" | "desc";
@@ -58,6 +66,11 @@ const DEFAULT_TABLE_VIEW: StoredTableView = {
   score: "",
   marketRole: "",
   country: "",
+  industry: "",
+  companyGrading: "",
+  productInterest: "",
+  city: "",
+  callRecommended: "",
   search: "",
   sortBy: "company_name",
   sortDir: "desc",
@@ -85,6 +98,14 @@ function readStoredTableView(
       score: typeof parsed.score === "string" ? parsed.score : "",
       marketRole: typeof parsed.marketRole === "string" ? parsed.marketRole : "",
       country: typeof parsed.country === "string" ? parsed.country : "",
+      industry: typeof parsed.industry === "string" ? parsed.industry : "",
+      companyGrading:
+        typeof parsed.companyGrading === "string" ? parsed.companyGrading : "",
+      productInterest:
+        typeof parsed.productInterest === "string" ? parsed.productInterest : "",
+      city: typeof parsed.city === "string" ? parsed.city : "",
+      callRecommended:
+        typeof parsed.callRecommended === "string" ? parsed.callRecommended : "",
       search: typeof parsed.search === "string" ? parsed.search : "",
       sortBy:
         parsed.sortBy && validSortFields.includes(parsed.sortBy)
@@ -316,6 +337,9 @@ export function LeadsTablePage({
   } | null>(null);
   const [bulkResults, setBulkResults] = useState<BulkOnboardRowResult[] | null>(null);
   const [showBulkEmail, setShowBulkEmail] = useState(false);
+  // WhatsApp Cloud API — temporarily disabled
+  // const [showBulkWhatsApp, setShowBulkWhatsApp] = useState(false);
+  // const [bulkWhatsAppNotice, setBulkWhatsAppNotice] = useState<string | null>(null);
   const [showCsvImport, setShowCsvImport] = useState(false);
   const [bulkEmailNotice, setBulkEmailNotice] = useState<string | null>(null);
   const [deduping, setDeduping] = useState(false);
@@ -366,6 +390,17 @@ export function LeadsTablePage({
   const [score, setScore] = useState(initialTableViewRef.current.score);
   const [marketRole, setMarketRole] = useState(initialTableViewRef.current.marketRole);
   const [country, setCountry] = useState(initialTableViewRef.current.country);
+  const [industry, setIndustry] = useState(initialTableViewRef.current.industry);
+  const [companyGrading, setCompanyGrading] = useState(
+    initialTableViewRef.current.companyGrading,
+  );
+  const [productInterest, setProductInterest] = useState(
+    initialTableViewRef.current.productInterest,
+  );
+  const [city, setCity] = useState(initialTableViewRef.current.city);
+  const [callRecommended, setCallRecommended] = useState(
+    initialTableViewRef.current.callRecommended,
+  );
   const [search, setSearch] = useState(initialTableViewRef.current.search);
   const [sortBy, setSortBy] = useState<SortField>(initialTableViewRef.current.sortBy);
   const [sortDir, setSortDir] = useState<"asc" | "desc">(initialTableViewRef.current.sortDir);
@@ -377,15 +412,34 @@ export function LeadsTablePage({
 
   const tableQueryParams = useMemo(
     () => ({
-      score: score || undefined,
-      market_role: marketRole || undefined,
+      score: isOldClients ? undefined : score || undefined,
+      market_role: isOldClients ? undefined : marketRole || undefined,
       country: country || undefined,
+      industry: isOldClients ? industry || undefined : undefined,
+      company_grading: isOldClients ? companyGrading || undefined : undefined,
+      product_interest: isOldClients ? productInterest || undefined : undefined,
+      city: isOldClients ? city || undefined : undefined,
+      call_recommended: isOldClients ? callRecommended || undefined : undefined,
       q: search.trim() || undefined,
       sort_by: sortBy,
       sort_dir: sortDir,
       ...sectionTableParams(section),
     }),
-    [country, marketRole, score, search, section, sortBy, sortDir],
+    [
+      callRecommended,
+      city,
+      companyGrading,
+      country,
+      industry,
+      isOldClients,
+      marketRole,
+      productInterest,
+      score,
+      search,
+      section,
+      sortBy,
+      sortDir,
+    ],
   );
 
   const clearSelection = useCallback(() => {
@@ -469,7 +523,21 @@ export function LeadsTablePage({
   useEffect(() => {
     setPage(1);
     clearSelection();
-  }, [clearSelection, section, score, marketRole, country, search, sortBy, sortDir]);
+  }, [
+    clearSelection,
+    section,
+    score,
+    marketRole,
+    country,
+    industry,
+    companyGrading,
+    productInterest,
+    city,
+    callRecommended,
+    search,
+    sortBy,
+    sortDir,
+  ]);
 
   useEffect(() => {
     if (previousSectionRef.current === section) return;
@@ -480,6 +548,11 @@ export function LeadsTablePage({
     setScore(stored.score);
     setMarketRole(stored.marketRole);
     setCountry(stored.country);
+    setIndustry(stored.industry);
+    setCompanyGrading(stored.companyGrading);
+    setProductInterest(stored.productInterest);
+    setCity(stored.city);
+    setCallRecommended(stored.callRecommended);
     setSearch(stored.search);
     setSortBy(stored.sortBy);
     setSortDir(stored.sortDir);
@@ -495,6 +568,11 @@ export function LeadsTablePage({
         score,
         marketRole,
         country,
+        industry,
+        companyGrading,
+        productInterest,
+        city,
+        callRecommended,
         search,
         sortBy,
         sortDir,
@@ -503,15 +581,29 @@ export function LeadsTablePage({
     } catch {
       /* Storage may be unavailable; the table still works with in-memory state. */
     }
-  }, [country, marketRole, score, search, section, sortBy, sortDir, user?.id]);
+  }, [
+    callRecommended,
+    city,
+    companyGrading,
+    country,
+    industry,
+    marketRole,
+    productInterest,
+    score,
+    search,
+    section,
+    sortBy,
+    sortDir,
+    user?.id,
+  ]);
 
   useEffect(() => {
     client
-      .listLeadTableFilters()
+      .listLeadTableFilters(isOldClients ? { source: "old_clients" } : {})
       .then(setFilters)
       .catch(() => onError("Failed to load lead filters"));
     void loadSectionCounts();
-  }, [loadSectionCounts, onError]);
+  }, [isOldClients, loadSectionCounts, onError]);
 
   useEffect(() => {
     void loadTable();
@@ -945,6 +1037,11 @@ export function LeadsTablePage({
     setScore("");
     setMarketRole("");
     setCountry("");
+    setIndustry("");
+    setCompanyGrading("");
+    setProductInterest("");
+    setCity("");
+    setCallRecommended("");
     setSearch("");
     setSortBy("company_name");
     setSortDir("desc");
@@ -955,7 +1052,17 @@ export function LeadsTablePage({
     return sortDir === "asc" ? " ↑" : " ↓";
   }
 
-  const hasActiveFilters = Boolean(score || marketRole || country || search.trim());
+  const hasActiveFilters = isOldClients
+    ? Boolean(
+        country ||
+          industry ||
+          companyGrading ||
+          productInterest ||
+          city ||
+          callRecommended ||
+          search.trim(),
+      )
+    : Boolean(score || marketRole || country || search.trim());
   const allOnPageSelected =
     rows.length > 0 && rows.every((row) => selected.has(row.id));
   const someOnPageSelected = rows.some((row) => selected.has(row.id));
@@ -1050,6 +1157,22 @@ export function LeadsTablePage({
           >
             Send emails ({selected.size})
           </button>
+          {/* WhatsApp Cloud API — temporarily disabled
+          <button
+            type="button"
+            onClick={() => setShowBulkWhatsApp(true)}
+            disabled={
+              selected.size === 0 ||
+              bulkOnboarding ||
+              deletingSelected ||
+              deletingId !== null ||
+              editMode
+            }
+            className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 border border-emerald-600/50 text-sm font-medium disabled:opacity-50"
+          >
+            Send WhatsApp ({selected.size})
+          </button>
+          */}
           <button
             type="button"
             onClick={() => void bulkResearchAndScore()}
@@ -1148,6 +1271,14 @@ export function LeadsTablePage({
         </p>
       )}
 
+      {/* WhatsApp Cloud API — temporarily disabled
+      {bulkWhatsAppNotice && (
+        <p className="text-xs text-emerald-300 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 shrink-0">
+          {bulkWhatsAppNotice}
+        </p>
+      )}
+      */}
+
       {selectingAll && (
         <p className="text-xs text-slate-300 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 shrink-0">
           Selecting all {filteredCount} matching leads…
@@ -1241,56 +1372,166 @@ export function LeadsTablePage({
       )}
 
       <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3 shrink-0">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <label className="block text-xs text-slate-400">
-            Score
-            <select
-              value={score}
-              onChange={(e) => setScore(e.target.value)}
-              className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
-            >
-              <option value="">All scores</option>
-              {(filters?.scores ?? ["HOT", "WARM", "COLD", "Unscored"]).map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-          </label>
+        <div
+          className={`grid gap-3 sm:grid-cols-2 ${
+            isOldClients ? "lg:grid-cols-4 xl:grid-cols-4" : "lg:grid-cols-4"
+          }`}
+        >
+          {isOldClients ? (
+            <>
+              <label className="block text-xs text-slate-400">
+                Business type
+                <select
+                  value={industry}
+                  onChange={(e) => setIndustry(e.target.value)}
+                  className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
+                >
+                  <option value="">All types</option>
+                  {(filters?.industries ?? []).map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
-          <label className="block text-xs text-slate-400">
-            Market role
-            <select
-              value={marketRole}
-              onChange={(e) => setMarketRole(e.target.value)}
-              className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
-            >
-              <option value="">All roles</option>
-              {(filters?.market_roles ?? ["consumer", "producer", "hybrid", "unknown"]).map((option) => (
-                <option key={option} value={option}>
-                  {option === "unknown" ? "Unclassified" : option.charAt(0).toUpperCase() + option.slice(1)}
-                </option>
-              ))}
-            </select>
-          </label>
+              <label className="block text-xs text-slate-400">
+                Companies grading
+                <select
+                  value={companyGrading}
+                  onChange={(e) => setCompanyGrading(e.target.value)}
+                  className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
+                >
+                  <option value="">All gradings</option>
+                  {(filters?.company_gradings ?? []).map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
-          <CountrySelect
-            label="Country"
-            value={country}
-            onChange={setCountry}
-            allowEmpty
-            emptyLabel="All countries"
-          />
+              <CountrySelect
+                label="Country"
+                value={country}
+                onChange={setCountry}
+                allowEmpty
+                emptyLabel="All countries"
+              />
 
-          <label className="block text-xs text-slate-400">
-            Search
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Company, email, contact…"
-              className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
-            />
-          </label>
+              <label className="block text-xs text-slate-400">
+                Call?
+                <select
+                  value={callRecommended}
+                  onChange={(e) => setCallRecommended(e.target.value)}
+                  className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
+                >
+                  <option value="">Any time</option>
+                  <option value="yes">Call now</option>
+                  <option value="no">Not now</option>
+                  <option value="unknown">Unknown</option>
+                </select>
+              </label>
+
+              <label className="block text-xs text-slate-400">
+                Product
+                <select
+                  value={productInterest}
+                  onChange={(e) => setProductInterest(e.target.value)}
+                  className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
+                >
+                  <option value="">All products</option>
+                  {(filters?.products ?? []).map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="block text-xs text-slate-400">
+                City
+                <select
+                  value={city}
+                  onChange={(e) => setCity(e.target.value)}
+                  className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
+                >
+                  <option value="">All cities</option>
+                  {(filters?.cities ?? []).map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="block text-xs text-slate-400 sm:col-span-2">
+                Search
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Company, contact, phone, designation, address…"
+                  className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
+                />
+              </label>
+            </>
+          ) : (
+            <>
+              <label className="block text-xs text-slate-400">
+                Score
+                <select
+                  value={score}
+                  onChange={(e) => setScore(e.target.value)}
+                  className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
+                >
+                  <option value="">All scores</option>
+                  {(filters?.scores ?? ["HOT", "WARM", "COLD", "Unscored"]).map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="block text-xs text-slate-400">
+                Market role
+                <select
+                  value={marketRole}
+                  onChange={(e) => setMarketRole(e.target.value)}
+                  className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
+                >
+                  <option value="">All roles</option>
+                  {(filters?.market_roles ?? ["consumer", "producer", "hybrid", "unknown"]).map(
+                    (option) => (
+                      <option key={option} value={option}>
+                        {option === "unknown"
+                          ? "Unclassified"
+                          : option.charAt(0).toUpperCase() + option.slice(1)}
+                      </option>
+                    ),
+                  )}
+                </select>
+              </label>
+
+              <CountrySelect
+                label="Country"
+                value={country}
+                onChange={setCountry}
+                allowEmpty
+                emptyLabel="All countries"
+              />
+
+              <label className="block text-xs text-slate-400">
+                Search
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Company, email, contact…"
+                  className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
+                />
+              </label>
+            </>
+          )}
         </div>
 
         {hasActiveFilters && (
@@ -1378,6 +1619,7 @@ export function LeadsTablePage({
                   <th className={`${TH} min-w-[200px]`}>Primary Email</th>
                   <th className={`${TH} min-w-[180px]`}>Secondary Email</th>
                   <th className={`${TH} min-w-[130px]`}>Country</th>
+                  <th className={`${TH} min-w-[130px]`}>Call?</th>
                   <th className={`${TH} min-w-[140px]`}>Product</th>
                   <th className={`${TH} min-w-[120px]`}>City</th>
                   <th className={`${TH} min-w-[200px]`}>Address</th>
@@ -1537,6 +1779,13 @@ export function LeadsTablePage({
                           <span className="truncate block">{formatCountryLabel(row.country)}</span>
                         )}
                       </td>
+                      <td className={TD}>
+                        <CallRecommendationBadge
+                          recommended={row.call_recommended}
+                          localTime={row.call_local_time}
+                          reason={row.call_reason}
+                        />
+                      </td>
                       <td className={TD_MUTED}>
                         {cell("product_interest", row.product_interest ?? "")}
                       </td>
@@ -1675,6 +1924,7 @@ export function LeadsTablePage({
                     Country{sortIndicator("country")}
                   </button>
                 </th>
+                <th className={`${TH} min-w-[130px]`}>Call?</th>
                 <th className={`${TH} min-w-[130px]`}>Contact</th>
                 <th className={`${TH} min-w-[200px]`}>Email</th>
                 <th className={`${TH} min-w-[160px]`}>Phone</th>
@@ -1760,6 +2010,13 @@ export function LeadsTablePage({
                       ) : (
                         <span className="truncate block">{formatCountryLabel(row.country)}</span>
                       )}
+                    </td>
+                    <td className={TD}>
+                      <CallRecommendationBadge
+                        recommended={row.call_recommended}
+                        localTime={row.call_local_time}
+                        reason={row.call_reason}
+                      />
                     </td>
                     <td className={TD_MUTED}>
                       {editMode ? (
@@ -1951,6 +2208,27 @@ export function LeadsTablePage({
           }}
         />
       )}
+
+      {/* WhatsApp Cloud API — temporarily disabled
+      {showBulkWhatsApp && (
+        <BulkWhatsAppModal
+          buyerIds={[...selected]}
+          onClose={() => setShowBulkWhatsApp(false)}
+          onError={onError}
+          onCreated={(result) => {
+            setBulkWhatsAppNotice(
+              `Sent ${result.sent_count ?? 0} WhatsApp message(s). ` +
+                ((result.failed_count ?? 0) > 0 ? `${result.failed_count} failed. ` : "") +
+                (result.skipped_count > 0
+                  ? `${result.skipped_count} skipped (no phone or opt-in). `
+                  : "") +
+                "Open Approval Queue for drafts pending review.",
+            );
+            clearSelection();
+          }}
+        />
+      )}
+      */}
     </section>
   );
 }

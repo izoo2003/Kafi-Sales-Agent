@@ -105,6 +105,14 @@ class ScheduledEventStatus(str, enum.Enum):
     skipped = "skipped"
 
 
+class WhatsAppTemplateStatus(str, enum.Enum):
+    approved = "approved"
+    pending = "pending"
+    rejected = "rejected"
+    paused = "paused"
+    disabled = "disabled"
+
+
 class Buyer(Base):
     __tablename__ = "buyers"
 
@@ -207,6 +215,12 @@ class Contact(Base):
     data_source: Mapped[Optional[str]] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    # WhatsApp Cloud API — wa_id is the E.164 number Meta uses as the recipient identifier.
+    wa_id: Mapped[Optional[str]] = mapped_column(String(50))
+    whatsapp_opt_in: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Rolling 24h customer-service window — set/refreshed on inbound messages.
+    whatsapp_window_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
     buyer: Mapped["Buyer"] = relationship(back_populates="contacts")
     interactions: Mapped[list["Interaction"]] = relationship(back_populates="contact")
     scheduled_events: Mapped[list["ScheduledEvent"]] = relationship(back_populates="contact")
@@ -266,6 +280,11 @@ class Interaction(Base):
     approved_by: Mapped[Optional[str]] = mapped_column(String(255))
     attachments: Mapped[list] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    # WhatsApp Cloud API delivery tracking.
+    provider_message_id: Mapped[Optional[str]] = mapped_column(String(128), index=True)
+    template_name: Mapped[Optional[str]] = mapped_column(String(255))
+    wa_status: Mapped[Optional[str]] = mapped_column(String(50))
 
     contact: Mapped["Contact"] = relationship(back_populates="interactions")
 
@@ -345,6 +364,29 @@ class EmailTemplate(Base):
     subject: Mapped[str] = mapped_column(String(500), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     attachments: Mapped[list] = mapped_column(JSONB, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class WhatsAppTemplate(Base):
+    """Cache of message templates approved (or pending) on the Meta WABA — synced, not authored here."""
+
+    __tablename__ = "whatsapp_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    meta_template_id: Mapped[Optional[str]] = mapped_column(String(128), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    category: Mapped[Optional[str]] = mapped_column(String(50))
+    language: Mapped[str] = mapped_column(String(20), nullable=False, default="en")
+    status: Mapped[WhatsAppTemplateStatus] = mapped_column(
+        Enum(WhatsAppTemplateStatus), default=WhatsAppTemplateStatus.pending, nullable=False
+    )
+    components: Mapped[Optional[list]] = mapped_column(JSONB, default=list)
+    body_text: Mapped[Optional[str]] = mapped_column(Text)
+    variable_count: Mapped[int] = mapped_column(Integer, default=0)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

@@ -18,6 +18,9 @@ SearchResults:
 
 from __future__ import annotations
 
+import re
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -85,14 +88,189 @@ def _gl_to_region(gl_code: str | None) -> str | None:
 
 
 # --------------------------------------------------------------------------- #
+# SerpAPI multi-key rotation
+# --------------------------------------------------------------------------- #
+
+
+def _serpapi_configured_keys() -> list[str]:
+    """Collect unique keys from SERPAPI_API_KEY + SERPAPI_API_KEYS."""
+    keys: list[str] = []
+    seen: set[str] = set()
+    for raw in (
+        getattr(settings, "serpapi_api_key", None),
+        getattr(settings, "serpapi_api_keys", None),
+    ):
+        if not raw:
+            continue
+        for part in str(raw).split(","):
+            key = part.strip()
+            if key and key not in seen:
+                seen.add(key)
+                keys.append(key)
+    return keys
+
+
+_QUOTA_ERROR_RE = re.compile(
+    r"(ran out of searches|out of searches|monthly searches|"
+    r"your account has run out|limit.*search|quota|too many requests)",
+    re.I,
+)
+
+
+class _SerpApiKeyPool:
+    """Rotate SerpAPI keys when monthly/hourly quota is exhausted.
+
+    Preference order: configured key order (primary first). When a key returns
+    429 / quota errors it is marked exhausted until account.json shows searches
+    left again (checked on a cooldown), then the pool prefers the first healthy
+    key — so it naturally switches back after monthly reset.
+    """
+
+    _RECHECK_SECONDS = 30 * 60  # re-check exhausted keys via account API every 30m
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        # key -> unix timestamp when we may re-check account.json
+        self._exhausted_until: dict[str, float] = {}
+
+    def available(self) -> bool:
+        return bool(_serpapi_configured_keys())
+
+    def _account_has_searches(self, api_key: str) -> bool | None:
+        """Return True/False from account.json, or None if the check failed."""
+        try:
+            response = httpx.get(
+                "https://serpapi.com/account.json",
+                params={"api_key": api_key},
+                timeout=_HTTP_TIMEOUT,
+            )
+            if response.status_code >= 400:
+                return None
+            data = response.json()
+            left = data.get("total_searches_left")
+            if left is None:
+                left = data.get("plan_searches_left")
+            if left is None:
+                return None
+            return int(left) > 0
+        except Exception:
+            return None
+
+    def _is_usable(self, api_key: str, *, now: float) -> bool:
+        until = self._exhausted_until.get(api_key)
+        if until is None:
+            return True
+        if now < until:
+            return False
+        # Cooldown elapsed — ask SerpAPI if the key recovered (monthly reset).
+        # Do the HTTP check outside the lock.
+        return True  # tentatively; acquire() re-validates
+
+    def _revalidate_exhausted(self, api_key: str) -> bool:
+        """Return True if an exhausted key has searches again."""
+        status = self._account_has_searches(api_key)
+        now = time.time()
+        with self._lock:
+            if status is True:
+                self._exhausted_until.pop(api_key, None)
+                return True
+            if status is False:
+                self._exhausted_until[api_key] = now + self._RECHECK_SECONDS
+                return False
+            # Unknown — allow one live attempt.
+            self._exhausted_until.pop(api_key, None)
+            return True
+
+    def acquire(self) -> str | None:
+        keys = _serpapi_configured_keys()
+        if not keys:
+            return None
+        now = time.time()
+        candidates: list[tuple[str, bool]] = []
+        with self._lock:
+            for key in keys:
+                until = self._exhausted_until.get(key)
+                if until is None:
+                    candidates.append((key, False))
+                elif now >= until:
+                    candidates.append((key, True))
+            if not candidates:
+                return keys[0]
+
+        for key, needs_revalidate in candidates:
+            if needs_revalidate and not self._revalidate_exhausted(key):
+                continue
+            return key
+        return keys[0]
+
+    def mark_exhausted(self, api_key: str, *, retry_after_seconds: float | None = None) -> None:
+        wait = float(retry_after_seconds) if retry_after_seconds and retry_after_seconds > 0 else self._RECHECK_SECONDS
+        with self._lock:
+            self._exhausted_until[api_key] = time.time() + wait
+
+    def mark_ok(self, api_key: str) -> None:
+        with self._lock:
+            self._exhausted_until.pop(api_key, None)
+
+    def status_summary(self) -> dict[str, Any]:
+        keys = _serpapi_configured_keys()
+        now = time.time()
+        with self._lock:
+            exhausted = [
+                i
+                for i, k in enumerate(keys)
+                if k in self._exhausted_until and self._exhausted_until[k] > now
+            ]
+            active = next(
+                (
+                    i
+                    for i, k in enumerate(keys)
+                    if k not in self._exhausted_until or self._exhausted_until[k] <= now
+                ),
+                None,
+            )
+            return {
+                "configured_keys": len(keys),
+                "active_key_index": active,
+                "exhausted_count": len(exhausted),
+            }
+
+
+_serpapi_key_pool = _SerpApiKeyPool()
+
+
+def _serpapi_quota_error(message: str | None = None, status_code: int | None = None) -> bool:
+    if status_code == 429:
+        return True
+    if message and _QUOTA_ERROR_RE.search(message):
+        return True
+    return False
+
+
+def _parse_retry_after(response: httpx.Response | None) -> float | None:
+    if response is None:
+        return None
+    raw = response.headers.get("Retry-After")
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+# --------------------------------------------------------------------------- #
 # Providers
 # --------------------------------------------------------------------------- #
-def _search_serpapi(query: str, *, num: int, gl_code: str | None) -> SearchResults:
+def _search_serpapi_with_key(
+    query: str,
+    *,
+    num: int,
+    gl_code: str | None,
+    api_key: str,
+) -> tuple[SearchResults, bool, float | None]:
+    """Run one SerpAPI search. Returns (results, quota_exhausted, retry_after)."""
     results = SearchResults(provider="serpapi")
-    api_key = settings.serpapi_api_key
-    if not api_key:
-        return results
-
     params: dict[str, str | int] = {
         "engine": "google",
         "q": query,
@@ -103,16 +281,42 @@ def _search_serpapi(query: str, *, num: int, gl_code: str | None) -> SearchResul
         params["gl"] = gl_code
 
     try:
-        response = httpx.get("https://serpapi.com/search.json", params=params, timeout=_HTTP_TIMEOUT)
-        response.raise_for_status()
-        data = response.json()
+        response = httpx.get(
+            "https://serpapi.com/search.json", params=params, timeout=_HTTP_TIMEOUT
+        )
     except httpx.HTTPError as exc:
         results.messages.append(f"SerpAPI request failed: {exc}")
-        return results
+        return results, False, None
+
+    if response.status_code == 429:
+        results.messages.append(
+            f"SerpAPI request failed: Client error '429 Too Many Requests'"
+        )
+        return results, True, _parse_retry_after(response)
+
+    if response.status_code >= 400:
+        results.messages.append(
+            f"SerpAPI request failed: Client error '{response.status_code}'"
+        )
+        # Some quota messages come back as 400/401 with an error body.
+        try:
+            err = (response.json() or {}).get("error")
+        except Exception:
+            err = None
+        exhausted = _serpapi_quota_error(str(err) if err else response.text, response.status_code)
+        if err:
+            results.messages.append(f"SerpAPI error: {err}")
+        return results, exhausted, _parse_retry_after(response)
+
+    try:
+        data = response.json()
+    except Exception as exc:
+        results.messages.append(f"SerpAPI invalid JSON: {exc}")
+        return results, False, None
 
     if err := data.get("error"):
         results.messages.append(f"SerpAPI error: {err}")
-        return results
+        return results, _serpapi_quota_error(str(err)), None
 
     for item in data.get("organic_results", []) or []:
         results.organic.append(
@@ -148,7 +352,51 @@ def _search_serpapi(query: str, *, num: int, gl_code: str | None) -> SearchResul
             }
         )
 
-    return results
+    return results, False, None
+
+
+def _search_serpapi(query: str, *, num: int, gl_code: str | None) -> SearchResults:
+    """Search via SerpAPI, rotating to the next key when quota is exhausted."""
+    keys = _serpapi_configured_keys()
+    if not keys:
+        return SearchResults(provider="serpapi")
+
+    tried: set[str] = set()
+    merged_messages: list[str] = []
+
+    for _ in range(len(keys)):
+        api_key = _serpapi_key_pool.acquire()
+        if not api_key or api_key in tried:
+            break
+        tried.add(api_key)
+        key_index = keys.index(api_key) + 1
+        results, exhausted, retry_after = _search_serpapi_with_key(
+            query, num=num, gl_code=gl_code, api_key=api_key
+        )
+        if exhausted:
+            _serpapi_key_pool.mark_exhausted(api_key, retry_after_seconds=retry_after)
+            merged_messages.extend(results.messages)
+            merged_messages.append(
+                f"SerpAPI key #{key_index} exhausted — switching to next key if available"
+            )
+            continue
+
+        if not results.is_empty():
+            _serpapi_key_pool.mark_ok(api_key)
+            if len(keys) > 1:
+                results.messages.append(f"SerpAPI using key #{key_index} of {len(keys)}")
+            results.messages = merged_messages + results.messages
+            return results
+
+        # Soft failure (empty / other error) — don't burn the rest of the keys
+        # unless it looked like a quota problem (already handled above).
+        results.messages = merged_messages + results.messages
+        return results
+
+    empty = SearchResults(provider="serpapi", messages=merged_messages)
+    if not empty.messages:
+        empty.messages.append("SerpAPI: all configured keys exhausted or unavailable")
+    return empty
 
 
 def _search_brave(query: str, *, num: int, gl_code: str | None) -> SearchResults:
@@ -334,7 +582,7 @@ _PROVIDERS: dict[str, Callable[..., SearchResults]] = {
 
 def provider_available(name: str) -> bool:
     if name == "serpapi":
-        return bool(settings.serpapi_api_key)
+        return _serpapi_key_pool.available()
     if name == "brave":
         return bool(getattr(settings, "brave_api_key", None))
     if name == "google_cse":

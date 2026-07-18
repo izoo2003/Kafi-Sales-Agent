@@ -7,6 +7,7 @@ const COLUMNS = [
   { key: "producerTier", header: "Producer tier", width: 220 },
   { key: "conversion", header: "Conversion %", width: 96 },
   { key: "country", header: "Country", width: 160 },
+  { key: "callRecommended", header: "Call now?", width: 160 },
   { key: "industry", header: "Industry", width: 280 },
   { key: "contact", header: "Contact", width: 160 },
   { key: "assignedTo", header: "Assigned To", width: 120 },
@@ -66,6 +67,12 @@ function rowValues(row: LeadTableRow): Record<(typeof COLUMNS)[number]["key"], s
     conversion:
       row.producer_conversion_pct != null ? String(Math.round(row.producer_conversion_pct)) : "",
     country: row.country ?? "",
+    callRecommended:
+      row.call_recommended === null
+        ? "Unknown"
+        : row.call_recommended
+          ? `Yes${row.call_local_time ? ` (${row.call_local_time})` : ""}`
+          : `No${row.call_local_time ? ` (${row.call_local_time})` : ""}`,
     industry: row.industry ?? "",
     contact: row.contact_name ?? "",
     assignedTo:
