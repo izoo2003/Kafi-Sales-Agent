@@ -96,13 +96,29 @@ def gmail_after_query(since: datetime | None = None) -> str:
     return f"after:{moment.year}/{moment.month:02d}/{moment.day:02d}"
 
 
+def as_utc(value: datetime | None) -> datetime | None:
+    """Normalize message/cutoff datetimes so naive and aware values can be compared."""
+    if value is None:
+        return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def date_sort_key(value: object) -> datetime:
+    """Stable UTC key for sorting mixed/missing message dates."""
+    if isinstance(value, datetime):
+        return as_utc(value) or _EPOCH
+    return _EPOCH
+
+
 def message_is_after_cutoff(message_date: datetime | None) -> bool:
     if not has_active_cutoff():
         return True
-    if message_date is None:
+    msg = as_utc(message_date)
+    if msg is None:
         return True
-    cutoff = get_inbox_since()
-    msg = message_date
-    if msg.tzinfo is None:
-        msg = msg.replace(tzinfo=timezone.utc)
-    return msg.astimezone(timezone.utc) >= cutoff
+    cutoff = as_utc(get_inbox_since()) or _EPOCH
+    return msg >= cutoff

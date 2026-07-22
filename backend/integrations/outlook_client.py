@@ -20,7 +20,7 @@ from typing import Any
 import httpx
 
 from config import settings
-from modules.inbox_cutoff import get_inbox_since, message_is_after_cutoff
+from modules.inbox_cutoff import as_utc, date_sort_key, get_inbox_since, message_is_after_cutoff
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
@@ -550,7 +550,7 @@ class OutlookClient:
             "from_name": from_name or None,
             "to": to_addrs,
             "cc": cc_addrs,
-            "date": msg.date,
+            "date": as_utc(msg.date),
             "preview": preview[:240],
             "unread": "\\Seen" not in msg.flags,
             "has_attachments": bool(getattr(msg, "attachments", None)),
@@ -717,7 +717,7 @@ class OutlookClient:
         # Dedupe by message-id when both copies exist.
         seen_ids: set[str] = set()
         unique: list[dict[str, Any]] = []
-        for msg in sorted(filtered, key=lambda m: m.get("date") or "", reverse=True):
+        for msg in sorted(filtered, key=lambda m: date_sort_key(m.get("date")), reverse=True):
             mid = (msg.get("message_id") or "").strip().lower()
             if mid:
                 if mid in seen_ids:
@@ -810,7 +810,7 @@ class OutlookClient:
                     mailbox.logout()
                 except Exception:  # noqa: BLE001
                     pass
-        out.sort(key=lambda m: m.get("date") or "")
+        out.sort(key=lambda m: date_sort_key(m.get("date")))
         return out
 
     def unread_count(self) -> int:

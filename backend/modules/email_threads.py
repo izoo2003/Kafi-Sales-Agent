@@ -6,6 +6,9 @@ import hashlib
 import re
 from typing import Any
 
+from modules.inbox_cutoff import date_sort_key
+
+
 _SUBJECT_PREFIX_RE = re.compile(
     r"^(?:(?:re|fw|fwd|aw|sv|antw|resp|rif)\s*:\s*)+",
     re.IGNORECASE,
@@ -136,7 +139,7 @@ def group_messages_into_threads(
 
     threads: list[dict[str, Any]] = []
     for members in clusters.values():
-        members_sorted = sorted(members, key=lambda m: m.get("date") or "")
+        members_sorted = sorted(members, key=lambda m: date_sort_key(m.get("date")))
         latest = members_sorted[-1]
         earliest = members_sorted[0]
         participants: set[str] = set()
@@ -180,5 +183,5 @@ def group_messages_into_threads(
             }
         )
 
-    threads.sort(key=lambda t: t.get("latest_date") or "", reverse=True)
+    threads.sort(key=lambda t: date_sort_key(t.get("latest_date")), reverse=True)
     return threads
