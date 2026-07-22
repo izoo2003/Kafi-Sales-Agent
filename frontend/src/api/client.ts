@@ -549,6 +549,29 @@ export interface EmailActivityCatalogItem {
   severity: string;
 }
 
+export interface EmailActivityModeStats {
+  attempted: number;
+  sent: number;
+  failed: number;
+  opened: number;
+  not_opened: number;
+  open_rate_pct: number;
+  success_rate_pct: number;
+  batches?: number | null;
+  batches_partial?: number | null;
+  batches_failed?: number | null;
+}
+
+export interface EmailActivityInsights {
+  period_days: number | null;
+  since: string | null;
+  tracking_enabled: boolean;
+  totals: EmailActivityModeStats;
+  individual: EmailActivityModeStats;
+  bulk: EmailActivityModeStats;
+  event_count: number;
+}
+
 export interface BulkApproveResponse {
   processed: number;
   sent_count: number;
@@ -1323,6 +1346,13 @@ export const client = {
     request<{ unread_count: number }>("/email-activity/unread-count"),
   listEmailActivityCatalog: () =>
     request<EmailActivityCatalogItem[]>("/email-activity/catalog"),
+  getEmailActivityInsights: (days?: number | null) => {
+    const search = new URLSearchParams();
+    if (days === null) search.set("days", "0");
+    else if (days != null) search.set("days", String(days));
+    const query = search.toString();
+    return request<EmailActivityInsights>(`/email-activity/insights${query ? `?${query}` : ""}`);
+  },
   markEmailActivityRead: (data: { event_ids?: number[]; mark_all?: boolean }) =>
     request<{ updated: number }>("/email-activity/mark-read", {
       method: "POST",

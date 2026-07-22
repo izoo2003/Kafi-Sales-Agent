@@ -909,6 +909,8 @@ class OutlookClient:
         body: str,
         cc: str | None = None,
         attachments: list[dict] | None = None,
+        interaction_id: int | None = None,
+        send_mode: str = "individual",
     ) -> dict[str, Any]:
         """Send via standard SMTP AUTH — works for cPanel-hosted mail (e.g. mail.kafi-group.com)
         or any provider with SMTP enabled. Uses implicit SSL on port 465, STARTTLS otherwise."""
@@ -919,6 +921,7 @@ class OutlookClient:
         from email.mime.text import MIMEText
 
         from modules.email_attachments import load_bytes
+        from modules.email_tracking import build_tracked_bodies
 
         if not settings.mailbox_password:
             return {
@@ -928,8 +931,13 @@ class OutlookClient:
 
         from_addr = settings.mailbox_email
         display_name = settings.mailbox_display_name
+        plain_body, html_body = build_tracked_bodies(
+            body,
+            interaction_id=interaction_id,
+            send_mode=send_mode,
+        )
 
-        message = MIMEMultipart()
+        message = MIMEMultipart("mixed")
         message["From"] = f"{display_name} <{from_addr}>" if display_name else from_addr
         message["To"] = to
         if cc:
@@ -939,7 +947,14 @@ class OutlookClient:
         message["Message-ID"] = email_utils.make_msgid(
             domain=(from_addr or "localhost").split("@")[-1]
         )
-        message.attach(MIMEText(body, "plain", "utf-8"))
+
+        if html_body:
+            alt = MIMEMultipart("alternative")
+            alt.attach(MIMEText(plain_body, "plain", "utf-8"))
+            alt.attach(MIMEText(html_body, "html", "utf-8"))
+            message.attach(alt)
+        else:
+            message.attach(MIMEText(plain_body, "plain", "utf-8"))
 
         for meta in attachments or []:
             try:
@@ -1035,6 +1050,8 @@ class OutlookClient:
         references: str | None = None,
         cc: str | None = None,
         attachments: list[dict] | None = None,
+        interaction_id: int | None = None,
+        send_mode: str = "individual",
     ) -> dict[str, Any]:
         if not self.is_configured:
             return {
@@ -1044,7 +1061,15 @@ class OutlookClient:
         if not to:
             return {"status": "error", "message": "Recipient email is missing"}
         if not self._use_oauth():
-            return self._send_smtp(to=to, subject=subject, body=body, cc=cc, attachments=attachments)
+            return self._send_smtp(
+                to=to,
+                subject=subject,
+                body=body,
+                cc=cc,
+                attachments=attachments,
+                interaction_id=interaction_id,
+                send_mode=send_mode,
+            )
 
         att_list = attachments or []
         graph_attachments: list[dict[str, Any]] = []
@@ -1054,9 +1079,20 @@ class OutlookClient:
                 return built
             graph_attachments = built
 
+        from modules.email_tracking import build_tracked_bodies
+
+        plain_body, html_body = build_tracked_bodies(
+            body,
+            interaction_id=interaction_id,
+            send_mode=send_mode,
+        )
         message: dict[str, Any] = {
             "subject": subject,
-            "body": {"contentType": "Text", "content": body},
+            "body": (
+                {"contentType": "HTML", "content": html_body}
+                if html_body
+                else {"contentType": "Text", "content": plain_body}
+            ),
             "toRecipients": [{"emailAddress": {"address": to}}],
         }
         if settings.mailbox_display_name:
@@ -1111,9 +1147,18 @@ class OutlookClient:
         subject: str,
         body: str,
         attachments: list[dict] | None = None,
+        interaction_id: int | None = None,
+        send_mode: str = "individual",
     ) -> dict[str, Any]:
         """Send an approved outbound email (quotations, outreach, bulk campaigns)."""
-        return self.send_reply(to=to, subject=subject, body=body, attachments=attachments)
+        return self.send_reply(
+            to=to,
+            subject=subject,
+            body=body,
+            attachments=attachments,
+            interaction_id=interaction_id,
+            send_mode=send_mode,
+        )
 
 
 outlook_client = OutlookClient()

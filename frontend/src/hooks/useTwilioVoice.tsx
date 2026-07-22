@@ -29,6 +29,9 @@ interface TwilioVoiceContextValue {
   initError: string | null;
   pendingFollowUp: PendingCallFollowUp | null;
   clearPendingFollowUp: () => void;
+  /** When true the global PostCallRemarksModal is suppressed (bulk queue handles it). */
+  bulkModeActive: boolean;
+  setBulkModeActive: (active: boolean) => void;
   placeCall: (leadId: number, contactId?: number) => Promise<CallInitiateResult>;
   placeManualCall: (
     phone: string,
@@ -69,6 +72,8 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
   const [activeCall, setActiveCall] = useState<ActiveCallTarget | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
   const [pendingFollowUp, setPendingFollowUp] = useState<PendingCallFollowUp | null>(null);
+
+  const [bulkModeActive, setBulkModeActive] = useState(false);
 
   const clearPendingFollowUp = useCallback(() => {
     setPendingFollowUp(null);
@@ -262,6 +267,8 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
         initError,
         pendingFollowUp,
         clearPendingFollowUp,
+        bulkModeActive,
+        setBulkModeActive,
         placeCall,
         placeManualCall,
         hangUp,

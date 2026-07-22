@@ -25,9 +25,16 @@ class MailClient:
         subject: str,
         body: str,
         attachments: list[dict] | None = None,
+        interaction_id: int | None = None,
+        send_mode: str = "individual",
     ) -> dict[str, Any]:
         return outlook_client.send_approved(
-            to=to, subject=subject, body=body, attachments=attachments
+            to=to,
+            subject=subject,
+            body=body,
+            attachments=attachments,
+            interaction_id=interaction_id,
+            send_mode=send_mode,
         )
 
 

@@ -10,7 +10,7 @@ interface PostCallRemarksModalProps {
 }
 
 export function PostCallRemarksModal({ onError, onSaved }: PostCallRemarksModalProps) {
-  const { pendingFollowUp, clearPendingFollowUp } = useTwilioVoice();
+  const { pendingFollowUp, clearPendingFollowUp, bulkModeActive } = useTwilioVoice();
   const [remarks, setRemarks] = useState("");
   const [outcome, setOutcome] = useState<CallOutcome | "">("");
   const [saving, setSaving] = useState(false);
@@ -21,7 +21,8 @@ export function PostCallRemarksModal({ onError, onSaved }: PostCallRemarksModalP
     setOutcome("");
   }, [pendingFollowUp]);
 
-  if (!pendingFollowUp) return null;
+  // Suppress this modal when the bulk call queue is active — it handles outcomes inline.
+  if (!pendingFollowUp || bulkModeActive) return null;
 
   async function saveRemarks() {
     if (!pendingFollowUp) return;

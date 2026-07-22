@@ -539,6 +539,29 @@ class EmailActivityCatalogItem(BaseModel):
     severity: str
 
 
+class EmailActivityModeStats(BaseModel):
+    attempted: int = 0
+    sent: int = 0
+    failed: int = 0
+    opened: int = 0
+    not_opened: int = 0
+    open_rate_pct: float = 0.0
+    success_rate_pct: float = 0.0
+    batches: int | None = None
+    batches_partial: int | None = None
+    batches_failed: int | None = None
+
+
+class EmailActivityInsights(BaseModel):
+    period_days: int | None = None
+    since: str | None = None
+    tracking_enabled: bool = False
+    totals: EmailActivityModeStats
+    individual: EmailActivityModeStats
+    bulk: EmailActivityModeStats
+    event_count: int = 0
+
+
 class LeadTableFiltersRead(BaseModel):
     countries: list[str]
     industries: list[str]

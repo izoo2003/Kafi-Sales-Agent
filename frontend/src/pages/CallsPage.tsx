@@ -10,10 +10,12 @@ import { CallManualDialer } from "../components/CallManualDialer";
 import { CallRemarksForm } from "../components/CallRemarksForm";
 import { CallRecordingPanel } from "../components/CallRecordingPanel";
 import { CallRecommendationBadge } from "../components/CallRecommendationBadge";
+import { BulkCallQueuePanel } from "../components/BulkCallQueuePanel";
 import { CountrySelect } from "../components/CountrySelect";
 import { Pagination } from "../components/Pagination";
 import { type CallOutcome, callOutcomeBadge, callOutcomeLabel, callOutcomeListNotice } from "../utils/callOutcomes";
 import { countryMatches } from "../data/countries";
+import { useCallQueue, BATCH_SIZE } from "../hooks/useCallQueue";
 
 interface CallsPageProps {
   onError: (message: string) => void;
@@ -65,6 +67,9 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
   const [savingFollowUp, setSavingFollowUp] = useState(false);
   const [deletingCallId, setDeletingCallId] = useState<number | null>(null);
   const [countryFilter, setCountryFilter] = useState<string>("");
+  const [selectedLeadIds, setSelectedLeadIds] = useState<Set<number>>(new Set());
+  const [showBulkQueue, setShowBulkQueue] = useState(false);
+  const callQueue = useCallQueue();
   const pollRef = useRef<number | null>(null);
 
   const loadData = useCallback(
@@ -188,6 +193,38 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
     }
   }
 
+  function toggleLeadSelect(leadId: number) {
+    setSelectedLeadIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(leadId)) next.delete(leadId);
+      else next.add(leadId);
+      return next;
+    });
+  }
+
+  function selectAllVisible() {
+    setSelectedLeadIds(new Set(filteredDialableLeads.map((l) => l.id)));
+  }
+
+  function clearSelection() {
+    setSelectedLeadIds(new Set());
+  }
+
+  function startBulkCall() {
+    const leads = filteredDialableLeads
+      .filter((l) => selectedLeadIds.has(l.id))
+      .map((l) => ({
+        leadId: l.id,
+        companyName: l.company_name ?? String(l.id),
+        contactName: l.contact_name ?? null,
+        phone: l.contact_phone ?? "",
+      }));
+    if (!leads.length) return;
+    clearSelection();
+    setShowBulkQueue(true);
+    callQueue.start(leads);
+  }
+
   if (!loading && config && !config.configured) {
     return (
       <section className="space-y-4">
@@ -252,6 +289,17 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
         </p>
       )}
 
+      {/* Bulk call queue panel */}
+      {showBulkQueue && callQueue.status !== "idle" && (
+        <BulkCallQueuePanel
+          queue={callQueue}
+          onClose={() => {
+            callQueue.stop();
+            setShowBulkQueue(false);
+          }}
+        />
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
         <div className="lg:col-span-1 flex flex-col gap-4">
           <CallManualDialer
@@ -294,6 +342,37 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
                   " (no leads with this country yet)"}
               </p>
             )}
+
+            {/* Bulk call controls */}
+            {filteredDialableLeads.length > 0 && (
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={selectedLeadIds.size > 0 ? clearSelection : selectAllVisible}
+                  className="text-xs text-sky-400 hover:text-sky-300"
+                >
+                  {selectedLeadIds.size > 0
+                    ? `Clear (${selectedLeadIds.size})`
+                    : `Select all (${filteredDialableLeads.length})`}
+                </button>
+                {selectedLeadIds.size > 0 && (
+                  <button
+                    type="button"
+                    onClick={startBulkCall}
+                    disabled={callQueue.status !== "idle"}
+                    className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-600 disabled:opacity-50 border border-sky-600 text-white text-xs font-medium"
+                  >
+                    <span>📞</span>
+                    Bulk call ({selectedLeadIds.size})
+                    {selectedLeadIds.size > BATCH_SIZE && (
+                      <span className="text-sky-200/70">
+                        · {Math.ceil(selectedLeadIds.size / BATCH_SIZE)} batches
+                      </span>
+                    )}
+                  </button>
+                )}
+              </div>
+            )}
           </div>
           <div className="max-h-[280px] overflow-y-auto divide-y divide-slate-800/80">
             {filteredDialableLeads.length === 0 ? (
@@ -304,7 +383,19 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
               </p>
             ) : (
               filteredDialableLeads.slice(0, 40).map((lead) => (
-                <div key={lead.id} className="px-4 py-3 flex items-center justify-between gap-2">
+                <div
+                  key={lead.id}
+                  className={`px-3 py-3 flex items-center gap-2 ${
+                    selectedLeadIds.has(lead.id) ? "bg-sky-950/30" : ""
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedLeadIds.has(lead.id)}
+                    onChange={() => toggleLeadSelect(lead.id)}
+                    className="w-4 h-4 rounded border-slate-600 bg-slate-800 accent-sky-500 shrink-0 cursor-pointer"
+                    aria-label={`Select ${lead.company_name}`}
+                  />
                   <button
                     type="button"
                     onClick={() => onSelectLead?.(lead.id)}

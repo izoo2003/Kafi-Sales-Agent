@@ -14,6 +14,7 @@ interface EmailTemplatesPageProps {
 export function EmailTemplatesPage({ onError, onCountChange }: EmailTemplatesPageProps) {
   const [templates, setTemplates] = useState<EmailTemplate[]>([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [showEditor, setShowEditor] = useState(false);
   const [templateForm, setTemplateForm] = useState(emptyTemplateForm());
@@ -36,6 +37,21 @@ export function EmailTemplatesPage({ onError, onCountChange }: EmailTemplatesPag
   useEffect(() => {
     void refreshTemplates();
   }, [refreshTemplates]);
+
+  const query = search.trim().toLowerCase();
+  const filteredTemplates = query
+    ? templates.filter((template) => {
+        const haystack = [
+          template.name,
+          template.subject,
+          template.body,
+          ...(template.attachments ?? []).map((a) => a.filename || ""),
+        ]
+          .join("\n")
+          .toLowerCase();
+        return haystack.includes(query);
+      })
+    : templates;
 
   function startCreate() {
     setEditingId(null);
@@ -126,9 +142,25 @@ export function EmailTemplatesPage({ onError, onCountChange }: EmailTemplatesPag
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
         <div className="rounded-xl border border-slate-800 bg-slate-900/50 overflow-hidden">
-          <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
-            <h3 className="text-sm font-medium text-slate-300">Saved templates</h3>
-            <span className="text-xs text-slate-500">{templates.length} total</span>
+          <div className="px-4 py-3 border-b border-slate-800 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-sm font-medium text-slate-300">Saved templates</h3>
+              <span className="text-xs text-slate-500">
+                {query
+                  ? `${filteredTemplates.length} of ${templates.length}`
+                  : `${templates.length} total`}
+              </span>
+            </div>
+            <label className="block">
+              <span className="sr-only">Search templates</span>
+              <input
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by name, subject, or body…"
+                className="w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-slate-500"
+              />
+            </label>
           </div>
           <div className="p-4 space-y-2 max-h-[70vh] overflow-y-auto">
             {loading ? (
@@ -138,8 +170,12 @@ export function EmailTemplatesPage({ onError, onCountChange }: EmailTemplatesPag
                 No templates yet. Click <strong className="text-slate-300">New template</strong> to
                 create your first one.
               </p>
+            ) : filteredTemplates.length === 0 ? (
+              <p className="text-sm text-slate-500 rounded-lg border border-dashed border-slate-700 p-4">
+                No templates match “{search.trim()}”. Try a different name, subject, or phrase.
+              </p>
             ) : (
-              templates.map((template) => {
+              filteredTemplates.map((template) => {
                 const isActive = editingId === template.id && showEditor;
                 return (
                   <div

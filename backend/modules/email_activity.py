@@ -200,10 +200,12 @@ def record_send_result(
     contact_id: int | None = None,
     interaction_id: int | None = None,
     subject: str | None = None,
+    send_mode: str = "individual",
 ) -> EmailActivityEvent:
     event_type = classify_send_result(send_result)
     catalog = EVENT_CATALOG.get(event_type, {})
     provider_message = (send_result or {}).get("message") or catalog.get("description", "")
+    mode = "bulk" if send_mode == "bulk" else "individual"
     if event_type == "sent":
         title = f"Sent to {company_name}"
         message = f"Email delivered to outbound queue for {to_email or 'recipient'}."
@@ -229,6 +231,7 @@ def record_send_result(
             "to_email": to_email,
             "subject": subject,
             "send_result": send_result,
+            "send_mode": mode,
         },
     )
 
@@ -304,3 +307,144 @@ def catalog_list() -> list[dict[str, str]]:
         }
         for key, meta in EVENT_CATALOG.items()
     ]
+
+
+_FAIL_TYPES = {
+    "send_failed",
+    "mailbox_not_configured",
+    "invalid_recipient",
+    "authentication_failed",
+    "network_error",
+    "attachment_rejected",
+    "rate_limited",
+    "blocked",
+}
+
+
+def insights_stats(db: Session, *, days: int | None = 30) -> dict[str, Any]:
+    """Aggregate outbound email activity into bulk vs individual insight cards."""
+    from modules.email_tracking import public_api_base
+
+    query = db.query(EmailActivityEvent)
+    since = None
+    if days and days > 0:
+        from datetime import timedelta
+
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        query = query.filter(EmailActivityEvent.created_at >= since)
+
+    rows = query.all()
+
+    individual_sent = 0
+    individual_failed = 0
+    individual_opened = 0
+    bulk_sent = 0
+    bulk_failed = 0
+    bulk_opened = 0
+    bulk_batches = 0
+    bulk_batches_partial = 0
+    bulk_batches_failed = 0
+
+    for event in rows:
+        details = event.details or {}
+        mode = str(details.get("send_mode") or "").lower()
+        et = event.event_type
+
+        if et == "opened":
+            if mode == "bulk":
+                bulk_opened += 1
+            else:
+                individual_opened += 1
+            continue
+
+        if et in ("bulk_completed", "bulk_partial"):
+            bulk_batches += 1
+            if et == "bulk_partial":
+                bulk_batches_partial += 1
+            try:
+                bulk_sent += int(details.get("sent_count") or 0)
+            except (TypeError, ValueError):
+                pass
+            try:
+                bulk_failed += int(details.get("failed_count") or 0)
+            except (TypeError, ValueError):
+                pass
+            continue
+
+        if et == "bulk_started":
+            continue
+
+        if et == "sent":
+            if mode == "bulk":
+                bulk_sent += 1
+            else:
+                individual_sent += 1
+            continue
+
+        if et in _FAIL_TYPES:
+            # Bulk batch-level total failure (0 sent)
+            if et == "send_failed" and (
+                "sent_count" in details or "failed_count" in details or "interaction_ids" in details
+            ):
+                bulk_batches += 1
+                bulk_batches_failed += 1
+                try:
+                    bulk_failed += int(details.get("failed_count") or 0)
+                except (TypeError, ValueError):
+                    pass
+            elif mode == "bulk":
+                bulk_failed += 1
+            else:
+                individual_failed += 1
+
+    individual_total = individual_sent + individual_failed
+    bulk_total = bulk_sent + bulk_failed
+    total_sent = individual_sent + bulk_sent
+    total_failed = individual_failed + bulk_failed
+    total_opened = individual_opened + bulk_opened
+    total_attempted = total_sent + total_failed
+    not_opened = max(0, total_sent - total_opened)
+
+    def _rate(part: int, whole: int) -> float:
+        if whole <= 0:
+            return 0.0
+        return round((part / whole) * 100.0, 1)
+
+    from modules.email_tracking import public_api_base
+
+    return {
+        "period_days": days,
+        "since": since.isoformat() if since else None,
+        "tracking_enabled": bool(public_api_base()),
+        "totals": {
+            "attempted": total_attempted,
+            "sent": total_sent,
+            "failed": total_failed,
+            "opened": total_opened,
+            "not_opened": not_opened,
+            "open_rate_pct": _rate(total_opened, total_sent),
+            "success_rate_pct": _rate(total_sent, total_attempted),
+        },
+        "individual": {
+            "attempted": individual_total,
+            "sent": individual_sent,
+            "failed": individual_failed,
+            "opened": individual_opened,
+            "not_opened": max(0, individual_sent - individual_opened),
+            "open_rate_pct": _rate(individual_opened, individual_sent),
+            "success_rate_pct": _rate(individual_sent, individual_total),
+        },
+        "bulk": {
+            "batches": bulk_batches,
+            "batches_partial": bulk_batches_partial,
+            "batches_failed": bulk_batches_failed,
+            "attempted": bulk_total,
+            "sent": bulk_sent,
+            "failed": bulk_failed,
+            "opened": bulk_opened,
+            "not_opened": max(0, bulk_sent - bulk_opened),
+            "open_rate_pct": _rate(bulk_opened, bulk_sent),
+            "success_rate_pct": _rate(bulk_sent, bulk_total),
+        },
+        "event_count": len(rows),
+    }

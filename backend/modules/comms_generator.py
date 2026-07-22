@@ -627,6 +627,7 @@ class CommsGenerator:
         approved_by: str = "sales_rep",
         send: bool = True,
         record_activity: bool = True,
+        send_mode: str = "individual",
         template_name: str | None = None,
         template_language: str = "en_US",
         template_variables: list[str] | None = None,
@@ -646,7 +647,12 @@ class CommsGenerator:
 
         send_result: dict | None = None
         if send and draft.channel == Channel.email:
-            send_result = self._send_email_draft(db, draft, record_activity=record_activity)
+            send_result = self._send_email_draft(
+                db,
+                draft,
+                record_activity=record_activity,
+                send_mode=send_mode,
+            )
         elif send and draft.channel == Channel.whatsapp:
             send_result = self._send_whatsapp_draft(
                 db,
@@ -660,7 +666,7 @@ class CommsGenerator:
         return draft, send_result
 
     def _send_email_draft(
-        self, db: Session, draft: Interaction, *, record_activity: bool
+        self, db: Session, draft: Interaction, *, record_activity: bool, send_mode: str = "individual"
     ) -> dict:
         contact = db.get(Contact, draft.contact_id)
         if not contact or not contact.email:
@@ -676,14 +682,18 @@ class CommsGenerator:
                     buyer_id=contact.buyer_id if contact else None,
                     contact_id=draft.contact_id,
                     interaction_id=draft.id,
+                    details={"send_mode": send_mode},
                 )
             raise ValueError("Contact has no email address — cannot send")
 
+        mode = "bulk" if send_mode == "bulk" else "individual"
         send_result = mail_client.send_approved(
             to=contact.email,
             subject=draft.subject or "Kafi Commodities",
             body=draft.content,
             attachments=draft.attachments or [],
+            interaction_id=draft.id,
+            send_mode=mode,
         )
         if send_result.get("status") == "sent":
             draft.status = InteractionStatus.sent
@@ -703,6 +713,7 @@ class CommsGenerator:
                 contact_id=contact.id,
                 interaction_id=draft.id,
                 subject=draft.subject,
+                send_mode=mode,
             )
         return send_result
 
@@ -1012,6 +1023,7 @@ class CommsGenerator:
                         approved_by="dashboard_user",
                         send=True,
                         record_activity=record_each,
+                        send_mode="bulk" if is_bulk_batch else "individual",
                     )
                     status = (send_result or {}).get("status")
                     item["sent"] = status == "sent"
@@ -1160,6 +1172,7 @@ class CommsGenerator:
                         approved_by="dashboard_user",
                         send=True,
                         record_activity=record_each,
+                        send_mode="bulk" if is_bulk_batch else "individual",
                     )
                     status = (send_result or {}).get("status")
                     item["sent"] = status == "sent"
@@ -1290,6 +1303,7 @@ class CommsGenerator:
                     approved_by=approved_by,
                     send=send,
                     record_activity=not is_bulk_batch,
+                    send_mode="bulk" if is_bulk_batch else "individual",
                 )
                 sent = draft.status == InteractionStatus.sent
                 if sent:

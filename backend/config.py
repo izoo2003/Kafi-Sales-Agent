@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     mailbox_client_secret: str | None = None
     mailbox_refresh_token: str | None = None
     mailbox_tenant_id: str = "consumers"  # personal Outlook/Hotmail; use tenant id for work accounts
+    # Public HTTPS API base for email open-tracking pixels (e.g. Railway URL).
+    # Falls back to TWILIO_WEBHOOK_BASE_URL when unset.
+    public_api_base_url: str | None = None
+    email_track_secret: str | None = None  # optional HMAC secret for open tokens
 
     # Gemini LLM (see modules/llm_client.py) — loaded from .env into Settings, not os.environ.
     gemini_api_key: str | None = None
@@ -138,6 +142,8 @@ class Settings(BaseSettings):
         "mailbox_client_id",
         "mailbox_client_secret",
         "mailbox_refresh_token",
+        "public_api_base_url",
+        "email_track_secret",
         mode="before",
     )
     @classmethod

@@ -17,6 +17,7 @@ from api import (
     kpi,
     leads,
     scheduler,
+    track,
     whatsapp,
 )
 from config import settings
@@ -144,7 +145,7 @@ app = FastAPI(
 )
 
 _PUBLIC_API_PATHS = {"/api/health", "/api/auth/login"}
-_PUBLIC_API_PREFIXES = ("/api/webhooks/",)
+_PUBLIC_API_PREFIXES = ("/api/webhooks/", "/api/track/")
 
 
 @app.middleware("http")
@@ -215,6 +216,7 @@ app.include_router(leads.router, prefix="/api")
 app.include_router(compliance.router, prefix="/api")
 app.include_router(interactions.router, prefix="/api")
 app.include_router(email_activity.router, prefix="/api")
+app.include_router(track.router, prefix="/api")
 app.include_router(email_templates.router, prefix="/api")
 app.include_router(scheduler.router, prefix="/api")
 app.include_router(calls.router, prefix="/api")
