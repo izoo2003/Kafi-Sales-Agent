@@ -53,28 +53,28 @@ GRAPH_SEND_SCOPES = [
 MAILBOX_SCOPES = IMAP_SCOPES + GRAPH_SEND_SCOPES
 
 _SENT_FOLDER_CANDIDATES = (
+    "INBOX.Sent",
+    "INBOX/Sent",
     "Sent",
     "Sent Items",
     "Sent Messages",
-    "INBOX.Sent",
-    "INBOX/Sent",
 )
 
 _TRASH_FOLDER_CANDIDATES = (
-    "Deleted Items",
-    "Trash",
-    "Deleted",
     "INBOX.Trash",
     "INBOX/Trash",
+    "Trash",
+    "Deleted Items",
+    "Deleted",
     "INBOX.Deleted Items",
 )
 
 _ARCHIVE_FOLDER_CANDIDATES = (
+    "INBOX.Archive",
+    "INBOX/Archive",
     "Archive",
     "Archives",
     "Archived",
-    "INBOX.Archive",
-    "INBOX/Archive",
 )
 
 # Logical folder keys used by the API / UI.
@@ -98,7 +98,16 @@ def _xoauth2_bytes(email: str, access_token: str) -> bytes:
 
 
 def _password_auth_help() -> str:
-    return "Outlook mailbox login failed. Check MAILBOX_EMAIL and credentials in backend/.env."
+    return "Mailbox login failed. Check MAILBOX_EMAIL and MAILBOX_PASSWORD in backend/.env."
+
+
+def _is_sent_folder(folder: str | None) -> bool:
+    name = (folder or "").strip().lower()
+    if not name:
+        return False
+    if name.startswith("sent") or name.endswith(".sent") or name.endswith("/sent"):
+        return True
+    return "sent" in name.split(".") or "sent" in name.split("/")
 
 
 def _invalidate_mail_caches() -> None:
@@ -527,7 +536,7 @@ class OutlookClient:
 
     def _direction(self, from_email: str | None, folder: str) -> str:
         mailbox_email = (settings.mailbox_email or "").strip().lower()
-        if folder.lower().startswith("sent"):
+        if _is_sent_folder(folder):
             return "outbound"
         if from_email and mailbox_email and from_email.strip().lower() == mailbox_email:
             return "outbound"
@@ -904,7 +913,7 @@ class OutlookClient:
         """Send via standard SMTP AUTH — works for cPanel-hosted mail (e.g. mail.kafi-group.com)
         or any provider with SMTP enabled. Uses implicit SSL on port 465, STARTTLS otherwise."""
         import smtplib
-        from email import encoders
+        from email import encoders, utils as email_utils
         from email.mime.base import MIMEBase
         from email.mime.multipart import MIMEMultipart
         from email.mime.text import MIMEText
@@ -926,6 +935,10 @@ class OutlookClient:
         if cc:
             message["Cc"] = cc
         message["Subject"] = subject
+        message["Date"] = email_utils.formatdate(localtime=True)
+        message["Message-ID"] = email_utils.make_msgid(
+            domain=(from_addr or "localhost").split("@")[-1]
+        )
         message.attach(MIMEText(body, "plain", "utf-8"))
 
         for meta in attachments or []:
@@ -944,6 +957,7 @@ class OutlookClient:
         host = settings.mailbox_smtp_host
         port = settings.mailbox_smtp_port
         ssl_context, server_hostname = self._ssl_context(host)
+        raw = message.as_bytes() if hasattr(message, "as_bytes") else message.as_string().encode("utf-8")
 
         try:
             import socket
@@ -983,7 +997,33 @@ class OutlookClient:
         except Exception as exc:  # noqa: BLE001
             return {"status": "error", "message": f"SMTP send failed: {exc}"}
 
+        # cPanel/SMTP does not auto-save to Sent — append a copy via IMAP.
+        try:
+            self._append_to_sent(raw)
+        except Exception:  # noqa: BLE001
+            pass
+        _invalidate_mail_caches()
+
         return {"status": "sent", "message": "Email sent", "to": to, "subject": subject}
+
+    def _append_to_sent(self, raw_message: bytes) -> None:
+        """Store a copy of an outbound SMTP message in the IMAP Sent folder."""
+        import imaplib
+        import time
+
+        with _IMAP_LOCK:
+            mailbox = self._mailbox("INBOX")
+            try:
+                sent_folder = self._resolve_sent_folder(mailbox)
+                if not sent_folder:
+                    return
+                date_str = imaplib.Time2Internaldate(time.time())
+                mailbox.client.append(sent_folder, "\\Seen", date_str, raw_message)
+            finally:
+                try:
+                    mailbox.logout()
+                except Exception:  # noqa: BLE001
+                    pass
 
     def send_reply(
         self,

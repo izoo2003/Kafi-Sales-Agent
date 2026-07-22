@@ -81,7 +81,7 @@ function sectionTitle(section: MailSection): string {
 }
 
 function sectionDescription(section: MailSection, email?: string | null): string {
-  const mailbox = email ? `Outlook: ${email}` : "Company mailbox";
+  const mailbox = email ? email : "Company mailbox";
   if (section === "sent") return `${mailbox} · Messages you sent`;
   if (section === "trash") return `${mailbox} · Deleted messages`;
   if (section === "archive") return `${mailbox} · Archived messages`;
@@ -611,9 +611,11 @@ export function InboxPage({
         <div className="p-6 rounded-xl border border-slate-800 bg-slate-900/40 text-slate-400 text-sm space-y-2">
           <p>Mail is not enabled yet.</p>
           <p>
-            Set <code className="text-slate-300">MAILBOX_ENABLED=true</code> and Outlook OAuth
-            tokens in <code className="text-slate-300">backend/.env</code>, then restart the
-            backend.
+            Set <code className="text-slate-300">MAILBOX_ENABLED=true</code>,{" "}
+            <code className="text-slate-300">MAILBOX_EMAIL</code>, and{" "}
+            <code className="text-slate-300">MAILBOX_PASSWORD</code> (plus IMAP/SMTP host
+            and ports) in <code className="text-slate-300">backend/.env</code>, then
+            restart the backend.
           </p>
         </div>
       </section>

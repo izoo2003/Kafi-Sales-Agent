@@ -1,4 +1,4 @@
-"""Inbox — company Outlook mailbox (receives mail from Gmail, Outlook, and any provider)."""
+"""Inbox — company mailbox via IMAP (cPanel, Outlook, or any IMAP host)."""
 
 from __future__ import annotations
 
@@ -9,6 +9,13 @@ from config import settings
 from integrations.outlook_client import FOLDER_KEYS, outlook_client
 from modules.email_threads import group_messages_into_threads, message_key
 from modules.inbox_cutoff import get_inbox_since, set_inbox_since_to_now
+
+
+def _mailbox_provider() -> str:
+    """Label for UI — oauth Graph path vs standard IMAP/SMTP (e.g. cPanel)."""
+    if outlook_client._use_oauth():  # noqa: SLF001
+        return "outlook"
+    return "imap"
 
 # Brief cache so analyze / reopen does not re-hit IMAP for the same thread.
 _THREAD_DETAIL_CACHE: dict[str, dict[str, Any]] = {}
@@ -60,7 +67,7 @@ def status() -> dict[str, Any]:
         unread = 0
 
     mailbox = {
-        "provider": "outlook",
+        "provider": _mailbox_provider(),
         "email": email,
         "configured": True,
     }
@@ -130,14 +137,14 @@ def list_messages(
         messages = outlook_client.list_folder_messages(
             key, limit=limit, unread_only=unread_only
         )
-    return [{**message, "provider": "outlook"} for message in messages]
+    return [{**message, "provider": _mailbox_provider()} for message in messages]
 
 
 def get_message(uid: str, *, folder: str = "INBOX") -> dict[str, Any] | None:
     message = outlook_client.get_message(uid, folder=folder)
     if not message:
         return None
-    return {**message, "provider": "outlook"}
+    return {**message, "provider": _mailbox_provider()}
 
 
 def unread_count() -> int:
@@ -241,7 +248,7 @@ def _strip_thread_internals(thread: dict[str, Any]) -> dict[str, Any]:
         "latest_from_email": thread["latest_from_email"],
         "latest_from_name": thread["latest_from_name"],
         "has_attachments": thread["has_attachments"],
-        "provider": "outlook",
+        "provider": _mailbox_provider(),
     }
 
 
@@ -254,7 +261,7 @@ def list_threads(*, limit: int = 40, unread_only: bool = False) -> list[dict[str
         limit=fetch_limit,
         unread_only=unread_only,
     )
-    stamped = [{**m, "provider": "outlook"} for m in raw]
+    stamped = [{**m, "provider": _mailbox_provider()} for m in raw]
     threads = group_messages_into_threads(stamped, mailbox_email=settings.mailbox_email)
     if unread_only:
         threads = [t for t in threads if t.get("unread_count", 0) > 0]
@@ -269,14 +276,14 @@ def get_thread(thread_id: str, *, mark_seen: bool = True) -> dict[str, Any] | No
     # Prefer the recent conversation-header cache from list_threads (same IMAP data)
     # instead of always re-scanning Inbox+Sent just to resolve message keys.
     raw = outlook_client.list_conversation_messages(limit=120, unread_only=False)
-    stamped = [{**m, "provider": "outlook"} for m in raw]
+    stamped = [{**m, "provider": _mailbox_provider()} for m in raw]
     threads = group_messages_into_threads(stamped, mailbox_email=settings.mailbox_email)
     match = next((t for t in threads if t["thread_id"] == thread_id), None)
     if not match:
         return None
 
     details = outlook_client.get_messages_by_keys(match["message_keys"])
-    detail_by_key = {message_key(m): {**m, "provider": "outlook"} for m in details}
+    detail_by_key = {message_key(m): {**m, "provider": _mailbox_provider()} for m in details}
     ordered = [detail_by_key[k] for k in match["message_keys"] if k in detail_by_key]
 
     if mark_seen:
