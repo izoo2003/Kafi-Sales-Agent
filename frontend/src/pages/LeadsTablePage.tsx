@@ -18,8 +18,7 @@ import { FollowUpScheduleControl } from "../components/FollowUpScheduleControl";
 import { LeadsTableCsvImport } from "../components/LeadsTableCsvImport";
 import { SocialLinksCell } from "../components/SocialLinksCell";
 import { BulkEmailModal } from "../components/BulkEmailModal";
-// WhatsApp Cloud API — temporarily disabled
-// import { BulkWhatsAppModal } from "../components/BulkWhatsAppModal";
+import { BulkWhatsAppModal } from "../components/BulkWhatsAppModal";
 import { CallLeadButton } from "../components/CallLeadButton";
 import { EmailComposeButton } from "../components/EmailComposeLink";
 import { Pagination } from "../components/Pagination";
@@ -337,9 +336,8 @@ export function LeadsTablePage({
   } | null>(null);
   const [bulkResults, setBulkResults] = useState<BulkOnboardRowResult[] | null>(null);
   const [showBulkEmail, setShowBulkEmail] = useState(false);
-  // WhatsApp Cloud API — temporarily disabled
-  // const [showBulkWhatsApp, setShowBulkWhatsApp] = useState(false);
-  // const [bulkWhatsAppNotice, setBulkWhatsAppNotice] = useState<string | null>(null);
+  const [showBulkWhatsApp, setShowBulkWhatsApp] = useState(false);
+  const [bulkWhatsAppNotice, setBulkWhatsAppNotice] = useState<string | null>(null);
   const [showCsvImport, setShowCsvImport] = useState(false);
   const [bulkEmailNotice, setBulkEmailNotice] = useState<string | null>(null);
   const [deduping, setDeduping] = useState(false);
@@ -406,6 +404,8 @@ export function LeadsTablePage({
   const [sortDir, setSortDir] = useState<"asc" | "desc">(initialTableViewRef.current.sortDir);
 
   const isOldClients = section === "old_clients";
+  const canImportSpreadsheet = section === "all" || section === "old_clients";
+  const importSource = isOldClients ? "old_clients" : "csv";
   const canScheduleFollowUp =
     section === "interested_clients" || section === "not_received_call_clients";
   const callOutcomeEmptyMessage = sectionEmptyMessage(section);
@@ -1103,7 +1103,7 @@ export function LeadsTablePage({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {isOldClients && isAdmin && (
+          {canImportSpreadsheet && (
             <button
               type="button"
               onClick={() => setShowCsvImport(true)}
@@ -1157,7 +1157,6 @@ export function LeadsTablePage({
           >
             Send emails ({selected.size})
           </button>
-          {/* WhatsApp Cloud API — temporarily disabled
           <button
             type="button"
             onClick={() => setShowBulkWhatsApp(true)}
@@ -1172,7 +1171,6 @@ export function LeadsTablePage({
           >
             Send WhatsApp ({selected.size})
           </button>
-          */}
           <button
             type="button"
             onClick={() => void bulkResearchAndScore()}
@@ -1271,13 +1269,11 @@ export function LeadsTablePage({
         </p>
       )}
 
-      {/* WhatsApp Cloud API — temporarily disabled
       {bulkWhatsAppNotice && (
         <p className="text-xs text-emerald-300 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 shrink-0">
           {bulkWhatsAppNotice}
         </p>
       )}
-      */}
 
       {selectingAll && (
         <p className="text-xs text-slate-300 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 shrink-0">
@@ -1553,12 +1549,12 @@ export function LeadsTablePage({
             {hasActiveFilters
               ? "No leads match these filters."
               : !isAdmin
-                ? "No leads assigned to you yet. An admin will assign leads from Leads table or Old clients."
+                ? "No leads assigned to you yet. Import a CSV or Excel file, or ask an admin to assign leads."
                 : isOldClients
                   ? "No old clients yet. Import a CSV or Excel file to map past clients into this table."
-                  : callOutcomeEmptyMessage ?? "No leads in this section yet."}
+                  : callOutcomeEmptyMessage ?? "No leads in this section yet. Import a CSV or Excel file to get started."}
           </p>
-          {isOldClients && isAdmin && !hasActiveFilters && (
+          {canImportSpreadsheet && !hasActiveFilters && (
             <button
               type="button"
               onClick={() => setShowCsvImport(true)}
@@ -2174,7 +2170,7 @@ export function LeadsTablePage({
       )}
       </div>
 
-      {showCsvImport && isOldClients && (
+      {showCsvImport && canImportSpreadsheet && (
         <LeadsTableCsvImport
           onClose={() => setShowCsvImport(false)}
           onImported={() => {
@@ -2182,7 +2178,13 @@ export function LeadsTablePage({
             void loadSectionCounts();
           }}
           onError={onError}
-          importSource="old_clients"
+          importSource={importSource}
+          title={isOldClients ? "Import old clients" : "Import leads"}
+          description={
+            isOldClients
+              ? "Upload CSV or Excel (.xlsx). Columns are mapped to the Old clients table. Import only saves rows as-is — research and score later from the table."
+              : "Upload CSV or Excel (.xlsx). Rows are saved into your leads table as-is — research and score them from the table when ready."
+          }
         />
       )}
 
@@ -2209,7 +2211,6 @@ export function LeadsTablePage({
         />
       )}
 
-      {/* WhatsApp Cloud API — temporarily disabled
       {showBulkWhatsApp && (
         <BulkWhatsAppModal
           buyerIds={[...selected]}
@@ -2222,13 +2223,12 @@ export function LeadsTablePage({
                 (result.skipped_count > 0
                   ? `${result.skipped_count} skipped (no phone or opt-in). `
                   : "") +
-                "Open Approval Queue for drafts pending review.",
+                "Check Email Activity for delivery updates.",
             );
             clearSelection();
           }}
         />
       )}
-      */}
     </section>
   );
 }

@@ -1,7 +1,6 @@
 """WhatsApp Cloud API — template sync, bulk campaign drafts, and inbound webhook.
 
-Temporarily disabled: routers are not mounted in main.py. Uncomment the whatsapp
-import + include_router lines there (and the frontend nav) to turn this back on.
+Routers are mounted in main.py. See backend/.env.example for Meta Cloud API setup.
 """
 
 from __future__ import annotations
@@ -102,7 +101,8 @@ def create_whatsapp_campaign_drafts(
             template_id=payload.template_id,
             template_variables=payload.template_variables,
             require_opt_in=payload.require_opt_in,
-            send=payload.send,
+            # Bulk WhatsApp always sends immediately — no approval queue.
+            send=True,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -111,7 +111,7 @@ def create_whatsapp_campaign_drafts(
         db,
         entity_type="interaction",
         entity_id=0,
-        action="whatsapp_bulk_sent" if payload.send else "whatsapp_bulk_drafts_created",
+        action="whatsapp_bulk_sent",
         actor=user.username,
         details={
             "template_id": payload.template_id,
@@ -119,26 +119,25 @@ def create_whatsapp_campaign_drafts(
             "skipped_count": result["skipped_count"],
             "sent_count": result.get("sent_count", 0),
             "failed_count": result.get("failed_count", 0),
-            "send": payload.send,
+            "send": True,
         },
     )
-    if payload.send:
-        sent_count = int(result.get("sent_count") or 0)
-        if sent_count > 0:
-            activity_module.log_activity(
-                db,
-                user_id=user.id,
-                activity_type="bulk_whatsapp_sent",
-                title="Bulk WhatsApp messages sent",
-                summary=(
-                    f"Sent {sent_count} WhatsApp message{'s' if sent_count != 1 else ''} "
-                    f"(template #{payload.template_id})"
-                ),
-                quantity=sent_count,
-                entity_type="whatsapp_template",
-                entity_id=payload.template_id,
-                details={"mode": "template", "sent_count": sent_count},
-            )
+    sent_count = int(result.get("sent_count") or 0)
+    if sent_count > 0:
+        activity_module.log_activity(
+            db,
+            user_id=user.id,
+            activity_type="bulk_whatsapp_sent",
+            title="Bulk WhatsApp messages sent",
+            summary=(
+                f"Sent {sent_count} WhatsApp message{'s' if sent_count != 1 else ''} "
+                f"(template #{payload.template_id})"
+            ),
+            quantity=sent_count,
+            entity_type="whatsapp_template",
+            entity_id=payload.template_id,
+            details={"mode": "template", "sent_count": sent_count},
+        )
     return WhatsAppCampaignDraftResponse(**result)
 
 

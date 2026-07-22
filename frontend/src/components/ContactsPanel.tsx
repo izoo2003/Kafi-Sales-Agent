@@ -165,7 +165,7 @@ export function ContactsPanel({ leadId, onError, onContactsChange }: ContactsPan
         <div>
           <h3 className="text-sm font-medium text-slate-300">Contacts</h3>
           <p className="text-xs text-slate-500 mt-0.5">
-            At least one email is required for approval queue send.
+            At least one email is required to send outreach.
           </p>
         </div>
         <button
@@ -179,7 +179,7 @@ export function ContactsPanel({ leadId, onError, onContactsChange }: ContactsPan
 
       {!hasEmailContact && contacts.length > 0 && (
         <p className="text-sm text-amber-300/90 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 mb-4">
-          No contact has an email yet — add one before sending email from the approval queue.
+          No contact has an email yet — add one before sending email.
         </p>
       )}
 

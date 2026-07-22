@@ -501,6 +501,7 @@ async def discover_leads_from_csv(
     for_leads_table: bool = False,
     import_source: str | None = None,
     db: Session = Depends(get_db),
+    _: AppUser = Depends(get_current_user),
 ):
     raw = await file.read()
     if not raw:
@@ -546,12 +547,15 @@ def import_discovered_leads(
 ):
     from modules import activity as activity_module
 
+    # Sales users only see assigned leads — auto-assign imports to the importer.
+    assign_to = None if _is_admin(user) else user.id
     result = import_candidates(
         db,
         [c.model_dump() for c in payload.candidates],
         auto_onboard=payload.auto_onboard,
         replace_duplicates=payload.replace_duplicates,
         skip_enrichment=payload.skip_enrichment,
+        assigned_to_user_id=assign_to,
     )
     created_count = int(result.get("created_count") or 0)
     if created_count > 0:

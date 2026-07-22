@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { useAuth } from "../auth/AuthContext";
+import { ThemeToggle } from "../components/ThemeToggle";
 
 const ADMIN_USERNAME = "admin";
 
@@ -38,7 +39,10 @@ export function LoginPage() {
     mode === "admin" ? Boolean(password) : Boolean(username.trim() && password);
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-4 bg-slate-950">
+    <div className="min-h-screen flex items-center justify-center px-4 bg-slate-950 relative">
+      <div className="absolute top-4 right-4">
+        <ThemeToggle compact />
+      </div>
       <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/80 p-8 shadow-xl shadow-black/30">
         <p className="text-xs font-medium uppercase tracking-wider text-slate-500">Sales Agent</p>
         <h1 className="mt-2 text-2xl font-semibold tracking-tight text-slate-100">

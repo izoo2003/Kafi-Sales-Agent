@@ -2994,6 +2994,7 @@ def import_candidates(
     auto_onboard: bool = False,
     replace_duplicates: bool = False,
     skip_enrichment: bool = False,
+    assigned_to_user_id: int | None = None,
 ) -> dict[str, Any]:
     from modules import leads as leads_module
     from modules.audit import log_action
@@ -3098,6 +3099,17 @@ def import_candidates(
                     )
 
                 if should_replace and existing:
+                    if assigned_to_user_id is not None and existing.assigned_to_user_id not in (
+                        None,
+                        assigned_to_user_id,
+                    ):
+                        skipped.append(
+                            {
+                                "company_name": name,
+                                "reason": "Already in leads (assigned to another user)",
+                            }
+                        )
+                        continue
                     leads_module.delete_lead_table_row(
                         db, existing.id, commit=persist_each_row
                     )
@@ -3136,6 +3148,11 @@ def import_candidates(
                 },
                 commit=persist_each_row,
             )
+            if assigned_to_user_id is not None:
+                leads_module.apply_buyer_assignee(db, buyer, assigned_to_user_id)
+                if persist_each_row:
+                    db.commit()
+                    db.refresh(buyer)
             existing_names.add(name_key)
             if domain:
                 existing_domains.add(domain)

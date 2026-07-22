@@ -113,8 +113,8 @@ export function BulkWhatsAppModal({
               Send bulk WhatsApp
             </h3>
             <p className="text-sm text-slate-500 mt-1">
-              {buyerIds.length} lead{buyerIds.length === 1 ? "" : "s"} selected — a draft is
-              created per lead using an approved template, then queued for approval.
+              {buyerIds.length} lead{buyerIds.length === 1 ? "" : "s"} selected — each gets an
+              approved WhatsApp template message sent immediately.
             </p>
           </div>
           <button

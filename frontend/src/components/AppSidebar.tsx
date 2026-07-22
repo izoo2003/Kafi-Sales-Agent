@@ -1,12 +1,11 @@
 import { useEffect, useState } from "react";
+import { ThemeToggle } from "./ThemeToggle";
 
 export type Tab =
   | "activity"
   | "email-templates"
-  // WhatsApp Cloud API — temporarily disabled
-  // | "whatsapp-templates"
-  // | "whatsapp-inbox"
-  // | "approvals"
+  | "whatsapp-templates"
+  | "whatsapp-inbox"
   | "leads"
   | "table"
   | "inbox"
@@ -265,6 +264,7 @@ export function AppSidebar({
             )}
           </div>
         )}
+        <ThemeToggle />
         <button
           type="button"
           onClick={onRefresh}

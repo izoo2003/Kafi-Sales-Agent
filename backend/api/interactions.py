@@ -147,7 +147,8 @@ def create_bulk_manual_email_drafts(
             subject=payload.subject,
             body=payload.body,
             attachments=[a.model_dump() for a in payload.attachments],
-            send=payload.send,
+            # Bulk compose always sends immediately — no approval queue.
+            send=True,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -155,7 +156,7 @@ def create_bulk_manual_email_drafts(
         db,
         entity_type="interaction",
         entity_id=0,
-        action="bulk_emails_sent" if payload.send else "bulk_drafts_created",
+        action="bulk_emails_sent",
         actor=user.username,
         details={
             "mode": "manual",
@@ -163,23 +164,22 @@ def create_bulk_manual_email_drafts(
             "skipped_count": result["skipped_count"],
             "sent_count": result.get("sent_count", 0),
             "failed_count": result.get("failed_count", 0),
-            "send": payload.send,
+            "send": True,
         },
     )
-    if payload.send:
-        sent_count = int(result.get("sent_count") or 0)
-        if sent_count > 0:
-            activity_module.log_activity(
-                db,
-                user_id=user.id,
-                activity_type=activity_module.BULK_EMAILS_SENT,
-                title="Bulk emails sent",
-                summary=f"Sent {sent_count} bulk email{'s' if sent_count != 1 else ''} (manual)",
-                quantity=sent_count,
-                entity_type="interaction",
-                entity_id=None,
-                details={"mode": "manual", "sent_count": sent_count},
-            )
+    sent_count = int(result.get("sent_count") or 0)
+    if sent_count > 0:
+        activity_module.log_activity(
+            db,
+            user_id=user.id,
+            activity_type=activity_module.BULK_EMAILS_SENT,
+            title="Bulk emails sent",
+            summary=f"Sent {sent_count} bulk email{'s' if sent_count != 1 else ''} (manual)",
+            quantity=sent_count,
+            entity_type="interaction",
+            entity_id=None,
+            details={"mode": "manual", "sent_count": sent_count},
+        )
     return BulkEmailDraftResponse(**result)
 
 
@@ -196,13 +196,14 @@ def create_bulk_email_drafts(
         buyer_ids=payload.buyer_ids,
         template_id=payload.template_id,
         extra_attachments=[a.model_dump() for a in payload.attachments],
-        send=payload.send,
+        # Bulk compose always sends immediately — no approval queue.
+        send=True,
     )
     log_action(
         db,
         entity_type="interaction",
         entity_id=0,
-        action="bulk_emails_sent" if payload.send else "bulk_drafts_created",
+        action="bulk_emails_sent",
         actor=user.username,
         details={
             "template_id": payload.template_id,
@@ -210,26 +211,25 @@ def create_bulk_email_drafts(
             "skipped_count": result["skipped_count"],
             "sent_count": result.get("sent_count", 0),
             "failed_count": result.get("failed_count", 0),
-            "send": payload.send,
+            "send": True,
         },
     )
-    if payload.send:
-        sent_count = int(result.get("sent_count") or 0)
-        if sent_count > 0:
-            activity_module.log_activity(
-                db,
-                user_id=user.id,
-                activity_type=activity_module.BULK_EMAILS_SENT,
-                title="Bulk emails sent",
-                summary=(
-                    f"Sent {sent_count} bulk email{'s' if sent_count != 1 else ''} "
-                    f"(template #{payload.template_id})"
-                ),
-                quantity=sent_count,
-                entity_type="email_template",
-                entity_id=payload.template_id,
-                details={"mode": "template", "sent_count": sent_count},
-            )
+    sent_count = int(result.get("sent_count") or 0)
+    if sent_count > 0:
+        activity_module.log_activity(
+            db,
+            user_id=user.id,
+            activity_type=activity_module.BULK_EMAILS_SENT,
+            title="Bulk emails sent",
+            summary=(
+                f"Sent {sent_count} bulk email{'s' if sent_count != 1 else ''} "
+                f"(template #{payload.template_id})"
+            ),
+            quantity=sent_count,
+            entity_type="email_template",
+            entity_id=payload.template_id,
+            details={"mode": "template", "sent_count": sent_count},
+        )
     return BulkEmailDraftResponse(**result)
 
 

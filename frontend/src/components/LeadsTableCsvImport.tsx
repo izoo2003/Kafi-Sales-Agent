@@ -82,8 +82,8 @@ export function LeadsTableCsvImport({
   onImported,
   onError,
   importSource = "old_clients",
-  title = "Import old clients",
-  description = "Upload CSV or Excel (.xlsx). Columns are mapped to the Old clients table. Import only saves rows as-is — research and score later from the table.",
+  title = "Import leads",
+  description = "Upload CSV or Excel (.xlsx). Columns are mapped to the leads table. Import only saves rows as-is — research and score later from the table.",
 }: LeadsTableCsvImportProps) {
   const [parsing, setParsing] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -179,7 +179,7 @@ export function LeadsTableCsvImport({
     }
 
     const confirmed = window.confirm(
-      `Import ${toImport.length} old client${toImport.length === 1 ? "" : "s"} as-is?\n\n` +
+      `Import ${toImport.length} lead${toImport.length === 1 ? "" : "s"} as-is?\n\n` +
         `• Rows are saved with spreadsheet fields only (no website research or scoring).\n` +
         `• Duplicate company names are skipped unless the existing record is sparse.\n` +
         `• Use Research & score on the table later when you are ready.\n\n` +

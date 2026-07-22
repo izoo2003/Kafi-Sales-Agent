@@ -45,7 +45,7 @@ export function PostCallRemarksModal({ onError, onSaved }: PostCallRemarksModalP
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
       <div
         className="w-full max-w-lg rounded-xl border border-slate-700 bg-slate-900 shadow-2xl p-5 space-y-4"
         role="dialog"

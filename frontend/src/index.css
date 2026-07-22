@@ -1,5 +1,92 @@
 @import "tailwindcss";
 
+/*
+  Default = dark (current Sales Agent look).
+  Light mode remaps the slate + soft accent tokens so existing
+  slate-* / emerald-* / amber-* utility classes stay coherent without
+  rewriting every screen.
+*/
+html {
+  color-scheme: dark;
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+
+  /* Soft cool gray surfaces — brighter than dark, not stark white */
+  --color-slate-50: #0b1220;
+  --color-slate-100: #152033;
+  --color-slate-200: #243044;
+  --color-slate-300: #334155;
+  --color-slate-400: #4b596c;
+  --color-slate-500: #64748b;
+  --color-slate-600: #8b97a8;
+  --color-slate-700: #c5cdd8;
+  --color-slate-800: #d8dee7;
+  --color-slate-900: #eef1f5;
+  --color-slate-950: #e4e9f0;
+
+  /* Accent text that was pale-on-dark → deeper tones on light surfaces */
+  --color-emerald-50: #ecfdf5;
+  --color-emerald-100: #065f46;
+  --color-emerald-200: #047857;
+  --color-emerald-300: #059669;
+  --color-emerald-400: #047857;
+
+  --color-amber-50: #fffbeb;
+  --color-amber-100: #92400e;
+  --color-amber-200: #b45309;
+  --color-amber-300: #d97706;
+
+  --color-red-50: #fef2f2;
+  --color-red-100: #991b1b;
+  --color-red-200: #b91c1c;
+  --color-red-300: #dc2626;
+
+  --color-sky-50: #f0f9ff;
+  --color-sky-100: #075985;
+  --color-sky-200: #0369a1;
+  --color-sky-300: #0284c7;
+
+  --color-violet-50: #f5f3ff;
+  --color-violet-100: #5b21b6;
+  --color-violet-200: #6d28d9;
+  --color-violet-300: #7c3aed;
+}
+
+/* Filled accent buttons: keep white label when parent text remaps to dark */
+html[data-theme="light"] :is(
+  .bg-emerald-500,
+  .bg-emerald-600,
+  .bg-emerald-700,
+  .bg-sky-600,
+  .bg-sky-700,
+  .bg-violet-600,
+  .bg-violet-700,
+  .bg-amber-500,
+  .bg-amber-600,
+  .bg-red-700,
+  .bg-red-800
+) {
+  color: #fff;
+}
+
+html[data-theme="light"] :is(
+  .hover\:bg-emerald-500:hover,
+  .hover\:bg-emerald-600:hover,
+  .hover\:bg-sky-600:hover,
+  .hover\:bg-violet-600:hover,
+  .hover\:bg-amber-500:hover
+) {
+  color: #fff;
+}
+
 body {
-  @apply bg-slate-950 text-slate-100 min-h-screen;
+  @apply bg-slate-950 text-slate-100 min-h-screen antialiased;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+html[data-theme="light"] body {
+  background-image: linear-gradient(180deg, #e8edf3 0%, #eef1f5 40%, #f3f5f8 100%);
+  background-attachment: fixed;
 }

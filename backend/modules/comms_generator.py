@@ -450,13 +450,16 @@ class CommsGenerator:
         template_id: int,
         template_variables: list[str] | None = None,
         require_opt_in: bool = True,
-        send: bool = False,
+        send: bool = True,
     ) -> dict:
         import time
 
         from config import settings
         from modules import email_activity
         from modules import whatsapp_templates as templates_module
+
+        # Bulk WhatsApp always delivers immediately (approval queue removed).
+        send = True
 
         template = templates_module.get_template(db, template_id)
         if not template:
@@ -931,7 +934,7 @@ class CommsGenerator:
         subject: str,
         body: str,
         attachments: list[dict] | None = None,
-        send: bool = False,
+        send: bool = True,
     ) -> dict:
         import time
 
@@ -945,6 +948,9 @@ class CommsGenerator:
             raise ValueError("Subject is required")
         if not body_clean:
             raise ValueError("Email body is required")
+
+        # Bulk compose always delivers immediately (approval queue removed for email).
+        send = True
 
         created: list[dict] = []
         skipped: list[dict] = []
@@ -1098,12 +1104,15 @@ class CommsGenerator:
         buyer_ids: list[int],
         template_id: int,
         extra_attachments: list[dict] | None = None,
-        send: bool = False,
+        send: bool = True,
     ) -> dict:
         import time
 
         from config import settings
         from modules import email_activity
+
+        # Bulk compose always delivers immediately (approval queue removed for email).
+        send = True
 
         created: list[dict] = []
         skipped: list[dict] = []
