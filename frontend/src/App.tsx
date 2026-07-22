@@ -133,51 +133,8 @@ function DashboardApp() {
 
   const loadTableCounts = useCallback(async () => {
     try {
-      const [allResult, oldResult, interestedResult, notInterestedResult, notReceivedResult] =
-        await Promise.all([
-        client.listLeadsTable({
-          exclude_source: "old_clients",
-          sort_by: "company_name",
-          sort_dir: "asc",
-          page: 1,
-          page_size: 1,
-        }),
-        client.listLeadsTable({
-          source: "old_clients",
-          sort_by: "company_name",
-          sort_dir: "asc",
-          page: 1,
-          page_size: 1,
-        }),
-        client.listLeadsTable({
-          call_outcome: "interested",
-          sort_by: "company_name",
-          sort_dir: "asc",
-          page: 1,
-          page_size: 1,
-        }),
-        client.listLeadsTable({
-          call_outcome: "not_interested",
-          sort_by: "company_name",
-          sort_dir: "asc",
-          page: 1,
-          page_size: 1,
-        }),
-        client.listLeadsTable({
-          call_outcome: "not_received_call",
-          sort_by: "company_name",
-          sort_dir: "asc",
-          page: 1,
-          page_size: 1,
-        }),
-      ]);
-      setTableCounts({
-        all: allResult.total,
-        old_clients: oldResult.total,
-        interested_clients: interestedResult.total,
-        not_interested_clients: notInterestedResult.total,
-        not_received_call_clients: notReceivedResult.total,
-      });
+      const counts = await client.getLeadsTableSectionCounts();
+      setTableCounts(counts);
     } catch {
       /* optional badges */
     }

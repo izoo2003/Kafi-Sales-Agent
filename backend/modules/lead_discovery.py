@@ -413,6 +413,10 @@ def _existing_buyer_keys(
     source: str | None = None,
     exclude_source: str | None = None,
 ) -> tuple[set[str], set[str]]:
+    from sqlalchemy import func as sa_func
+
+    from db.models import Buyer
+
     names: set[str] = set()
     domains: set[str] = set()
     excluded = {
@@ -420,14 +424,20 @@ def _existing_buyer_keys(
         for part in (exclude_source or "").split(",")
         if part.strip()
     }
-    for buyer in buyers_module.list_buyers(db):
-        buyer_source = (buyer.source or "").lower()
-        if source and buyer_source != source.lower():
-            continue
-        if excluded and buyer_source in excluded:
-            continue
-        names.add(_normalize_name(buyer.company_name))
-        domain = _domain(buyer.website_url)
+
+    # Push the source scoping to SQL (indexed) and only pull the two columns
+    # we need — this used to load every column of every buyer in the table.
+    query = db.query(Buyer.company_name, Buyer.website_url)
+    if source:
+        query = query.filter(sa_func.lower(Buyer.source) == source.strip().lower())
+    if excluded:
+        query = query.filter(
+            ~sa_func.lower(sa_func.coalesce(Buyer.source, "")).in_(excluded)
+        )
+
+    for company_name, website_url in query.all():
+        names.add(_normalize_name(company_name))
+        domain = _domain(website_url)
         if domain:
             domains.add(domain)
     return names, domains

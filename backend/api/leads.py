@@ -22,11 +22,14 @@ from api.schemas import (
     LeadScoreRead,
     LeadTableCleanupResponse,
     LeadTableDedupeResponse,
+    LeadTableBulkDeleteRequest,
+    LeadTableBulkDeleteResponse,
     LeadTableFiltersRead,
     LeadTableIdsResponse,
     LeadTableResponse,
     LeadTableRowRead,
     LeadTableRowUpdate,
+    LeadTableSectionCountsResponse,
     ProductInterestEmailRequest,
     QuotationEligibleLeadRead,
     InterestedFollowUpAckRead,
@@ -365,6 +368,17 @@ def list_leads_table_ids(
     return LeadTableIdsResponse(**result)
 
 
+@router.get("/table/section-counts", response_model=LeadTableSectionCountsResponse)
+def get_leads_table_section_counts(
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    counts = leads_module.count_leads_table_sections(
+        db, assigned_to_user_id=_assignee_scope(user)
+    )
+    return LeadTableSectionCountsResponse(**counts)
+
+
 @router.patch("/table/{lead_id}", response_model=LeadTableRowRead)
 def update_lead_table_row(
     lead_id: int,
@@ -415,6 +429,17 @@ def delete_lead_table_row(
     del user
     if not leads_module.delete_lead_table_row(db, lead_id):
         raise HTTPException(404, "Lead not found")
+
+
+@router.post("/table/bulk-delete", response_model=LeadTableBulkDeleteResponse)
+def bulk_delete_lead_table_rows(
+    payload: LeadTableBulkDeleteRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(require_admin),
+):
+    del user
+    result = leads_module.delete_lead_table_rows(db, payload.lead_ids)
+    return LeadTableBulkDeleteResponse(**result)
 
 
 @router.post("/table/dedupe", response_model=LeadTableDedupeResponse)

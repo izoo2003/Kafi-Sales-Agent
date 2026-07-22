@@ -450,51 +450,8 @@ export function LeadsTablePage({
   const loadSectionCounts = useCallback(async () => {
     if (!onSectionCountsChange) return;
     try {
-      const [allResult, oldResult, interestedResult, notInterestedResult, notReceivedResult] =
-        await Promise.all([
-        client.listLeadsTable({
-          exclude_source: "old_clients",
-          sort_by: "company_name",
-          sort_dir: "asc",
-          page: 1,
-          page_size: 1,
-        }),
-        client.listLeadsTable({
-          source: "old_clients",
-          sort_by: "company_name",
-          sort_dir: "asc",
-          page: 1,
-          page_size: 1,
-        }),
-        client.listLeadsTable({
-          call_outcome: "interested",
-          sort_by: "company_name",
-          sort_dir: "asc",
-          page: 1,
-          page_size: 1,
-        }),
-        client.listLeadsTable({
-          call_outcome: "not_interested",
-          sort_by: "company_name",
-          sort_dir: "asc",
-          page: 1,
-          page_size: 1,
-        }),
-        client.listLeadsTable({
-          call_outcome: "not_received_call",
-          sort_by: "company_name",
-          sort_dir: "asc",
-          page: 1,
-          page_size: 1,
-        }),
-      ]);
-      onSectionCountsChange({
-        all: allResult.total,
-        old_clients: oldResult.total,
-        interested_clients: interestedResult.total,
-        not_interested_clients: notInterestedResult.total,
-        not_received_call_clients: notReceivedResult.total,
-      });
+      const counts = await client.getLeadsTableSectionCounts();
+      onSectionCountsChange(counts);
     } catch {
       /* optional */
     }
@@ -948,8 +905,10 @@ export function LeadsTablePage({
     setSaveNotice(null);
 
     try {
-      for (const rowId of rowIds) {
-        await client.deleteLeadTableRow(rowId);
+      if (rowIds.length === 1) {
+        await client.deleteLeadTableRow(rowIds[0]);
+      } else {
+        await client.bulkDeleteLeadTableRows(rowIds);
       }
       setRows((prev) => prev.filter((row) => !rowIds.includes(row.id)));
       setTotal((prev) => Math.max(0, prev - rowIds.length));
@@ -1003,12 +962,17 @@ export function LeadsTablePage({
     setSavingAll(true);
     setSaveNotice(null);
     try {
+      const results = await Promise.all(
+        dirtyIds.map(async (rowId) => {
+          const draft = draftsRef.current[rowId];
+          if (!draft) return null;
+          const updated = await client.updateLeadTableRow(rowId, buildUpdatePayload(draft));
+          return [rowId, updated] as const;
+        }),
+      );
       const updatedById = new Map<number, LeadTableRow>();
-      for (const rowId of dirtyIds) {
-        const draft = draftsRef.current[rowId];
-        if (!draft) continue;
-        const updated = await client.updateLeadTableRow(rowId, buildUpdatePayload(draft));
-        updatedById.set(rowId, updated);
+      for (const entry of results) {
+        if (entry) updatedById.set(entry[0], entry[1]);
       }
       setRows((prev) => prev.map((row) => updatedById.get(row.id) ?? row));
       setEditMode(false);

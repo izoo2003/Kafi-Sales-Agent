@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
 import { client, type DiscoveryCandidate } from "../api/client";
 
-const MAX_CSV_IMPORT = 200;
-const IMPORT_BATCH_SIZE = 25;
+// Import saves rows as-is (no per-row scraping), so batches can be large —
+// raised from the old 200/25 caps which forced spreadsheets to be split up.
+const MAX_CSV_IMPORT = 20000;
+const IMPORT_BATCH_SIZE = 500;
 const IMPORT_FILE_ACCEPT = ".csv,.xlsx,.xls,.xlsm,.tsv";
 
 interface LeadsTableCsvImportProps {

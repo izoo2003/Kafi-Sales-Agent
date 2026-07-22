@@ -104,38 +104,74 @@ def _content_without_notes(content: str | None) -> str:
     return base
 
 
-def _latest_call_outcomes_by_buyer(db: Session) -> dict[int, str | None]:
-    phone_rows = (
-        db.query(Interaction, Contact.buyer_id)
+def _latest_call_outcomes_by_buyer(
+    db: Session, *, buyer_ids: set[int] | None = None
+) -> dict[int, str | None]:
+    """Latest phone-call outcome per buyer.
+
+    Uses a window function so only one (the most recent) interaction row per
+    buyer is pulled from the DB — avoids loading the entire call history
+    table on every leads-table request, which gets slower as calls pile up.
+    """
+    from sqlalchemy import func as sa_func
+
+    if buyer_ids is not None and not buyer_ids:
+        return {}
+
+    row_number = (
+        sa_func.row_number()
+        .over(partition_by=Contact.buyer_id, order_by=Interaction.created_at.desc())
+        .label("rn")
+    )
+    ranked = (
+        db.query(
+            Contact.buyer_id.label("buyer_id"),
+            Interaction.content.label("content"),
+            row_number,
+        )
         .join(Contact, Interaction.contact_id == Contact.id)
         .filter(Interaction.channel == Channel.phone)
-        .order_by(Interaction.created_at.desc())
-        .all()
     )
+    if buyer_ids is not None:
+        ranked = ranked.filter(Contact.buyer_id.in_(buyer_ids))
+    ranked = ranked.subquery()
+
+    latest_rows = (
+        db.query(ranked.c.buyer_id, ranked.c.content).filter(ranked.c.rn == 1).all()
+    )
+
     latest_by_buyer: dict[int, str | None] = {}
-    for interaction, buyer_id in phone_rows:
-        bid = int(buyer_id)
-        if bid in latest_by_buyer:
-            continue
-        latest_by_buyer[bid] = parse_call_fields(interaction.content).get("call_outcome")
+    for buyer_id, content in latest_rows:
+        latest_by_buyer[int(buyer_id)] = parse_call_fields(content).get("call_outcome")
     return latest_by_buyer
 
 
-def buyer_ids_with_latest_call_outcome(db: Session, outcome: str) -> set[int]:
+def latest_call_outcomes_by_buyer(
+    db: Session, *, buyer_ids: set[int] | None = None
+) -> dict[int, str | None]:
+    """Public accessor — latest phone-call outcome per buyer (see helper above)."""
+    return _latest_call_outcomes_by_buyer(db, buyer_ids=buyer_ids)
+
+
+def buyer_ids_with_latest_call_outcome(
+    db: Session, outcome: str, *, buyer_ids: set[int] | None = None
+) -> set[int]:
     """Buyers whose most recent phone call has the given outcome label."""
     wanted = outcome.strip().lower()
     return {
         bid
-        for bid, value in _latest_call_outcomes_by_buyer(db).items()
+        for bid, value in _latest_call_outcomes_by_buyer(db, buyer_ids=buyer_ids).items()
         if value and str(value).lower() == wanted
     }
 
 
-def buyer_ids_with_placed_call_outcome(db: Session) -> set[int]:
+def buyer_ids_with_placed_call_outcome(
+    db: Session, *, buyer_ids: set[int] | None = None
+) -> set[int]:
     """Buyers whose latest call placed them in a follow-up outcome list."""
     return {
         bid
-        for bid, value in _latest_call_outcomes_by_buyer(db).items()
+        for bid, value in _latest_call_outcomes_by_buyer(db, buyer_ids=buyer_ids).items()
         if value and str(value).lower() in _VALID_CALL_OUTCOMES
     }
 

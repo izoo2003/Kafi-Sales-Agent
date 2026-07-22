@@ -779,6 +779,19 @@ export interface LeadTableCleanupResponse {
   removed: Array<{ id: number; company_name: string }>;
 }
 
+export interface LeadTableSectionCountsResponse {
+  all: number;
+  old_clients: number;
+  interested_clients: number;
+  not_interested_clients: number;
+  not_received_call_clients: number;
+}
+
+export interface LeadTableBulkDeleteResponse {
+  deleted_count: number;
+  deleted_ids: number[];
+}
+
 export interface LeadTableRow {
   id: number;
   company_name: string;
@@ -1077,6 +1090,13 @@ export const client = {
     }),
   deleteLeadTableRow: (leadId: number) =>
     request<void>(`/leads/table/${leadId}`, { method: "DELETE" }),
+  bulkDeleteLeadTableRows: (leadIds: number[]) =>
+    request<LeadTableBulkDeleteResponse>("/leads/table/bulk-delete", {
+      method: "POST",
+      body: JSON.stringify({ lead_ids: leadIds }),
+    }),
+  getLeadsTableSectionCounts: () =>
+    request<LeadTableSectionCountsResponse>("/leads/table/section-counts"),
   dedupeLeadsTable: (params: LeadTableSectionScope = {}) => {
     const search = new URLSearchParams();
     if (params.source) search.set("source", params.source);

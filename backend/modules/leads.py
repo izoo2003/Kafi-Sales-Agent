@@ -328,17 +328,28 @@ def _filtered_lead_table_rows(
                 ~sa_func.lower(sa_func.coalesce(Buyer.source, "")).in_(excluded)
             )
 
+    # Scope the (expensive) call-outcome lookup to buyers already narrowed
+    # down by source/assignee filters, instead of scanning every call ever
+    # logged in the system.
+    scoped_buyer_ids = {
+        row[0] for row in buyer_query.with_entities(Buyer.id).all()
+    }
+
     if call_outcome:
         from modules.calls import buyer_ids_with_latest_call_outcome
 
-        matched_buyer_ids = buyer_ids_with_latest_call_outcome(db, call_outcome)
+        matched_buyer_ids = buyer_ids_with_latest_call_outcome(
+            db, call_outcome, buyer_ids=scoped_buyer_ids
+        )
         if not matched_buyer_ids:
             return [], 0
         buyer_query = buyer_query.filter(Buyer.id.in_(matched_buyer_ids))
     else:
         from modules.calls import buyer_ids_with_placed_call_outcome
 
-        placed_buyer_ids = buyer_ids_with_placed_call_outcome(db)
+        placed_buyer_ids = buyer_ids_with_placed_call_outcome(
+            db, buyer_ids=scoped_buyer_ids
+        )
         if placed_buyer_ids:
             buyer_query = buyer_query.filter(~Buyer.id.in_(placed_buyer_ids))
 
@@ -347,15 +358,24 @@ def _filtered_lead_table_rows(
 
     score_by_buyer: dict[int, LeadScore] = {}
     if buyer_ids:
-        all_scores = (
-            db.query(LeadScore)
+        ranked_score_ids = (
+            db.query(
+                LeadScore.id,
+                sa_func.row_number()
+                .over(partition_by=LeadScore.buyer_id, order_by=LeadScore.scored_at.desc())
+                .label("rn"),
+            )
             .filter(LeadScore.buyer_id.in_(buyer_ids))
-            .order_by(LeadScore.buyer_id.asc(), LeadScore.scored_at.desc())
+            .subquery()
+        )
+        latest_score_rows = (
+            db.query(LeadScore)
+            .join(ranked_score_ids, LeadScore.id == ranked_score_ids.c.id)
+            .filter(ranked_score_ids.c.rn == 1)
             .all()
         )
-        for record in all_scores:
-            if record.buyer_id not in score_by_buyer:
-                score_by_buyer[record.buyer_id] = record
+        for record in latest_score_rows:
+            score_by_buyer[record.buyer_id] = record
 
     contact_by_buyer: dict[int, Contact] = {}
     if buyer_ids:
@@ -629,6 +649,46 @@ def list_leads_table(
     }
 
 
+def count_leads_table_sections(
+    db: Session, *, assigned_to_user_id: int | None = None
+) -> dict[str, int]:
+    """Row counts for every leads-table section in a handful of cheap queries.
+
+    Replaces the pattern of calling list_leads_table() once per section just
+    to read `.total` off a page_size=1 response — that used to run the full
+    (expensive) row-building pipeline five times on every table view.
+    """
+    from modules.calls import latest_call_outcomes_by_buyer
+
+    buyer_query = db.query(Buyer.id, Buyer.source)
+    if assigned_to_user_id is not None:
+        buyer_query = buyer_query.filter(Buyer.assigned_to_user_id == assigned_to_user_id)
+
+    old_client_ids: set[int] = set()
+    other_ids: set[int] = set()
+    for buyer_id, source in buyer_query.all():
+        if (source or "").strip().lower() == "old_clients":
+            old_client_ids.add(buyer_id)
+        else:
+            other_ids.add(buyer_id)
+
+    all_ids = old_client_ids | other_ids
+    outcomes = latest_call_outcomes_by_buyer(db, buyer_ids=all_ids)
+
+    interested_ids = {bid for bid, v in outcomes.items() if v == "interested"}
+    not_interested_ids = {bid for bid, v in outcomes.items() if v == "not_interested"}
+    not_received_ids = {bid for bid, v in outcomes.items() if v == "not_received_call"}
+    placed_ids = interested_ids | not_interested_ids | not_received_ids
+
+    return {
+        "all": len(other_ids - placed_ids),
+        "old_clients": len(old_client_ids - placed_ids),
+        "interested_clients": len(interested_ids),
+        "not_interested_clients": len(not_interested_ids),
+        "not_received_call_clients": len(not_received_ids),
+    }
+
+
 def get_lead_table_row(db: Session, buyer_id: int) -> dict[str, object] | None:
     buyer = buyers_module.get_buyer(db, buyer_id)
     if not buyer:
@@ -759,26 +819,26 @@ def update_lead_table_row(db: Session, buyer_id: int, data: dict) -> dict[str, o
     return get_lead_table_row(db, buyer_id)
 
 
-def _filter_buyers_by_section(
-    buyers: list[Buyer],
+def _section_buyers_query(
+    db: Session,
     *,
     source: str | None = None,
     exclude_source: str | None = None,
-) -> list[Buyer]:
+):
+    """Buyer query scoped by source at the SQL level (avoids pulling the whole table)."""
+    query = db.query(Buyer)
+    if source:
+        query = query.filter(sa_func.lower(Buyer.source) == source.strip().lower())
     excluded = {
         part.strip().lower()
         for part in (exclude_source or "").split(",")
         if part.strip()
     }
-    filtered: list[Buyer] = []
-    for buyer in buyers:
-        buyer_source = (buyer.source or "").lower()
-        if source and buyer_source != source.lower():
-            continue
-        if excluded and buyer_source in excluded:
-            continue
-        filtered.append(buyer)
-    return filtered
+    if excluded:
+        query = query.filter(
+            ~sa_func.lower(sa_func.coalesce(Buyer.source, "")).in_(excluded)
+        )
+    return query
 
 
 def dedupe_leads_table(
@@ -793,12 +853,7 @@ def dedupe_leads_table(
     from modules.audit import log_action
     from modules.lead_discovery import _domain, _normalize_name
 
-    all_buyers = buyers_module.list_buyers(db)
-    buyers = _filter_buyers_by_section(
-        all_buyers,
-        source=source,
-        exclude_source=exclude_source,
-    )
+    buyers = _section_buyers_query(db, source=source, exclude_source=exclude_source).all()
     if len(buyers) < 2:
         return {"removed_count": 0, "kept_count": len(buyers), "groups": []}
 
@@ -851,7 +906,7 @@ def dedupe_leads_table(
         )
         removed = [buyer for buyer in cluster if buyer.id != keeper.id]
         for buyer in removed:
-            if delete_lead_table_row(db, buyer.id):
+            if buyers_module.delete_buyer(db, buyer.id, commit=False):
                 removed_count += 1
 
         groups.append(
@@ -862,6 +917,8 @@ def dedupe_leads_table(
                 "removed_names": [buyer.company_name for buyer in removed],
             }
         )
+
+    db.commit()
 
     log_action(
         db,
@@ -901,22 +958,26 @@ def cleanup_sparse_csv_leads(
         for part in (exclude_source or "").split(",")
         if part.strip()
     }
-    for buyer in buyers_module.list_buyers(db):
-        buyer_source = (buyer.source or "").lower()
-        if source:
-            if buyer_source != source.lower():
-                continue
-        elif excluded:
-            if buyer_source in excluded:
-                continue
-        elif buyer_source not in _SPARSE_IMPORT_SOURCES:
-            continue
+    if source:
+        candidates = _section_buyers_query(db, source=source).all()
+    elif excluded:
+        candidates = _section_buyers_query(db, exclude_source=exclude_source).all()
+    else:
+        candidates = [
+            buyer
+            for buyer in buyers_module.list_buyers(db)
+            if (buyer.source or "").lower() in _SPARSE_IMPORT_SOURCES
+        ]
+
+    for buyer in candidates:
         if not buyers_module.is_sparse_buyer(db, buyer):
             continue
         company_name = buyer.company_name
         buyer_id = buyer.id
-        if delete_lead_table_row(db, buyer_id):
+        if buyers_module.delete_buyer(db, buyer_id, commit=False):
             removed.append({"id": buyer_id, "company_name": company_name})
+
+    db.commit()
 
     log_action(
         db,
@@ -956,3 +1017,46 @@ def delete_lead_table_row(db: Session, buyer_id: int, *, commit: bool = True) ->
             details={"company_name": company_name},
         )
     return True
+
+
+def delete_lead_table_rows(db: Session, buyer_ids: list[int]) -> dict[str, object]:
+    """Delete many leads in a single DB transaction (one commit, one audit entry).
+
+    The per-row delete endpoint round-trips to the DB ~10x per row; looping
+    it from the client for bulk selections was the main cause of slow bulk
+    deletes. This does all the work server-side in one request.
+    """
+    from modules.audit import log_action
+
+    deleted_ids: list[int] = []
+    deleted_names: list[str] = []
+    seen: set[int] = set()
+
+    for buyer_id in buyer_ids:
+        if buyer_id in seen:
+            continue
+        seen.add(buyer_id)
+        buyer = buyers_module.get_buyer(db, buyer_id)
+        if not buyer:
+            continue
+        company_name = buyer.company_name
+        if buyers_module.delete_buyer(db, buyer_id, commit=False):
+            deleted_ids.append(buyer_id)
+            deleted_names.append(company_name)
+
+    db.commit()
+
+    if deleted_ids:
+        log_action(
+            db,
+            entity_type="buyer",
+            entity_id=0,
+            action="bulk_deleted",
+            details={
+                "count": len(deleted_ids),
+                "buyer_ids": deleted_ids,
+                "company_names": deleted_names[:50],
+            },
+        )
+
+    return {"deleted_count": len(deleted_ids), "deleted_ids": deleted_ids}

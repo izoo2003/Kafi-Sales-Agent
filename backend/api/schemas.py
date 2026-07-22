@@ -485,6 +485,14 @@ class LeadTableIdsResponse(BaseModel):
     ids: list[int]
 
 
+class LeadTableSectionCountsResponse(BaseModel):
+    all: int
+    old_clients: int
+    interested_clients: int
+    not_interested_clients: int
+    not_received_call_clients: int
+
+
 class DraftListResponse(BaseModel):
     total: int
     page: int = 1
@@ -684,6 +692,15 @@ class LeadTableDedupeResponse(BaseModel):
 class LeadTableCleanupResponse(BaseModel):
     removed_count: int
     removed: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class LeadTableBulkDeleteRequest(BaseModel):
+    lead_ids: list[int]
+
+
+class LeadTableBulkDeleteResponse(BaseModel):
+    deleted_count: int
+    deleted_ids: list[int]
 
 
 class DiscoverImportResponse(BaseModel):

@@ -117,14 +117,14 @@ class Buyer(Base):
     __tablename__ = "buyers"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    company_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     website_url: Mapped[Optional[str]] = mapped_column(String(512))
-    country: Mapped[Optional[str]] = mapped_column(String(100))
+    country: Mapped[Optional[str]] = mapped_column(String(100), index=True)
     industry: Mapped[Optional[str]] = mapped_column(String(255))
     linkedin_company_url: Mapped[Optional[str]] = mapped_column(String(512))
     facebook_company_url: Mapped[Optional[str]] = mapped_column(String(512))
     instagram_company_url: Mapped[Optional[str]] = mapped_column(String(512))
-    source: Mapped[Optional[str]] = mapped_column(String(100))
+    source: Mapped[Optional[str]] = mapped_column(String(100), index=True)
     legacy_serial_no: Mapped[Optional[int]] = mapped_column(Integer)
     company_grading: Mapped[Optional[str]] = mapped_column(String(50))
     product_interest: Mapped[Optional[str]] = mapped_column(String(512))
@@ -138,7 +138,7 @@ class Buyer(Base):
         index=True,
     )
     market_role: Mapped[MarketRole] = mapped_column(
-        Enum(MarketRole), default=MarketRole.unknown, nullable=False
+        Enum(MarketRole), default=MarketRole.unknown, nullable=False, index=True
     )
     market_role_reasoning: Mapped[Optional[str]] = mapped_column(Text)
     market_role_confidence: Mapped[Optional[float]] = mapped_column(Numeric(4, 2))
@@ -148,7 +148,9 @@ class Buyer(Base):
     interested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     interested_follow_up_ack_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     follow_up_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -196,7 +198,7 @@ class Contact(Base):
     __tablename__ = "contacts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    buyer_id: Mapped[int] = mapped_column(ForeignKey("buyers.id"), nullable=False)
+    buyer_id: Mapped[int] = mapped_column(ForeignKey("buyers.id"), nullable=False, index=True)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     designation: Mapped[Optional[str]] = mapped_column(String(255))
     email: Mapped[Optional[str]] = mapped_column(String(255))
@@ -249,7 +251,7 @@ class ExportHistory(Base):
     __tablename__ = "export_history"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    buyer_id: Mapped[int] = mapped_column(ForeignKey("buyers.id"), nullable=False)
+    buyer_id: Mapped[int] = mapped_column(ForeignKey("buyers.id"), nullable=False, index=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
     order_date: Mapped[date] = mapped_column(Date, nullable=False)
     quantity: Mapped[Optional[float]] = mapped_column(Numeric(12, 2))
@@ -266,8 +268,8 @@ class Interaction(Base):
     __tablename__ = "interactions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id"), nullable=False)
-    channel: Mapped[Channel] = mapped_column(Enum(Channel), nullable=False)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id"), nullable=False, index=True)
+    channel: Mapped[Channel] = mapped_column(Enum(Channel), nullable=False, index=True)
     direction: Mapped[Direction] = mapped_column(Enum(Direction), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     subject: Mapped[Optional[str]] = mapped_column(String(500))
@@ -279,7 +281,9 @@ class Interaction(Base):
     )
     approved_by: Mapped[Optional[str]] = mapped_column(String(255))
     attachments: Mapped[list] = mapped_column(JSONB, default=list)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
 
     # WhatsApp Cloud API delivery tracking.
     provider_message_id: Mapped[Optional[str]] = mapped_column(String(128), index=True)
@@ -293,7 +297,7 @@ class LeadScore(Base):
     __tablename__ = "lead_scores"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    buyer_id: Mapped[int] = mapped_column(ForeignKey("buyers.id"), nullable=False)
+    buyer_id: Mapped[int] = mapped_column(ForeignKey("buyers.id"), nullable=False, index=True)
     score: Mapped[LeadScoreLabel] = mapped_column(Enum(LeadScoreLabel), nullable=False)
     reasoning: Mapped[str] = mapped_column(Text, nullable=False)
     score_factors: Mapped[Optional[dict]] = mapped_column(JSONB)

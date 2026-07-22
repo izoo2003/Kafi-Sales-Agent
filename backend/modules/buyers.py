@@ -120,6 +120,8 @@ def find_buyer_by_name_or_domain(
     source: str | None = None,
     exclude_source: str | None = None,
 ) -> Buyer | None:
+    from sqlalchemy import func as sa_func
+
     name_key = normalize_buyer_key(company_name)
     domain = buyer_website_domain(website_url)
     match_by_name: Buyer | None = None
@@ -130,12 +132,19 @@ def find_buyer_by_name_or_domain(
         if part.strip()
     }
 
-    for buyer in list_buyers(db):
-        buyer_source = (buyer.source or "").lower()
-        if source and buyer_source != source.lower():
-            continue
-        if excluded and buyer_source in excluded:
-            continue
+    # Scope to the relevant source at the SQL level (indexed) instead of
+    # pulling every buyer in the whole table for each duplicate encountered
+    # during an import — that pattern made large imports with many
+    # duplicates extremely slow.
+    query = db.query(Buyer)
+    if source:
+        query = query.filter(sa_func.lower(Buyer.source) == source.strip().lower())
+    if excluded:
+        query = query.filter(
+            ~sa_func.lower(sa_func.coalesce(Buyer.source, "")).in_(excluded)
+        )
+
+    for buyer in query.all():
         if normalize_buyer_key(buyer.company_name) == name_key:
             match_by_name = buyer
         if domain and buyer_website_domain(buyer.website_url) == domain:
