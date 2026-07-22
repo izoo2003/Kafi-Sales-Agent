@@ -1,7 +1,12 @@
-"""Outlook shared-inbox client — IMAP receive + Microsoft Graph send.
+"""Company mailbox client — IMAP receive + SMTP or Microsoft Graph send.
 
-Personal @outlook.com mailboxes often have SMTP AUTH disabled (5.7.139),
-so outbound mail uses Graph Mail.Send instead of smtp.office365.com.
+Two outbound modes, chosen automatically from what's configured in backend/.env:
+  - Standard SMTP AUTH (username + password) — used for cPanel-hosted mail
+    (e.g. mail.kafi-group.com) or any provider with SMTP enabled.
+  - Microsoft Graph Mail.Send (OAuth) — used only when MAILBOX_CLIENT_ID +
+    MAILBOX_REFRESH_TOKEN are set, since personal @outlook.com mailboxes often
+    have SMTP AUTH disabled (5.7.139).
+IMAP receive always uses username + password (or OAuth XOAUTH2 when configured).
 """
 
 from __future__ import annotations
@@ -26,6 +31,15 @@ _FOLDER_COUNT_CACHE: dict[str, Any] = {"at": 0.0, "data": None}
 _FOLDER_COUNT_TTL_SEC = 45.0
 _UNREAD_CACHE: dict[str, Any] = {"at": 0.0, "count": 0}
 _UNREAD_TTL_SEC = 20.0
+# Short TTL for list endpoints — App + InboxPage polls used to hammer IMAP.
+_LIST_CACHE: dict[str, Any] = {}
+_LIST_CACHE_TTL_SEC = 20.0
+# OAuth access tokens — refreshing on every IMAP connect was a large fixed cost.
+_TOKEN_CACHE: dict[str, dict[str, Any]] = {}
+# Recent conversation summaries reused by get_thread so opening a mail does not
+# re-download the whole Inbox+Sent list.
+_CONV_SUMMARY_CACHE: dict[str, Any] = {"at": 0.0, "limit": 0, "data": None}
+_CONV_SUMMARY_TTL_SEC = 30.0
 
 # Separate audiences — MSAL refreshes one resource at a time.
 IMAP_SCOPES = [
@@ -87,6 +101,32 @@ def _password_auth_help() -> str:
     return "Outlook mailbox login failed. Check MAILBOX_EMAIL and credentials in backend/.env."
 
 
+def _invalidate_mail_caches() -> None:
+    _UNREAD_CACHE["at"] = 0.0
+    _FOLDER_COUNT_CACHE["data"] = None
+    _LIST_CACHE.clear()
+    _CONV_SUMMARY_CACHE["data"] = None
+    _CONV_SUMMARY_CACHE["at"] = 0.0
+
+
+def _list_cache_get(key: str) -> list[dict[str, Any]] | None:
+    import time
+
+    entry = _LIST_CACHE.get(key)
+    if not entry:
+        return None
+    if time.monotonic() - float(entry.get("at") or 0) > _LIST_CACHE_TTL_SEC:
+        return None
+    data = entry.get("data")
+    return list(data) if isinstance(data, list) else None
+
+
+def _list_cache_set(key: str, data: list[dict[str, Any]]) -> None:
+    import time
+
+    _LIST_CACHE[key] = {"at": time.monotonic(), "data": list(data)}
+
+
 class OutlookClient:
     @property
     def is_configured(self) -> bool:
@@ -125,7 +165,15 @@ class OutlookClient:
         if not self._use_oauth():
             raise RuntimeError("Mailbox authentication is not configured")
 
+        import time
+
         scopes = scopes or IMAP_SCOPES
+        cache_key = " ".join(scopes)
+        now = time.time()
+        cached = _TOKEN_CACHE.get(cache_key)
+        if cached and float(cached.get("expires_at") or 0) > now + 60:
+            return str(cached["token"])
+
         app = self._msal_app()
         result = app.acquire_token_by_refresh_token(
             settings.mailbox_refresh_token,
@@ -134,16 +182,46 @@ class OutlookClient:
         if not result or "access_token" not in result:
             detail = (result or {}).get("error_description") or (result or {}).get("error")
             raise RuntimeError(detail or "Mailbox token refresh failed")
-        return result["access_token"]
+
+        token = str(result["access_token"])
+        expires_in = int(result.get("expires_in") or 3600)
+        _TOKEN_CACHE[cache_key] = {
+            "token": token,
+            "expires_at": now + max(120, expires_in),
+        }
+        return token
+
+    def _ssl_context(self, host: str):
+        """TLS context; when connecting by IP, SNI/verify use MAILBOX_SSL_HOSTNAME."""
+        import ssl
+
+        ctx = ssl.create_default_context()
+        verify_host = (settings.mailbox_ssl_hostname or "").strip() or None
+        # Only override when host is not already the cert hostname.
+        if verify_host and verify_host != host:
+            return ctx, verify_host
+        return ctx, None
 
     def _connect_imap(self):
         import imaplib
+        import socket
 
         from imap_tools import MailBox
 
         host = settings.mailbox_imap_host
         port = settings.mailbox_imap_port
-        client = imaplib.IMAP4_SSL(host, port)
+        ssl_context, server_hostname = self._ssl_context(host)
+
+        if server_hostname:
+
+            class _IMAP4_SSL(imaplib.IMAP4_SSL):
+                def _create_socket(self, timeout):  # noqa: ANN001
+                    sock = socket.create_connection((self.host, self.port), timeout)
+                    return ssl_context.wrap_socket(sock, server_hostname=server_hostname)
+
+            client = _IMAP4_SSL(host, port)
+        else:
+            client = imaplib.IMAP4_SSL(host, port, ssl_context=ssl_context)
 
         if self._use_oauth():
             token = self._acquire_access_token(IMAP_SCOPES)
@@ -370,8 +448,7 @@ class OutlookClient:
                     }
                 mailbox.folder.set(source)
                 mailbox.move(str(uid), dest)
-                _FOLDER_COUNT_CACHE["data"] = None
-                _UNREAD_CACHE["at"] = 0.0
+                _invalidate_mail_caches()
                 return {
                     "status": "ok",
                     "message": f"Moved to {to_key}",
@@ -404,7 +481,12 @@ class OutlookClient:
 
                 uids = [
                     str(m.uid)
-                    for m in mailbox.fetch(AND(all=True), mark_seen=False, bulk=True)
+                    for m in mailbox.fetch(
+                        AND(all=True),
+                        mark_seen=False,
+                        bulk=True,
+                        headers_only=True,
+                    )
                 ]
                 if not uids:
                     return {
@@ -417,8 +499,7 @@ class OutlookClient:
                     mailbox.expunge()
                 except Exception:  # noqa: BLE001
                     pass
-                _FOLDER_COUNT_CACHE["data"] = None
-                _UNREAD_CACHE["at"] = 0.0
+                _invalidate_mail_caches()
                 return {
                     "status": "ok",
                     "message": f"Deleted {len(uids)} message{'s' if len(uids) != 1 else ''}",
@@ -453,6 +534,7 @@ class OutlookClient:
         return "inbound"
 
     def _summarize(self, msg, *, folder: str = "INBOX") -> dict[str, Any]:
+        # List fetches use headers_only — body/preview may be empty until detail open.
         preview = (msg.text or "").strip()
         if not preview and msg.html:
             preview = _html_to_preview(msg.html)
@@ -471,7 +553,7 @@ class OutlookClient:
             "date": msg.date,
             "preview": preview[:240],
             "unread": "\\Seen" not in msg.flags,
-            "has_attachments": bool(msg.attachments),
+            "has_attachments": bool(getattr(msg, "attachments", None)),
             "message_id": self._header(msg, "Message-ID", "Message-Id"),
             "in_reply_to": self._header(msg, "In-Reply-To"),
             "references": self._header(msg, "References"),
@@ -500,6 +582,7 @@ class OutlookClient:
         limit: int,
         unread_only: bool = False,
         since_date=None,
+        headers_only: bool = True,
     ) -> list[dict[str, Any]]:
         from imap_tools import AND
 
@@ -522,40 +605,50 @@ class OutlookClient:
         else:
             criteria = AND(all=True)
 
-        try:
-            messages = list(
+        fetch_limit = max(1, limit)
+
+        def _run(fetch_criteria):
+            return list(
                 mailbox.fetch(
-                    criteria,
-                    limit=max(limit, 50),
+                    fetch_criteria,
+                    limit=fetch_limit,
                     reverse=True,
                     mark_seen=False,
                     bulk=True,
+                    headers_only=headers_only,
                 )
             )
+
+        try:
+            messages = _run(criteria)
         except Exception:  # noqa: BLE001
             # Some servers reject ALL; fall back to a wide date window.
             try:
-                messages = list(
-                    mailbox.fetch(
-                        AND(date_gte=datetime(2000, 1, 1).date())
-                        if not unread_only
-                        else AND(date_gte=datetime(2000, 1, 1).date(), seen=False),
-                        limit=max(limit, 50),
-                        reverse=True,
-                        mark_seen=False,
-                        bulk=True,
-                    )
+                fallback = (
+                    AND(date_gte=datetime(2000, 1, 1).date(), seen=False)
+                    if unread_only
+                    else AND(date_gte=datetime(2000, 1, 1).date())
                 )
+                messages = _run(fallback)
             except Exception:  # noqa: BLE001
                 return []
         return [self._summarize(m, folder=folder) for m in messages]
 
     def list_messages(self, *, limit: int = 25, unread_only: bool = False) -> list[dict[str, Any]]:
+        cache_key = f"list_messages:{limit}:{int(unread_only)}"
+        cached = _list_cache_get(cache_key)
+        if cached is not None:
+            return cached[:limit]
+
         with _IMAP_LOCK:
             mailbox = self._mailbox("INBOX")
             try:
                 summaries = self._fetch_folder(
-                    mailbox, "INBOX", limit=limit, unread_only=unread_only
+                    mailbox,
+                    "INBOX",
+                    limit=limit,
+                    unread_only=unread_only,
+                    headers_only=True,
                 )
             finally:
                 try:
@@ -563,25 +656,55 @@ class OutlookClient:
                 except Exception:  # noqa: BLE001
                     pass
         filtered = [m for m in summaries if message_is_after_cutoff(m.get("date"))]
-        return filtered[:limit]
+        result = filtered[:limit]
+        _list_cache_set(cache_key, result)
+        return result
 
     def list_conversation_messages(
         self, *, limit: int = 50, unread_only: bool = False
     ) -> list[dict[str, Any]]:
-        """Inbox + Sent messages for conversation threading."""
+        """Inbox + Sent message headers for conversation threading (no full bodies)."""
+        import time
+
+        cache_key = f"list_conversation:{limit}:{int(unread_only)}"
+        cached = _list_cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+        # Reuse a fresh full-scan cache when a smaller limit is requested.
+        now = time.monotonic()
+        conv = _CONV_SUMMARY_CACHE
+        if (
+            not unread_only
+            and conv.get("data") is not None
+            and int(conv.get("limit") or 0) >= limit
+            and now - float(conv.get("at") or 0) < _CONV_SUMMARY_TTL_SEC
+        ):
+            data = list(conv["data"])[: max(limit * 2, limit)]
+            _list_cache_set(cache_key, data)
+            return data
+
         with _IMAP_LOCK:
             mailbox = self._mailbox("INBOX")
             try:
-                per_folder = max(limit, 50)
+                per_folder = max(limit, 1)
                 inbox = self._fetch_folder(
-                    mailbox, "INBOX", limit=per_folder, unread_only=unread_only
+                    mailbox,
+                    "INBOX",
+                    limit=per_folder,
+                    unread_only=unread_only,
+                    headers_only=True,
                 )
                 sent: list[dict[str, Any]] = []
                 # Unread-only applies to inbox; still include sent for thread context.
                 sent_folder = self._resolve_sent_folder(mailbox)
                 if sent_folder:
                     sent = self._fetch_folder(
-                        mailbox, sent_folder, limit=per_folder, unread_only=False
+                        mailbox,
+                        sent_folder,
+                        limit=per_folder,
+                        unread_only=False,
+                        headers_only=True,
                     )
             finally:
                 try:
@@ -601,6 +724,12 @@ class OutlookClient:
                     continue
                 seen_ids.add(mid)
             unique.append(msg)
+
+        _list_cache_set(cache_key, unique)
+        if not unread_only:
+            _CONV_SUMMARY_CACHE["at"] = time.monotonic()
+            _CONV_SUMMARY_CACHE["limit"] = limit
+            _CONV_SUMMARY_CACHE["data"] = list(unique)
         return unique
 
     def get_message(self, uid: str, *, folder: str = "INBOX") -> dict[str, Any] | None:
@@ -609,7 +738,14 @@ class OutlookClient:
         with _IMAP_LOCK:
             mailbox = self._mailbox(folder)
             try:
-                messages = list(mailbox.fetch(AND(uid=str(uid)), mark_seen=False, bulk=False))
+                messages = list(
+                    mailbox.fetch(
+                        AND(uid=str(uid)),
+                        mark_seen=False,
+                        bulk=False,
+                        headers_only=False,
+                    )
+                )
             finally:
                 try:
                     mailbox.logout()
@@ -620,7 +756,7 @@ class OutlookClient:
         return self._detail_from_msg(messages[0], folder=folder)
 
     def get_messages_by_keys(self, keys: list[str]) -> list[dict[str, Any]]:
-        """Fetch full message bodies for folder:uid keys in one IMAP session when possible."""
+        """Fetch full message bodies for folder:uid keys in one IMAP session (batched)."""
         from imap_tools import AND
 
         grouped: dict[str, list[str]] = {}
@@ -640,15 +776,35 @@ class OutlookClient:
                         mailbox.folder.set(folder)
                     except Exception:  # noqa: BLE001
                         continue
-                    for uid in uids:
-                        try:
-                            messages = list(
-                                mailbox.fetch(AND(uid=str(uid)), mark_seen=False, bulk=False)
+                    if not uids:
+                        continue
+                    # Batch UID FETCH instead of one round-trip per message.
+                    uid_set = ",".join(str(u) for u in uids)
+                    try:
+                        messages = list(
+                            mailbox.fetch(
+                                AND(uid=uid_set),
+                                mark_seen=False,
+                                bulk=True,
+                                headers_only=False,
                             )
-                        except Exception:  # noqa: BLE001
-                            continue
-                        if messages:
-                            out.append(self._detail_from_msg(messages[0], folder=folder))
+                        )
+                    except Exception:  # noqa: BLE001
+                        messages = []
+                        for uid in uids:
+                            try:
+                                messages.extend(
+                                    mailbox.fetch(
+                                        AND(uid=str(uid)),
+                                        mark_seen=False,
+                                        bulk=False,
+                                        headers_only=False,
+                                    )
+                                )
+                            except Exception:  # noqa: BLE001
+                                continue
+                    for msg in messages:
+                        out.append(self._detail_from_msg(msg, folder=folder))
             finally:
                 try:
                     mailbox.logout()
@@ -678,14 +834,38 @@ class OutlookClient:
         return unseen
 
     def mark_read(self, uid: str, seen: bool = True, *, folder: str = "INBOX") -> None:
+        self.mark_read_many([(folder, str(uid))], seen=seen)
+
+    def mark_read_many(
+        self, items: list[tuple[str, str]], *, seen: bool = True
+    ) -> None:
+        """Flag many messages seen/unseen in one IMAP session (grouped by folder)."""
         from imap_tools import MailMessageFlags
 
+        if not items:
+            return
+
+        grouped: dict[str, list[str]] = {}
+        for folder, uid in items:
+            grouped.setdefault(folder or "INBOX", []).append(str(uid))
+
         with _IMAP_LOCK:
-            mailbox = self._mailbox(folder)
+            mailbox = self._mailbox("INBOX")
             try:
-                mailbox.flag(str(uid), MailMessageFlags.SEEN, seen)
-                _UNREAD_CACHE["at"] = 0.0
-                _FOLDER_COUNT_CACHE["data"] = None
+                for folder, uids in grouped.items():
+                    try:
+                        mailbox.folder.set(folder)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    try:
+                        mailbox.flag(uids, MailMessageFlags.SEEN, seen)
+                    except Exception:  # noqa: BLE001
+                        for uid in uids:
+                            try:
+                                mailbox.flag(str(uid), MailMessageFlags.SEEN, seen)
+                            except Exception:  # noqa: BLE001
+                                continue
+                _invalidate_mail_caches()
             finally:
                 try:
                     mailbox.logout()
@@ -712,6 +892,99 @@ class OutlookClient:
             )
         return out
 
+    def _send_smtp(
+        self,
+        *,
+        to: str,
+        subject: str,
+        body: str,
+        cc: str | None = None,
+        attachments: list[dict] | None = None,
+    ) -> dict[str, Any]:
+        """Send via standard SMTP AUTH — works for cPanel-hosted mail (e.g. mail.kafi-group.com)
+        or any provider with SMTP enabled. Uses implicit SSL on port 465, STARTTLS otherwise."""
+        import smtplib
+        from email import encoders
+        from email.mime.base import MIMEBase
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+
+        from modules.email_attachments import load_bytes
+
+        if not settings.mailbox_password:
+            return {
+                "status": "error",
+                "message": "Mailbox password is not configured. Set MAILBOX_PASSWORD in backend/.env.",
+            }
+
+        from_addr = settings.mailbox_email
+        display_name = settings.mailbox_display_name
+
+        message = MIMEMultipart()
+        message["From"] = f"{display_name} <{from_addr}>" if display_name else from_addr
+        message["To"] = to
+        if cc:
+            message["Cc"] = cc
+        message["Subject"] = subject
+        message.attach(MIMEText(body, "plain", "utf-8"))
+
+        for meta in attachments or []:
+            try:
+                data, filename, content_type = load_bytes(meta)
+            except FileNotFoundError as exc:
+                return {"status": "error", "message": str(exc)}
+            maintype, _, subtype = (content_type or "application/octet-stream").partition("/")
+            part = MIMEBase(maintype or "application", subtype or "octet-stream")
+            part.set_payload(data)
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
+            message.attach(part)
+
+        recipients = [to] + ([cc] if cc else [])
+        host = settings.mailbox_smtp_host
+        port = settings.mailbox_smtp_port
+        ssl_context, server_hostname = self._ssl_context(host)
+
+        try:
+            import socket
+
+            server: smtplib.SMTP
+            if port == 465:
+                if server_hostname:
+
+                    class _SMTP_SSL(smtplib.SMTP_SSL):
+                        def _get_socket(self, host, port, timeout):  # noqa: ANN001
+                            sock = socket.create_connection((host, port), timeout)
+                            return ssl_context.wrap_socket(
+                                sock, server_hostname=server_hostname
+                            )
+
+                    server = _SMTP_SSL(host, port, timeout=30, context=ssl_context)
+                else:
+                    server = smtplib.SMTP_SSL(
+                        host, port, timeout=30, context=ssl_context
+                    )
+            else:
+                server = smtplib.SMTP(host, port, timeout=30)
+                server.ehlo()
+                if server_hostname:
+                    # starttls wraps with context; set _host so SNI uses cert hostname
+                    server._host = server_hostname  # noqa: SLF001
+                server.starttls(context=ssl_context)
+                server.ehlo()
+            try:
+                server.login(settings.mailbox_email, settings.mailbox_password)
+                server.sendmail(from_addr, recipients, message.as_string())
+            finally:
+                try:
+                    server.quit()
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception as exc:  # noqa: BLE001
+            return {"status": "error", "message": f"SMTP send failed: {exc}"}
+
+        return {"status": "sent", "message": "Email sent", "to": to, "subject": subject}
+
     def send_reply(
         self,
         *,
@@ -731,13 +1004,7 @@ class OutlookClient:
         if not to:
             return {"status": "error", "message": "Recipient email is missing"}
         if not self._use_oauth():
-            return {
-                "status": "error",
-                "message": (
-                    "Outlook SMTP is disabled for this mailbox. "
-                    "Set MAILBOX_CLIENT_ID and MAILBOX_REFRESH_TOKEN (Graph Mail.Send) in backend/.env."
-                ),
-            }
+            return self._send_smtp(to=to, subject=subject, body=body, cc=cc, attachments=attachments)
 
         att_list = attachments or []
         graph_attachments: list[dict[str, Any]] = []

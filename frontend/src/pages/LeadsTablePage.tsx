@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CountrySelect } from "../components/CountrySelect";
+import type {
+  LeadsTableSection,
+} from "../components/AppSidebar";
 import {
-  client,
-  type LeadTableFilters,
-  type LeadTableRow,
-  type LeadTableRowUpdate,
-} from "../api/client";
-import { useAuth } from "../auth/AuthContext";
-import type { LeadsTableSection } from "../components/AppSidebar";
+  assignedUserIdFromSection,
+  isAssignedLeadsSection,
+} from "../components/AppSidebar";
 import { formatCountryLabel } from "../data/countries";
 import { ScoreBadge } from "../components/ScoreBadge";
 import { MarketRoleBadge } from "../components/MarketRoleBadge";
@@ -23,6 +22,15 @@ import { CallLeadButton } from "../components/CallLeadButton";
 import { EmailComposeButton } from "../components/EmailComposeLink";
 import { Pagination } from "../components/Pagination";
 import { exportLeadsTableCsv } from "../utils/exportCsv";
+import { UNASSIGNED } from "../utils/leadAssignees";
+import {
+  client,
+  type LeadTableFilters,
+  type LeadTableRow,
+  type LeadTableRowUpdate,
+  type LeadTableSectionCountsResponse,
+} from "../api/client";
+import { useAuth } from "../auth/AuthContext";
 
 const TABLE_PAGE_SIZE = 20;
 const TABLE_VIEW_STORAGE_PREFIX = "kafi_leads_table_view";
@@ -32,13 +40,7 @@ interface LeadsTablePageProps {
   refreshToken?: number;
   onError: (message: string) => void;
   onSelectLead: (leadId: number) => void;
-  onSectionCountsChange?: (counts: {
-    all: number;
-    old_clients: number;
-    interested_clients: number;
-    not_interested_clients: number;
-    not_received_call_clients: number;
-  }) => void;
+  onSectionCountsChange?: (counts: LeadTableSectionCountsResponse) => void;
 }
 
 type SortField =
@@ -145,30 +147,49 @@ function scoreLabel(score: string | null): string {
 
 function sectionTableScope(section: LeadsTableSection): { source?: string; exclude_source?: string } {
   if (section === "old_clients") return { source: "old_clients" };
+  if (isAssignedLeadsSection(section)) return {};
   return { exclude_source: "old_clients" };
 }
 
 function sectionTableParams(
   section: LeadsTableSection,
-): { source?: string; exclude_source?: string; call_outcome?: string } {
+): {
+  source?: string;
+  exclude_source?: string;
+  call_outcome?: string;
+  assigned_to_user_id?: number;
+} {
   if (section === "old_clients") return { source: "old_clients" };
   if (section === "interested_clients") return { call_outcome: "interested" };
   if (section === "not_interested_clients") return { call_outcome: "not_interested" };
   if (section === "not_received_call_clients") return { call_outcome: "not_received_call" };
+  if (isAssignedLeadsSection(section)) {
+    const userId = assignedUserIdFromSection(section);
+    return userId != null ? { assigned_to_user_id: userId } : {};
+  }
   return { exclude_source: "old_clients" };
 }
 
-function sectionTitle(section: LeadsTableSection): string {
+function sectionTitle(
+  section: LeadsTableSection,
+  assigneeUsername?: string | null,
+): string {
   if (section === "old_clients") return "Old clients";
   if (section === "interested_clients") return "Follow up clients";
   if (section === "not_interested_clients") return "Not interested";
   if (section === "not_received_call_clients") return "Did not receive call";
+  if (isAssignedLeadsSection(section)) {
+    return `Leads Sent To ${assigneeUsername || "user"}`;
+  }
   return "Leads table";
 }
 
-function sectionDescription(section: LeadsTableSection): string {
+function sectionDescription(
+  section: LeadsTableSection,
+  assigneeUsername?: string | null,
+): string {
   if (section === "old_clients") {
-    return "Past clients mapped from your spreadsheet. After a call outcome is set, the record moves to Follow up, Not interested, or Did not receive call.";
+    return "Past clients mapped from your spreadsheet. After a call outcome is set, the record moves to Follow up, Not interested, or Did not receive call. Assigning a lead moves it out of this table into that user's Leads Sent To section.";
   }
   if (section === "interested_clients") {
     return "Clients moved here after a call is labeled Interested. Use the calendar on each row to set when you want a follow-up reminder — you are only notified on that date.";
@@ -179,7 +200,10 @@ function sectionDescription(section: LeadsTableSection): string {
   if (section === "not_received_call_clients") {
     return "Clients moved here when a call is labeled Did not receive call. Use the calendar on each row to set when you want a reminder to try again.";
   }
-  return "Browse, filter, edit, delete, and export leads. After a call outcome is set, records move to Follow up, Not interested, or Did not receive call.";
+  if (isAssignedLeadsSection(section)) {
+    return `All leads transferred to ${assigneeUsername || "this user"}. These no longer appear in the main Leads table or Old clients.`;
+  }
+  return "Browse, filter, edit, delete, and export leads. After a call outcome is set, records move to Follow up, Not interested, or Did not receive call. Assigning a lead moves it to that user's Leads Sent To section.";
 }
 
 function sectionEmptyMessage(section: LeadsTableSection): string | null {
@@ -191,6 +215,9 @@ function sectionEmptyMessage(section: LeadsTableSection): string | null {
   }
   if (section === "not_received_call_clients") {
     return "No clients listed yet. After a call, label the client as Did not receive call, then set a reminder date with the calendar.";
+  }
+  if (isAssignedLeadsSection(section)) {
+    return "No leads transferred to this user yet. Assign a lead from Leads table or Old clients to move it here.";
   }
   return null;
 }
@@ -321,6 +348,8 @@ export function LeadsTablePage({
   const [originalKeys, setOriginalKeys] = useState<Record<number, string>>({});
   const [savingId, setSavingId] = useState<number | null>(null);
   const [assigningId, setAssigningId] = useState<number | null>(null);
+  const [bulkAssignValue, setBulkAssignValue] = useState("");
+  const [bulkAssigning, setBulkAssigning] = useState(false);
   const [savingAll, setSavingAll] = useState(false);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -360,6 +389,7 @@ export function LeadsTablePage({
           users.map((u) => ({
             value: String(u.id),
             label: u.full_name || u.username,
+            username: u.username,
           })),
         ),
       )
@@ -400,12 +430,33 @@ export function LeadsTablePage({
     initialTableViewRef.current.callRecommended,
   );
   const [search, setSearch] = useState(initialTableViewRef.current.search);
+  const [debouncedSearch, setDebouncedSearch] = useState(
+    initialTableViewRef.current.search,
+  );
   const [sortBy, setSortBy] = useState<SortField>(initialTableViewRef.current.sortBy);
   const [sortDir, setSortDir] = useState<"asc" | "desc">(initialTableViewRef.current.sortDir);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search), 300);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  const isAssignedSection = isAssignedLeadsSection(section);
+  const assignedSectionUserId = assignedUserIdFromSection(section);
+  const assigneeUsername = isAssignedSection
+    ? assigneeOptions.find((o) => o.value === String(assignedSectionUserId))?.username ||
+      (user?.id === assignedSectionUserId ? user.username : null) ||
+      null
+    : null;
+
   const isOldClients = section === "old_clients";
   const canImportSpreadsheet = section === "all" || section === "old_clients";
+  const canBulkAssign = isAdmin && (section === "all" || section === "old_clients");
   const importSource = isOldClients ? "old_clients" : "csv";
+  const isCallOutcomeSection =
+    section === "interested_clients" ||
+    section === "not_interested_clients" ||
+    section === "not_received_call_clients";
   const canScheduleFollowUp =
     section === "interested_clients" || section === "not_received_call_clients";
   const callOutcomeEmptyMessage = sectionEmptyMessage(section);
@@ -420,7 +471,7 @@ export function LeadsTablePage({
       product_interest: isOldClients ? productInterest || undefined : undefined,
       city: isOldClients ? city || undefined : undefined,
       call_recommended: isOldClients ? callRecommended || undefined : undefined,
-      q: search.trim() || undefined,
+      q: debouncedSearch.trim() || undefined,
       sort_by: sortBy,
       sort_dir: sortDir,
       ...sectionTableParams(section),
@@ -435,7 +486,7 @@ export function LeadsTablePage({
       marketRole,
       productInterest,
       score,
-      search,
+      debouncedSearch,
       section,
       sortBy,
       sortDir,
@@ -451,7 +502,10 @@ export function LeadsTablePage({
     if (!onSectionCountsChange) return;
     try {
       const counts = await client.getLeadsTableSectionCounts();
-      onSectionCountsChange(counts);
+      onSectionCountsChange({
+        ...counts,
+        by_assignee: counts.by_assignee ?? {},
+      });
     } catch {
       /* optional */
     }
@@ -491,7 +545,7 @@ export function LeadsTablePage({
     productInterest,
     city,
     callRecommended,
-    search,
+    debouncedSearch,
     sortBy,
     sortDir,
   ]);
@@ -511,6 +565,7 @@ export function LeadsTablePage({
     setCity(stored.city);
     setCallRecommended(stored.callRecommended);
     setSearch(stored.search);
+    setDebouncedSearch(stored.search);
     setSortBy(stored.sortBy);
     setSortDir(stored.sortDir);
   }, [section, user?.id]);
@@ -580,6 +635,7 @@ export function LeadsTablePage({
     setBulkResults(null);
     setSaveNotice(null);
     setShowCsvImport(false);
+    setBulkAssignValue("");
     clearSelection();
   }, [clearSelection, section]);
 
@@ -624,17 +680,56 @@ export function LeadsTablePage({
     [drafts, originalKeys],
   );
 
+  function applyAssigneeMove(
+    rowId: number,
+    updated: LeadTableRow,
+    previousAssigneeId: number | null | undefined,
+  ) {
+    const assignedToUserId = updated.assigned_to_user_id;
+    const assigneeChanged = previousAssigneeId !== assignedToUserId;
+    const leavesPoolSection =
+      assigneeChanged &&
+      (section === "all" || section === "old_clients") &&
+      assignedToUserId != null;
+    const leavesAssignedSection =
+      assigneeChanged &&
+      isAssignedSection &&
+      (assignedToUserId == null || assignedToUserId !== assignedSectionUserId);
+
+    if (leavesPoolSection || leavesAssignedSection) {
+      setRows((prev) => prev.filter((row) => row.id !== rowId));
+      setDrafts((prev) => {
+        const next = { ...prev };
+        delete next[rowId];
+        return next;
+      });
+      setOriginalKeys((prev) => {
+        const next = { ...prev };
+        delete next[rowId];
+        return next;
+      });
+      setTotal((prev) => Math.max(0, prev - 1));
+      setFilteredCount((prev) => Math.max(0, prev - 1));
+      return true;
+    }
+
+    setRows((prev) => prev.map((row) => (row.id === rowId ? updated : row)));
+    setDrafts((prev) => ({ ...prev, [rowId]: updated }));
+    setOriginalKeys((prev) => ({ ...prev, [rowId]: rowDraftKey(updated) }));
+    return false;
+  }
+
   async function saveRow(rowId: number) {
     const draft = draftsRef.current[rowId];
     if (!draft) return;
+    const previousAssigneeId = rows.find((r) => r.id === rowId)?.assigned_to_user_id ?? null;
 
     setSavingId(rowId);
     setSaveNotice(null);
     try {
       const updated = await client.updateLeadTableRow(rowId, buildUpdatePayload(draft));
-      setRows((prev) => prev.map((row) => (row.id === rowId ? updated : row)));
-      setDrafts((prev) => ({ ...prev, [rowId]: updated }));
-      setOriginalKeys((prev) => ({ ...prev, [rowId]: rowDraftKey(updated) }));
+      applyAssigneeMove(rowId, updated, previousAssigneeId);
+      await loadSectionCounts();
       setSaveNotice("Row saved.");
       setTimeout(() => setSaveNotice(null), 3000);
     } catch (e) {
@@ -647,18 +742,82 @@ export function LeadsTablePage({
   async function saveAssignedTo(rowId: number, assignedToUserId: number | null) {
     setAssigningId(rowId);
     try {
+      const previousAssigneeId = rows.find((r) => r.id === rowId)?.assigned_to_user_id ?? null;
       const updated = await client.updateLeadTableRow(rowId, {
         assigned_to_user_id: assignedToUserId,
       });
-      setRows((prev) => prev.map((row) => (row.id === rowId ? updated : row)));
-      setDrafts((prev) => ({ ...prev, [rowId]: updated }));
-      setOriginalKeys((prev) =>
-        prev[rowId] ? { ...prev, [rowId]: rowDraftKey(updated) } : prev,
-      );
+      applyAssigneeMove(rowId, updated, previousAssigneeId);
+      await loadSectionCounts();
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to update assignee");
     } finally {
       setAssigningId(null);
+    }
+  }
+
+  async function bulkAssignSelected(rawValue: string) {
+    if (!canBulkAssign || !rawValue || selected.size === 0 || bulkAssigning) {
+      setBulkAssignValue("");
+      return;
+    }
+
+    const assignedToUserId = rawValue === UNASSIGNED ? null : Number(rawValue);
+    if (rawValue !== UNASSIGNED && !Number.isFinite(assignedToUserId)) {
+      setBulkAssignValue("");
+      return;
+    }
+
+    const label =
+      assignedToUserId == null
+        ? "Unassigned"
+        : assigneeOptions.find((o) => o.value === String(assignedToUserId))?.label ||
+          assigneeOptions.find((o) => o.value === String(assignedToUserId))?.username ||
+          "selected user";
+
+    const count = selected.size;
+    const confirmed = window.confirm(
+      assignedToUserId == null
+        ? `Unassign ${count} selected lead${count === 1 ? "" : "s"}?`
+        : `Assign ${count} selected lead${count === 1 ? "" : "s"} to ${label}?`,
+    );
+    if (!confirmed) {
+      setBulkAssignValue("");
+      return;
+    }
+
+    setBulkAssigning(true);
+    setSaveNotice(null);
+    try {
+      const result = await client.bulkAssignLeadTableRows([...selected], assignedToUserId);
+      const movedIds = new Set(result.assigned_ids);
+      if (movedIds.size > 0) {
+        setRows((prev) => prev.filter((row) => !movedIds.has(row.id)));
+        setDrafts((prev) => {
+          const next = { ...prev };
+          for (const id of movedIds) delete next[id];
+          return next;
+        });
+        setOriginalKeys((prev) => {
+          const next = { ...prev };
+          for (const id of movedIds) delete next[id];
+          return next;
+        });
+        setTotal((prev) => Math.max(0, prev - movedIds.size));
+        setFilteredCount((prev) => Math.max(0, prev - movedIds.size));
+      }
+      clearSelection();
+      await loadSectionCounts();
+      setSaveNotice(
+        assignedToUserId == null
+          ? `Unassigned ${result.assigned_count} lead${result.assigned_count === 1 ? "" : "s"}.`
+          : `Assigned ${result.assigned_count} lead${result.assigned_count === 1 ? "" : "s"} to ${result.assigned_to}.`,
+      );
+      setTimeout(() => setSaveNotice(null), 4000);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to bulk assign leads");
+    } finally {
+      setBulkAssignValue("");
+      setBulkAssigning(false);
     }
   }
 
@@ -1007,6 +1166,7 @@ export function LeadsTablePage({
     setCity("");
     setCallRecommended("");
     setSearch("");
+    setDebouncedSearch("");
     setSortBy("company_name");
     setSortDir("desc");
   }
@@ -1053,8 +1213,12 @@ export function LeadsTablePage({
     >
       <div className="flex items-start justify-between gap-4 flex-wrap shrink-0">
         <div>
-          <h2 className="text-lg font-medium text-slate-100">{sectionTitle(section)}</h2>
-          <p className="text-sm text-slate-500 mt-1">{sectionDescription(section)}</p>
+          <h2 className="text-lg font-medium text-slate-100">
+            {sectionTitle(section, assigneeUsername)}
+          </h2>
+          <p className="text-sm text-slate-500 mt-1">
+            {sectionDescription(section, assigneeUsername)}
+          </p>
           <p className="text-sm text-slate-500 mt-1">
             {filteredCount} matching · {total} in section · {TABLE_PAGE_SIZE} per page
             {selected.size > 0 ? (
@@ -1434,6 +1598,42 @@ export function LeadsTablePage({
                   className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
                 />
               </label>
+
+              {canBulkAssign && (
+                <label className="block text-xs text-slate-400">
+                  Assign to
+                  <select
+                    value={bulkAssignValue}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setBulkAssignValue(next);
+                      void bulkAssignSelected(next);
+                    }}
+                    disabled={
+                      selected.size === 0 ||
+                      bulkAssigning ||
+                      deletingSelected ||
+                      editMode ||
+                      assigneeOptions.length === 0
+                    }
+                    className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 disabled:opacity-50"
+                  >
+                    <option value="">
+                      {selected.size === 0
+                        ? "Select leads first…"
+                        : bulkAssigning
+                          ? "Assigning…"
+                          : `Assign ${selected.size} selected…`}
+                    </option>
+                    <option value={UNASSIGNED}>Unassigned</option>
+                    {assigneeOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.username || option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
             </>
           ) : (
             <>
@@ -1490,6 +1690,42 @@ export function LeadsTablePage({
                   className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
                 />
               </label>
+
+              {canBulkAssign && (
+                <label className="block text-xs text-slate-400">
+                  Assign to
+                  <select
+                    value={bulkAssignValue}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setBulkAssignValue(next);
+                      void bulkAssignSelected(next);
+                    }}
+                    disabled={
+                      selected.size === 0 ||
+                      bulkAssigning ||
+                      deletingSelected ||
+                      editMode ||
+                      assigneeOptions.length === 0
+                    }
+                    className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 disabled:opacity-50"
+                  >
+                    <option value="">
+                      {selected.size === 0
+                        ? "Select leads first…"
+                        : bulkAssigning
+                          ? "Assigning…"
+                          : `Assign ${selected.size} selected…`}
+                    </option>
+                    <option value={UNASSIGNED}>Unassigned</option>
+                    {assigneeOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.username || option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
             </>
           )}
         </div>
@@ -1847,7 +2083,11 @@ export function LeadsTablePage({
           ) : (
           <table
             className={`w-full text-sm border-collapse ${
-              canScheduleFollowUp ? "min-w-[1680px]" : "min-w-[1500px]"
+              canScheduleFollowUp
+                ? "min-w-[1900px]"
+                : isCallOutcomeSection
+                  ? "min-w-[1720px]"
+                  : "min-w-[1500px]"
             }`}
           >
             <thead>
@@ -1889,6 +2129,9 @@ export function LeadsTablePage({
                 <th className={`${TH} min-w-[200px]`}>Email</th>
                 <th className={`${TH} min-w-[160px]`}>Phone</th>
                 <th className={`${TH} min-w-[150px]`}>Assigned To</th>
+                {isCallOutcomeSection && (
+                  <th className={`${TH} min-w-[220px]`}>Call remarks</th>
+                )}
                 {canScheduleFollowUp && (
                   <th className={`${TH} min-w-[190px]`}>Follow-up reminder</th>
                 )}
@@ -2038,6 +2281,20 @@ export function LeadsTablePage({
                     <td className={TD_MUTED} onClick={(e) => e.stopPropagation()}>
                       {renderAssignedToCell(row, draft)}
                     </td>
+                    {isCallOutcomeSection && (
+                      <td className={TD_MUTED}>
+                        {row.call_remarks ? (
+                          <span
+                            className="block whitespace-pre-wrap text-slate-300 text-xs leading-relaxed max-w-[280px]"
+                            title={row.call_remarks}
+                          >
+                            {row.call_remarks}
+                          </span>
+                        ) : (
+                          <span className="text-slate-600">—</span>
+                        )}
+                      </td>
+                    )}
                     {canScheduleFollowUp && (
                       <td className={TD_MUTED} onClick={(e) => e.stopPropagation()}>
                         <FollowUpScheduleControl

@@ -3,9 +3,10 @@ import { client, type AppUser } from "../api/client";
 
 interface UsersPageProps {
   onError: (message: string) => void;
+  onUsersChanged?: () => void;
 }
 
-export function UsersPage({ onError }: UsersPageProps) {
+export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
   const [users, setUsers] = useState<AppUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [username, setUsername] = useState("");
@@ -53,6 +54,7 @@ export function UsersPage({ onError }: UsersPageProps) {
       setFullName("");
       setPassword("");
       await loadUsers();
+      onUsersChanged?.();
     } catch (err) {
       setFormError(err instanceof Error ? err.message : "Failed to create user");
     } finally {
@@ -97,6 +99,7 @@ export function UsersPage({ onError }: UsersPageProps) {
       await client.updateUser(editingId, payload);
       cancelEdit();
       await loadUsers();
+      onUsersChanged?.();
     } catch (err) {
       setEditError(err instanceof Error ? err.message : "Failed to update user");
     } finally {
@@ -114,6 +117,7 @@ export function UsersPage({ onError }: UsersPageProps) {
       await client.deleteUser(user.id);
       if (editingId === user.id) cancelEdit();
       await loadUsers();
+      onUsersChanged?.();
     } catch (err) {
       onError(err instanceof Error ? err.message : "Failed to delete user");
     } finally {

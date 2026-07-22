@@ -785,11 +785,19 @@ export interface LeadTableSectionCountsResponse {
   interested_clients: number;
   not_interested_clients: number;
   not_received_call_clients: number;
+  by_assignee?: Record<string, number>;
 }
 
 export interface LeadTableBulkDeleteResponse {
   deleted_count: number;
   deleted_ids: number[];
+}
+
+export interface LeadTableBulkAssignResponse {
+  assigned_count: number;
+  assigned_ids: number[];
+  assigned_to_user_id: number | null;
+  assigned_to: string;
 }
 
 export interface LeadTableRow {
@@ -812,6 +820,8 @@ export interface LeadTableRow {
   city: string | null;
   address: string | null;
   remarks: string | null;
+  /** Post-call notes from the latest phone call (Follow up / Not interested / Did not receive). */
+  call_remarks: string | null;
   assigned_to: string;
   assigned_to_user_id: number | null;
   follow_up_at: string | null;
@@ -912,6 +922,7 @@ export interface LeadTableQuery {
   sort_dir?: "asc" | "desc";
   page?: number;
   page_size?: number;
+  assigned_to_user_id?: number;
 }
 
 export type LeadTableSectionScope = Pick<LeadTableQuery, "source" | "exclude_source">;
@@ -1061,6 +1072,9 @@ export const client = {
     if (params.sort_dir) search.set("sort_dir", params.sort_dir);
     if (params.page) search.set("page", String(params.page));
     if (params.page_size) search.set("page_size", String(params.page_size));
+    if (params.assigned_to_user_id != null) {
+      search.set("assigned_to_user_id", String(params.assigned_to_user_id));
+    }
     const query = search.toString();
     return request<LeadTableResponse>(`/leads/table${query ? `?${query}` : ""}`);
   },
@@ -1080,6 +1094,9 @@ export const client = {
     if (params.q) search.set("q", params.q);
     if (params.sort_by) search.set("sort_by", params.sort_by);
     if (params.sort_dir) search.set("sort_dir", params.sort_dir);
+    if (params.assigned_to_user_id != null) {
+      search.set("assigned_to_user_id", String(params.assigned_to_user_id));
+    }
     const query = search.toString();
     return request<LeadTableIdsResponse>(`/leads/table/ids${query ? `?${query}` : ""}`);
   },
@@ -1094,6 +1111,14 @@ export const client = {
     request<LeadTableBulkDeleteResponse>("/leads/table/bulk-delete", {
       method: "POST",
       body: JSON.stringify({ lead_ids: leadIds }),
+    }),
+  bulkAssignLeadTableRows: (leadIds: number[], assignedToUserId: number | null) =>
+    request<LeadTableBulkAssignResponse>("/leads/table/bulk-assign", {
+      method: "POST",
+      body: JSON.stringify({
+        lead_ids: leadIds,
+        assigned_to_user_id: assignedToUserId,
+      }),
     }),
   getLeadsTableSectionCounts: () =>
     request<LeadTableSectionCountsResponse>("/leads/table/section-counts"),

@@ -1,11 +1,20 @@
+import re
+import time
+
 from sqlalchemy import func as sa_func
 from sqlalchemy.orm import Session
 
-from db.models import AppUser, AppUserRole, Buyer, Contact, LeadScore
+from db.models import AppUser, AppUserRole, Buyer, Contact, LeadScore, LeadScoreLabel, MarketRole
 from modules import buyers as buyers_module
 from modules.call_timing import get_call_recommendation
-from modules.countries import country_matches, list_countries
+from modules.countries import list_countries
 from modules.orchestrator import Orchestrator
+from modules.product_categories import (
+    OTHER_CATEGORY_LABEL,
+    PRODUCT_CATEGORIES,
+    distinct_category_labels,
+    keywords_for_category,
+)
 from modules.research import BuyerProfile, ResearchModule
 
 _orchestrator = Orchestrator()
@@ -261,56 +270,110 @@ def _unique_sorted_labels(values: list[str | None]) -> list[str]:
     return sorted(seen.values(), key=str.lower)
 
 
+# Filter-option queries (distinct industries/products/cities/etc.) are the
+# same for every request against a given source for a while — computing them
+# fresh on every filter-panel load is wasted DB work. Cache briefly and
+# invalidate on writes that could change the option set (import/delete).
+_FILTERS_CACHE_TTL_SECONDS = 45.0
+_filters_cache: dict[str, tuple[float, dict[str, list[str]]]] = {}
+
+
+def invalidate_lead_table_filters_cache() -> None:
+    _filters_cache.clear()
+
+
 def get_lead_table_filters(
     db: Session, *, source: str | None = None
 ) -> dict[str, list[str]]:
-    all_buyers = buyers_module.list_buyers(db)
-    buyers = all_buyers
-    if source:
-        source_key = source.strip().lower()
-        buyers = [
-            b for b in all_buyers if (b.source or "").strip().lower() == source_key
-        ]
-    industries = _unique_sorted_labels([b.industry for b in buyers])
-    sources = _unique_sorted_labels([b.source for b in all_buyers])
-    company_gradings = _unique_sorted_labels([b.company_grading for b in buyers])
-    products = _unique_sorted_labels([b.product_interest for b in buyers])
-    cities = _unique_sorted_labels([b.city for b in buyers])
+    cache_key = (source or "").strip().lower()
+    cached = _filters_cache.get(cache_key)
+    now = time.monotonic()
+    if cached and (now - cached[0]) < _FILTERS_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    result = _compute_lead_table_filters(db, source=source)
+    _filters_cache[cache_key] = (now, result)
+    return result
+
+
+def _compute_lead_table_filters(
+    db: Session, *, source: str | None = None
+) -> dict[str, list[str]]:
+    """Distinct filter values via SQL — do not load every buyer row."""
+    from sqlalchemy import distinct
+
+    def _distinct_labels(column, *, scoped: bool) -> list[str]:
+        query = db.query(distinct(column)).filter(column.isnot(None), column != "")
+        if scoped and source:
+            source_key = source.strip().lower()
+            query = query.filter(sa_func.lower(Buyer.source) == source_key)
+        values = [row[0] for row in query.all()]
+        return _unique_sorted_labels(values)
+
+    def _product_category_labels() -> list[str]:
+        query = db.query(distinct(Buyer.product_interest)).filter(
+            Buyer.product_interest.isnot(None), Buyer.product_interest != ""
+        )
+        if source:
+            source_key = source.strip().lower()
+            query = query.filter(sa_func.lower(Buyer.source) == source_key)
+        raw_values = [row[0] for row in query.all()]
+        return distinct_category_labels(raw_values)
+
     return {
         "countries": [country["name"] for country in list_countries()],
-        "industries": industries,
-        "sources": sources,
+        "industries": _distinct_labels(Buyer.industry, scoped=True),
+        "sources": _distinct_labels(Buyer.source, scoped=False),
         "scores": ["HOT", "WARM", "COLD", "Unscored"],
         "market_roles": ["consumer", "producer", "hybrid", "unknown"],
-        "company_gradings": company_gradings,
-        "products": products,
-        "cities": cities,
+        "company_gradings": _distinct_labels(Buyer.company_grading, scoped=True),
+        "products": _product_category_labels(),
+        "cities": _distinct_labels(Buyer.city, scoped=True),
     }
 
 
-def _filtered_lead_table_rows(
-    db: Session,
-    *,
-    score: str | None = None,
-    country: str | None = None,
-    industry: str | None = None,
-    company_grading: str | None = None,
-    product_interest: str | None = None,
-    city: str | None = None,
-    call_recommended: str | None = None,
-    source: str | None = None,
-    exclude_source: str | None = None,
-    call_outcome: str | None = None,
-    market_role: str | None = None,
-    q: str | None = None,
-    sort_by: str = "created_at",
-    sort_dir: str = "desc",
-    assigned_to_user_id: int | None = None,
-) -> tuple[list[dict[str, object]], int]:
-    buyer_query = db.query(Buyer)
+def _regex_or_pattern(keywords: list[str]) -> str:
+    """Postgres regex matching any keyword at a word start (\\m ~ \\b at start)."""
+    return r"\m(" + "|".join(re.escape(keyword) for keyword in keywords) + ")"
 
+
+def _apply_product_category_filter(buyer_query, product_interest: str):
+    """Match a canonical product category (e.g. "Rice", "Oil") against the
+    free-text product_interest column. A record mentioning several products
+    (e.g. "Rice, Oil") matches every category it mentions, so it shows up
+    under both the "Rice" and "Oil" filters.
+    """
+    label = product_interest.strip()
+    keywords = keywords_for_category(label)
+    if keywords:
+        return buyer_query.filter(Buyer.product_interest.op("~*")(_regex_or_pattern(keywords)))
+
+    if label.lower() == OTHER_CATEGORY_LABEL.lower():
+        all_keywords = [kw for kws in PRODUCT_CATEGORIES.values() for kw in kws]
+        return buyer_query.filter(
+            sa_func.coalesce(Buyer.product_interest, "") != "",
+            ~Buyer.product_interest.op("~*")(_regex_or_pattern(all_keywords)),
+        )
+
+    # Unknown label (e.g. a stale saved view with a raw legacy value) — fall
+    # back to the old exact-match behavior instead of returning nothing.
+    return buyer_query.filter(
+        sa_func.lower(sa_func.coalesce(Buyer.product_interest, "")) == label.lower()
+    )
+
+
+def _apply_lead_table_scope(
+    buyer_query,
+    *,
+    source: str | None,
+    exclude_source: str | None,
+    assigned_to_user_id: int | None,
+    unassigned_only: bool,
+):
     if assigned_to_user_id is not None:
         buyer_query = buyer_query.filter(Buyer.assigned_to_user_id == assigned_to_user_id)
+    elif unassigned_only:
+        buyer_query = buyer_query.filter(Buyer.assigned_to_user_id.is_(None))
 
     if source:
         buyer_query = buyer_query.filter(
@@ -327,13 +390,21 @@ def _filtered_lead_table_rows(
             buyer_query = buyer_query.filter(
                 ~sa_func.lower(sa_func.coalesce(Buyer.source, "")).in_(excluded)
             )
+    return buyer_query
 
-    # Scope the (expensive) call-outcome lookup to buyers already narrowed
-    # down by source/assignee filters, instead of scanning every call ever
-    # logged in the system.
+
+def _apply_call_outcome_scope(
+    db: Session,
+    buyer_query,
+    *,
+    call_outcome: str | None,
+    include_placed_outcomes: bool,
+):
     scoped_buyer_ids = {
         row[0] for row in buyer_query.with_entities(Buyer.id).all()
     }
+    if not scoped_buyer_ids:
+        return buyer_query.filter(Buyer.id == -1), set()
 
     if call_outcome:
         from modules.calls import buyer_ids_with_latest_call_outcome
@@ -342,9 +413,10 @@ def _filtered_lead_table_rows(
             db, call_outcome, buyer_ids=scoped_buyer_ids
         )
         if not matched_buyer_ids:
-            return [], 0
-        buyer_query = buyer_query.filter(Buyer.id.in_(matched_buyer_ids))
-    else:
+            return buyer_query.filter(Buyer.id == -1), set()
+        return buyer_query.filter(Buyer.id.in_(matched_buyer_ids)), matched_buyer_ids
+
+    if not include_placed_outcomes:
         from modules.calls import buyer_ids_with_placed_call_outcome
 
         placed_buyer_ids = buyer_ids_with_placed_call_outcome(
@@ -352,46 +424,53 @@ def _filtered_lead_table_rows(
         )
         if placed_buyer_ids:
             buyer_query = buyer_query.filter(~Buyer.id.in_(placed_buyer_ids))
+            scoped_buyer_ids -= placed_buyer_ids
+    return buyer_query, scoped_buyer_ids
 
-    buyers = buyer_query.order_by(Buyer.created_at.desc()).all()
+
+def _hydrate_lead_table_rows(
+    db: Session, buyers: list[Buyer]
+) -> list[dict[str, object]]:
     buyer_ids = [buyer.id for buyer in buyers]
+    if not buyer_ids:
+        return []
 
     score_by_buyer: dict[int, LeadScore] = {}
-    if buyer_ids:
-        ranked_score_ids = (
-            db.query(
-                LeadScore.id,
-                sa_func.row_number()
-                .over(partition_by=LeadScore.buyer_id, order_by=LeadScore.scored_at.desc())
-                .label("rn"),
-            )
-            .filter(LeadScore.buyer_id.in_(buyer_ids))
-            .subquery()
+    ranked_score_ids = (
+        db.query(
+            LeadScore.id,
+            sa_func.row_number()
+            .over(partition_by=LeadScore.buyer_id, order_by=LeadScore.scored_at.desc())
+            .label("rn"),
         )
-        latest_score_rows = (
-            db.query(LeadScore)
-            .join(ranked_score_ids, LeadScore.id == ranked_score_ids.c.id)
-            .filter(ranked_score_ids.c.rn == 1)
-            .all()
-        )
-        for record in latest_score_rows:
-            score_by_buyer[record.buyer_id] = record
+        .filter(LeadScore.buyer_id.in_(buyer_ids))
+        .subquery()
+    )
+    latest_score_rows = (
+        db.query(LeadScore)
+        .join(ranked_score_ids, LeadScore.id == ranked_score_ids.c.id)
+        .filter(ranked_score_ids.c.rn == 1)
+        .all()
+    )
+    for record in latest_score_rows:
+        score_by_buyer[record.buyer_id] = record
 
     contact_by_buyer: dict[int, Contact] = {}
-    if buyer_ids:
-        all_contacts = (
-            db.query(Contact)
-            .filter(Contact.buyer_id.in_(buyer_ids))
-            .order_by(Contact.buyer_id.asc(), Contact.id.asc())
-            .all()
-        )
-        for contact in all_contacts:
-            if contact.buyer_id not in contact_by_buyer:
-                contact_by_buyer[contact.buyer_id] = contact
-            if contact.email and (
-                contact_by_buyer[contact.buyer_id].email is None
-            ):
-                contact_by_buyer[contact.buyer_id] = contact
+    all_contacts = (
+        db.query(Contact)
+        .filter(Contact.buyer_id.in_(buyer_ids))
+        .order_by(Contact.buyer_id.asc(), Contact.id.asc())
+        .all()
+    )
+    for contact in all_contacts:
+        if contact.buyer_id not in contact_by_buyer:
+            contact_by_buyer[contact.buyer_id] = contact
+        if contact.email and contact_by_buyer[contact.buyer_id].email is None:
+            contact_by_buyer[contact.buyer_id] = contact
+
+    from modules.calls import latest_call_notes_by_buyer
+
+    call_notes_by_buyer = latest_call_notes_by_buyer(db, buyer_ids=set(buyer_ids))
 
     rows: list[dict[str, object]] = []
     for buyer in buyers:
@@ -420,6 +499,7 @@ def _filtered_lead_table_rows(
                 "city": buyer.city,
                 "address": buyer.address,
                 "remarks": buyer.remarks,
+                "call_remarks": call_notes_by_buyer.get(buyer.id),
                 "assigned_to": buyer.assigned_to or "unassigned",
                 "assigned_to_user_id": buyer.assigned_to_user_id,
                 "follow_up_at": buyer.follow_up_at,
@@ -447,103 +527,263 @@ def _filtered_lead_table_rows(
                 "producer_tier_reasoning": buyer.producer_tier_reasoning,
             }
         )
+    return rows
 
-    section_total = len(rows)
 
-    query = (q or "").strip().lower()
-    if query:
-        rows = [
-            row
-            for row in rows
-            if query in (row["company_name"] or "").lower()
-            or query in (row["country"] or "").lower()
-            or query in (row["industry"] or "").lower()
-            or query in (row["contact_email"] or "").lower()
-            or query in (row["contact_name"] or "").lower()
-            or query in (row["market_role"] or "").lower()
-            or query in (row["market_role_reasoning"] or "").lower()
-            or query in (row.get("company_grading") or "").lower()
-            or query in (row.get("product_interest") or "").lower()
-            or query in (row.get("city") or "").lower()
-            or query in (row.get("address") or "").lower()
-            or query in (row.get("remarks") or "").lower()
-            or query in (row.get("assigned_to") or "").lower()
-            or query in (row.get("contact_phone") or "").lower()
-            or query in (row.get("contact_secondary_mobile") or "").lower()
-            or query in (row.get("contact_primary_phone") or "").lower()
-            or query in (row.get("contact_secondary_phone") or "").lower()
-            or query in (row.get("contact_designation") or "").lower()
-            or query in (row.get("contact_secondary_email") or "").lower()
-        ]
+def _filtered_lead_table_rows(
+    db: Session,
+    *,
+    score: str | None = None,
+    country: str | None = None,
+    industry: str | None = None,
+    company_grading: str | None = None,
+    product_interest: str | None = None,
+    city: str | None = None,
+    call_recommended: str | None = None,
+    source: str | None = None,
+    exclude_source: str | None = None,
+    call_outcome: str | None = None,
+    market_role: str | None = None,
+    q: str | None = None,
+    sort_by: str = "created_at",
+    sort_dir: str = "desc",
+    assigned_to_user_id: int | None = None,
+    unassigned_only: bool = False,
+    include_placed_outcomes: bool = False,
+    page: int | None = None,
+    page_size: int | None = None,
+    ids_only: bool = False,
+) -> tuple[list[dict[str, object]], int, int]:
+    """Filter leads for the table.
 
-    if score:
-        if score == "Unscored":
-            rows = [row for row in rows if not row["latest_score"]]
-        else:
-            rows = [row for row in rows if row["latest_score"] == score]
+    Returns (rows_or_id_dicts, section_total, filtered_count).
+    When page/page_size are set, only that page is hydrated (unless ids_only).
+    """
+    from sqlalchemy import or_
+
+    buyer_query = _apply_lead_table_scope(
+        db.query(Buyer),
+        source=source,
+        exclude_source=exclude_source,
+        assigned_to_user_id=assigned_to_user_id,
+        unassigned_only=unassigned_only,
+    )
+    buyer_query, _ = _apply_call_outcome_scope(
+        db,
+        buyer_query,
+        call_outcome=call_outcome,
+        include_placed_outcomes=include_placed_outcomes,
+    )
+    section_total = buyer_query.with_entities(sa_func.count(Buyer.id)).scalar() or 0
+    if section_total == 0:
+        return [], 0, 0
+
+    # Push cheap column filters to SQL so we never hydrate the whole section.
+    if industry:
+        buyer_query = buyer_query.filter(
+            sa_func.lower(sa_func.coalesce(Buyer.industry, "")) == industry.strip().lower()
+        )
+    if company_grading:
+        buyer_query = buyer_query.filter(
+            sa_func.lower(sa_func.coalesce(Buyer.company_grading, ""))
+            == company_grading.strip().lower()
+        )
+    if product_interest:
+        buyer_query = _apply_product_category_filter(buyer_query, product_interest)
+    if city:
+        buyer_query = buyer_query.filter(
+            sa_func.lower(sa_func.coalesce(Buyer.city, "")) == city.strip().lower()
+        )
+    if market_role:
+        try:
+            role_value = MarketRole(market_role)
+        except ValueError:
+            role_value = None
+        if role_value is not None:
+            buyer_query = buyer_query.filter(Buyer.market_role == role_value)
 
     if country:
-        rows = [row for row in rows if country_matches(str(row["country"] or ""), country)]
+        from modules.countries import country_search_terms
 
-    if industry:
-        industry_key = industry.strip().lower()
-        rows = [
-            row
-            for row in rows
-            if (row["industry"] or "").strip().lower() == industry_key
-        ]
+        terms = [term for term in country_search_terms(country) if term]
+        if terms:
+            buyer_query = buyer_query.filter(
+                or_(
+                    *[
+                        sa_func.lower(sa_func.coalesce(Buyer.country, "")).like(f"%{term}%")
+                        for term in terms
+                    ]
+                )
+            )
 
-    if company_grading:
-        grading_key = company_grading.strip().lower()
-        rows = [
-            row
-            for row in rows
-            if (row.get("company_grading") or "").strip().lower() == grading_key
-        ]
+    query_text = (q or "").strip().lower()
+    if query_text:
+        pattern = f"%{query_text}%"
+        contact_match = (
+            db.query(Contact.buyer_id)
+            .filter(
+                or_(
+                    sa_func.lower(sa_func.coalesce(Contact.full_name, "")).like(pattern),
+                    sa_func.lower(sa_func.coalesce(Contact.email, "")).like(pattern),
+                    sa_func.lower(sa_func.coalesce(Contact.phone, "")).like(pattern),
+                    sa_func.lower(sa_func.coalesce(Contact.designation, "")).like(pattern),
+                    sa_func.lower(sa_func.coalesce(Contact.secondary_mobile, "")).like(pattern),
+                    sa_func.lower(sa_func.coalesce(Contact.primary_phone, "")).like(pattern),
+                    sa_func.lower(sa_func.coalesce(Contact.secondary_phone, "")).like(pattern),
+                    sa_func.lower(sa_func.coalesce(Contact.secondary_email, "")).like(pattern),
+                )
+            )
+            .distinct()
+            .subquery()
+        )
+        buyer_query = buyer_query.filter(
+            or_(
+                sa_func.lower(sa_func.coalesce(Buyer.company_name, "")).like(pattern),
+                sa_func.lower(sa_func.coalesce(Buyer.country, "")).like(pattern),
+                sa_func.lower(sa_func.coalesce(Buyer.industry, "")).like(pattern),
+                sa_func.lower(sa_func.coalesce(Buyer.company_grading, "")).like(pattern),
+                sa_func.lower(sa_func.coalesce(Buyer.product_interest, "")).like(pattern),
+                sa_func.lower(sa_func.coalesce(Buyer.city, "")).like(pattern),
+                sa_func.lower(sa_func.coalesce(Buyer.address, "")).like(pattern),
+                sa_func.lower(sa_func.coalesce(Buyer.remarks, "")).like(pattern),
+                sa_func.lower(sa_func.coalesce(Buyer.assigned_to, "")).like(pattern),
+                Buyer.id.in_(db.query(contact_match.c.buyer_id)),
+            )
+        )
 
-    if product_interest:
-        product_key = product_interest.strip().lower()
-        rows = [
-            row
-            for row in rows
-            if (row.get("product_interest") or "").strip().lower() == product_key
-        ]
+    if score:
+        ranked_score_ids = (
+            db.query(
+                LeadScore.buyer_id.label("buyer_id"),
+                LeadScore.score.label("score"),
+                sa_func.row_number()
+                .over(partition_by=LeadScore.buyer_id, order_by=LeadScore.scored_at.desc())
+                .label("rn"),
+            )
+            .subquery()
+        )
+        latest_scores = (
+            db.query(ranked_score_ids.c.buyer_id, ranked_score_ids.c.score)
+            .filter(ranked_score_ids.c.rn == 1)
+            .subquery()
+        )
+        if score == "Unscored":
+            buyer_query = buyer_query.outerjoin(
+                latest_scores, Buyer.id == latest_scores.c.buyer_id
+            ).filter(latest_scores.c.buyer_id.is_(None))
+        else:
+            try:
+                score_label = LeadScoreLabel(score)
+            except ValueError:
+                score_label = None
+            if score_label is not None:
+                buyer_query = buyer_query.join(
+                    latest_scores, Buyer.id == latest_scores.c.buyer_id
+                ).filter(latest_scores.c.score == score_label)
 
-    if city:
-        city_key = city.strip().lower()
-        rows = [
-            row
-            for row in rows
-            if (row.get("city") or "").strip().lower() == city_key
-        ]
+    # Lightweight ID+country fetch for call_recommended / sorting / paging.
+    light_rows = buyer_query.with_entities(
+        Buyer.id, Buyer.country, Buyer.company_name, Buyer.created_at, Buyer.market_role
+    ).all()
 
     if call_recommended:
         want = call_recommended.strip().lower()
-        if want in {"yes", "true", "recommended"}:
-            rows = [row for row in rows if row.get("call_recommended") is True]
-        elif want in {"no", "false", "not_now", "not-now"}:
-            rows = [row for row in rows if row.get("call_recommended") is False]
-        elif want in {"unknown", "none"}:
-            rows = [row for row in rows if row.get("call_recommended") is None]
-
-    if market_role:
-        rows = [row for row in rows if (row["market_role"] or "unknown") == market_role]
+        filtered_light = []
+        for buyer_id, country_val, company_name, created_at, role in light_rows:
+            timing = get_call_recommendation(country_val)
+            recommended = timing["call_recommended"]
+            keep = False
+            if want in {"yes", "true", "recommended"}:
+                keep = recommended is True
+            elif want in {"no", "false", "not_now", "not-now"}:
+                keep = recommended is False
+            elif want in {"unknown", "none"}:
+                keep = recommended is None
+            if keep:
+                filtered_light.append(
+                    (buyer_id, country_val, company_name, created_at, role)
+                )
+        light_rows = filtered_light
 
     sort_field = sort_by if sort_by in _SORT_FIELDS else "created_at"
     reverse = sort_dir.lower() != "asc"
 
-    def sort_key(row: dict[str, object]) -> tuple:
-        value = row.get(sort_field)
-        if sort_field == "latest_score":
-            if not value:
-                return (1, 99, "")
-            return (0, _SCORE_ORDER.get(str(value), 99), str(value))
-        if value is None:
-            return (1, "")
-        return (0, value)
+    if sort_field == "company_name":
+        light_rows.sort(
+            key=lambda row: ((row[2] or "").lower(), row[0]), reverse=reverse
+        )
+    elif sort_field == "country":
+        light_rows.sort(
+            key=lambda row: ((row[1] or "").lower(), row[0]), reverse=reverse
+        )
+    elif sort_field == "market_role":
+        light_rows.sort(
+            key=lambda row: (
+                (row[4].value if row[4] is not None else "unknown"),
+                row[0],
+            ),
+            reverse=reverse,
+        )
+    elif sort_field == "latest_score":
+        # Only score the filtered set (still cheaper than full hydration).
+        score_ids = [row[0] for row in light_rows]
+        score_by_id: dict[int, str | None] = {bid: None for bid in score_ids}
+        if score_ids:
+            ranked = (
+                db.query(
+                    LeadScore.buyer_id,
+                    LeadScore.score,
+                    sa_func.row_number()
+                    .over(
+                        partition_by=LeadScore.buyer_id,
+                        order_by=LeadScore.scored_at.desc(),
+                    )
+                    .label("rn"),
+                )
+                .filter(LeadScore.buyer_id.in_(score_ids))
+                .subquery()
+            )
+            for buyer_id, score_val, _rn in (
+                db.query(ranked.c.buyer_id, ranked.c.score, ranked.c.rn)
+                .filter(ranked.c.rn == 1)
+                .all()
+            ):
+                score_by_id[int(buyer_id)] = (
+                    score_val.value if hasattr(score_val, "value") else str(score_val)
+                )
+        light_rows.sort(
+            key=lambda row: (
+                0 if score_by_id.get(row[0]) else 1,
+                _SCORE_ORDER.get(score_by_id.get(row[0]) or "", 99),
+                row[0],
+            ),
+            reverse=reverse,
+        )
+    else:
+        light_rows.sort(
+            key=lambda row: (row[3] is None, row[3] or 0, row[0]), reverse=reverse
+        )
 
-    rows.sort(key=sort_key, reverse=reverse)
-    return rows, section_total
+    filtered_ids = [int(row[0]) for row in light_rows]
+    filtered_count = len(filtered_ids)
+
+    if ids_only:
+        return [{"id": buyer_id} for buyer_id in filtered_ids], section_total, filtered_count
+
+    page_ids = filtered_ids
+    if page is not None and page_size is not None:
+        page = max(1, page)
+        page_size = min(max(1, page_size), 100)
+        start = (page - 1) * page_size
+        page_ids = filtered_ids[start : start + page_size]
+
+    if not page_ids:
+        return [], section_total, filtered_count
+
+    buyers = db.query(Buyer).filter(Buyer.id.in_(page_ids)).all()
+    by_id = {buyer.id: buyer for buyer in buyers}
+    ordered_buyers = [by_id[buyer_id] for buyer_id in page_ids if buyer_id in by_id]
+    return _hydrate_lead_table_rows(db, ordered_buyers), section_total, filtered_count
 
 
 def list_leads_table_ids(
@@ -564,8 +804,10 @@ def list_leads_table_ids(
     sort_by: str = "created_at",
     sort_dir: str = "desc",
     assigned_to_user_id: int | None = None,
+    unassigned_only: bool = False,
+    include_placed_outcomes: bool = False,
 ) -> dict[str, object]:
-    rows, _section_total = _filtered_lead_table_rows(
+    rows, _section_total, filtered_count = _filtered_lead_table_rows(
         db,
         score=score,
         country=country,
@@ -582,9 +824,12 @@ def list_leads_table_ids(
         sort_by=sort_by,
         sort_dir=sort_dir,
         assigned_to_user_id=assigned_to_user_id,
+        unassigned_only=unassigned_only,
+        include_placed_outcomes=include_placed_outcomes,
+        ids_only=True,
     )
     return {
-        "filtered_count": len(rows),
+        "filtered_count": filtered_count,
         "ids": [int(row["id"]) for row in rows],
     }
 
@@ -609,11 +854,13 @@ def list_leads_table(
     page: int = 1,
     page_size: int = 20,
     assigned_to_user_id: int | None = None,
+    unassigned_only: bool = False,
+    include_placed_outcomes: bool = False,
 ) -> dict[str, object]:
     page = max(1, page)
     page_size = min(max(1, page_size), 100)
 
-    rows, section_total = _filtered_lead_table_rows(
+    rows, section_total, filtered_count = _filtered_lead_table_rows(
         db,
         score=score,
         country=country,
@@ -630,14 +877,15 @@ def list_leads_table(
         sort_by=sort_by,
         sort_dir=sort_dir,
         assigned_to_user_id=assigned_to_user_id,
+        unassigned_only=unassigned_only,
+        include_placed_outcomes=include_placed_outcomes,
+        page=page,
+        page_size=page_size,
     )
 
-    filtered_count = len(rows)
-    total_pages = max(1, (filtered_count + page_size - 1) // page_size)
+    total_pages = max(1, (filtered_count + page_size - 1) // page_size) if filtered_count else 1
     if page > total_pages:
         page = total_pages
-    start = (page - 1) * page_size
-    paged_rows = rows[start : start + page_size]
 
     return {
         "total": section_total,
@@ -645,32 +893,49 @@ def list_leads_table(
         "page": page,
         "page_size": page_size,
         "total_pages": total_pages,
-        "rows": paged_rows,
+        "rows": rows,
     }
 
 
 def count_leads_table_sections(
     db: Session, *, assigned_to_user_id: int | None = None
-) -> dict[str, int]:
+) -> dict[str, object]:
     """Row counts for every leads-table section in a handful of cheap queries.
 
     Replaces the pattern of calling list_leads_table() once per section just
     to read `.total` off a page_size=1 response — that used to run the full
     (expensive) row-building pipeline five times on every table view.
+
+    Admin (assigned_to_user_id=None): all / old_clients exclude assigned leads.
+    by_assignee maps user_id string → total leads sent to that user.
     """
     from modules.calls import latest_call_outcomes_by_buyer
 
-    buyer_query = db.query(Buyer.id, Buyer.source)
+    buyer_query = db.query(Buyer.id, Buyer.source, Buyer.assigned_to_user_id)
     if assigned_to_user_id is not None:
         buyer_query = buyer_query.filter(Buyer.assigned_to_user_id == assigned_to_user_id)
 
     old_client_ids: set[int] = set()
     other_ids: set[int] = set()
-    for buyer_id, source in buyer_query.all():
-        if (source or "").strip().lower() == "old_clients":
+    unassigned_old_ids: set[int] = set()
+    unassigned_other_ids: set[int] = set()
+    by_assignee: dict[str, int] = {}
+
+    for buyer_id, source, assignee_id in buyer_query.all():
+        is_old = (source or "").strip().lower() == "old_clients"
+        if is_old:
             old_client_ids.add(buyer_id)
         else:
             other_ids.add(buyer_id)
+
+        if assignee_id is None:
+            if is_old:
+                unassigned_old_ids.add(buyer_id)
+            else:
+                unassigned_other_ids.add(buyer_id)
+        else:
+            key = str(assignee_id)
+            by_assignee[key] = by_assignee.get(key, 0) + 1
 
     all_ids = old_client_ids | other_ids
     outcomes = latest_call_outcomes_by_buyer(db, buyer_ids=all_ids)
@@ -680,12 +945,22 @@ def count_leads_table_sections(
     not_received_ids = {bid for bid, v in outcomes.items() if v == "not_received_call"}
     placed_ids = interested_ids | not_interested_ids | not_received_ids
 
+    # Admin pool sections use unassigned-only rows; sales users are already
+    # scoped to their assignee id so their "all" / "old_clients" stay assigned.
+    if assigned_to_user_id is None:
+        all_count = len(unassigned_other_ids - placed_ids)
+        old_count = len(unassigned_old_ids - placed_ids)
+    else:
+        all_count = len(other_ids - placed_ids)
+        old_count = len(old_client_ids - placed_ids)
+
     return {
-        "all": len(other_ids - placed_ids),
-        "old_clients": len(old_client_ids - placed_ids),
+        "all": all_count,
+        "old_clients": old_count,
         "interested_clients": len(interested_ids),
         "not_interested_clients": len(not_interested_ids),
         "not_received_call_clients": len(not_received_ids),
+        "by_assignee": by_assignee,
     }
 
 
@@ -698,6 +973,9 @@ def get_lead_table_row(db: Session, buyer_id: int) -> dict[str, object] | None:
     contacts = buyers_module.list_contacts_for_buyer(db, buyer_id)
     contact = next((c for c in contacts if c.email), contacts[0] if contacts else None)
     call_timing = get_call_recommendation(buyer.country)
+    from modules.calls import latest_call_notes_by_buyer
+
+    call_notes = latest_call_notes_by_buyer(db, buyer_ids={buyer_id}).get(buyer_id)
 
     return {
         "id": buyer.id,
@@ -719,6 +997,7 @@ def get_lead_table_row(db: Session, buyer_id: int) -> dict[str, object] | None:
         "city": buyer.city,
         "address": buyer.address,
         "remarks": buyer.remarks,
+        "call_remarks": call_notes,
         "assigned_to": buyer.assigned_to or "unassigned",
         "assigned_to_user_id": buyer.assigned_to_user_id,
         "follow_up_at": buyer.follow_up_at,
@@ -1009,6 +1288,7 @@ def delete_lead_table_row(db: Session, buyer_id: int, *, commit: bool = True) ->
         return False
 
     if commit:
+        invalidate_lead_table_filters_cache()
         log_action(
             db,
             entity_type="buyer",
@@ -1047,6 +1327,7 @@ def delete_lead_table_rows(db: Session, buyer_ids: list[int]) -> dict[str, objec
     db.commit()
 
     if deleted_ids:
+        invalidate_lead_table_filters_cache()
         log_action(
             db,
             entity_type="buyer",
@@ -1059,4 +1340,59 @@ def delete_lead_table_rows(db: Session, buyer_ids: list[int]) -> dict[str, objec
             },
         )
 
-    return {"deleted_count": len(deleted_ids), "deleted_ids": deleted_ids}
+    return {
+        "deleted_count": len(deleted_ids),
+        "deleted_ids": deleted_ids,
+    }
+
+
+def bulk_assign_lead_table_rows(
+    db: Session,
+    buyer_ids: list[int],
+    *,
+    assigned_to_user_id: int | None,
+) -> dict[str, object]:
+    """Assign many leads to one sales user (or unassign) in a single transaction."""
+    from modules.audit import log_action
+
+    assignee = resolve_assignee_user(db, assigned_to_user_id)
+    label = _assignee_label(assignee)
+
+    assigned_ids: list[int] = []
+    company_names: list[str] = []
+    seen: set[int] = set()
+
+    for buyer_id in buyer_ids:
+        if buyer_id in seen:
+            continue
+        seen.add(buyer_id)
+        buyer = buyers_module.get_buyer(db, buyer_id)
+        if not buyer:
+            continue
+        apply_buyer_assignee(db, buyer, assigned_to_user_id)
+        assigned_ids.append(buyer_id)
+        company_names.append(buyer.company_name)
+
+    db.commit()
+
+    if assigned_ids:
+        log_action(
+            db,
+            entity_type="buyer",
+            entity_id=0,
+            action="bulk_assigned",
+            details={
+                "count": len(assigned_ids),
+                "buyer_ids": assigned_ids,
+                "company_names": company_names[:50],
+                "assigned_to_user_id": assigned_to_user_id,
+                "assigned_to": label,
+            },
+        )
+
+    return {
+        "assigned_count": len(assigned_ids),
+        "assigned_ids": assigned_ids,
+        "assigned_to_user_id": assigned_to_user_id,
+        "assigned_to": label,
+    }

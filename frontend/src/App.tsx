@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { client, QUOTATION_AGENT_URL } from "./api/client";
+import { client, QUOTATION_AGENT_URL, type AppUser, type LeadTableSectionCountsResponse } from "./api/client";
 import { useAuth } from "./auth/AuthContext";
 import {
   AppSidebar,
+  assignedUserIdFromSection,
+  isAssignedLeadsSection,
   type LeadsTableSection,
   type MailSection,
   type NavItem,
@@ -34,7 +36,7 @@ import {
 } from "./utils/notify";
 
 
-const INBOX_POLL_INTERVAL_MS = 12_000;
+const INBOX_POLL_INTERVAL_MS = 20_000;
 const FOLLOW_UP_POLL_INTERVAL_MS = 60_000;
 
 function CallInitBanner() {
@@ -56,13 +58,15 @@ function DashboardApp() {
   const [tab, setTab] = useState<Tab>("activity");
   const [tableSection, setTableSection] = useState<LeadsTableSection>("all");
   const [mailSection, setMailSection] = useState<MailSection>("inbox");
-  const [tableCounts, setTableCounts] = useState({
+  const [tableCounts, setTableCounts] = useState<LeadTableSectionCountsResponse>({
     all: 0,
     old_clients: 0,
     interested_clients: 0,
     not_interested_clients: 0,
     not_received_call_clients: 0,
+    by_assignee: {},
   });
+  const [assigneeNavUsers, setAssigneeNavUsers] = useState<AppUser[]>([]);
   const [mailCounts, setMailCounts] = useState({
     inbox: 0,
     sent: 0,
@@ -80,6 +84,7 @@ function DashboardApp() {
   const [consentSummary, setConsentSummary] = useState<{ unknown: number } | null>(null);
   const [inboxUnread, setInboxUnread] = useState(0);
   const seenMessageUidsRef = useRef<Set<string> | null>(null);
+  const lastInboxUnreadRef = useRef(0);
   const seenFollowUpIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -134,11 +139,27 @@ function DashboardApp() {
   const loadTableCounts = useCallback(async () => {
     try {
       const counts = await client.getLeadsTableSectionCounts();
-      setTableCounts(counts);
+      setTableCounts({
+        ...counts,
+        by_assignee: counts.by_assignee ?? {},
+      });
     } catch {
       /* optional badges */
     }
   }, []);
+
+  const loadAssigneeNavUsers = useCallback(async () => {
+    if (!isAdmin) {
+      setAssigneeNavUsers([]);
+      return;
+    }
+    try {
+      const users = await client.listAssignees();
+      setAssigneeNavUsers(users);
+    } catch {
+      setAssigneeNavUsers([]);
+    }
+  }, [isAdmin]);
 
   const loadMailCounts = useCallback(async () => {
     try {
@@ -161,11 +182,21 @@ function DashboardApp() {
       .then((status) => {
         if (!status.configured) {
           seenMessageUidsRef.current = null;
+          lastInboxUnreadRef.current = 0;
           setInboxUnread(0);
           return;
         }
+        const previousUnread = lastInboxUnreadRef.current;
+        lastInboxUnreadRef.current = status.unread_count;
         setInboxUnread(status.unread_count);
-        return client.listInboxMessages({ limit: 25 }).then((messages) => {
+
+        // Only pull a message list when unread goes up — avoid downloading mail
+        // on every badge poll just to detect new arrivals.
+        if (status.unread_count <= previousUnread && seenMessageUidsRef.current !== null) {
+          return;
+        }
+
+        return client.listInboxMessages({ limit: 15 }).then((messages) => {
           const currentUids = new Set(messages.map((m) => m.uid));
           const seen = seenMessageUidsRef.current;
 
@@ -223,6 +254,7 @@ function DashboardApp() {
     setError(null);
     void loadDiscoverLeadsCount();
     void loadTableCounts();
+    void loadAssigneeNavUsers();
     void loadMailCounts();
     void loadEmailTemplateCount();
     void loadWhatsappTemplateCount();
@@ -239,6 +271,7 @@ function DashboardApp() {
     loadWhatsappTemplateCount,
     loadMailCounts,
     loadTableCounts,
+    loadAssigneeNavUsers,
     pollInbox,
     pollInterestedFollowUps,
   ]);
@@ -246,6 +279,7 @@ function DashboardApp() {
   useEffect(() => {
     client.getConsentSummary().then(setConsentSummary).catch(() => setConsentSummary(null));
     void loadTableCounts();
+    void loadAssigneeNavUsers();
     void loadMailCounts();
     void loadDiscoverLeadsCount();
     void loadEmailTemplateCount();
@@ -283,6 +317,7 @@ function DashboardApp() {
     loadWhatsappTemplateCount,
     loadMailCounts,
     loadTableCounts,
+    loadAssigneeNavUsers,
     pollInbox,
     pollInterestedFollowUps,
   ]);
@@ -352,6 +387,37 @@ function DashboardApp() {
     setLeadsTableRefreshToken((token) => token + 1);
   }
 
+  const assigneeSectionUsers: AppUser[] = isAdmin
+    ? assigneeNavUsers
+    : user
+      ? [
+          {
+            id: user.id,
+            username: user.username,
+            full_name: user.full_name,
+            role: user.role,
+            is_active: true,
+          },
+        ]
+      : [];
+
+  // Drop stale "Leads Sent To" selection if that user was removed.
+  useEffect(() => {
+    if (!isAssignedLeadsSection(tableSection)) return;
+    const selectedId = assignedUserIdFromSection(tableSection);
+    if (selectedId == null) return;
+    const stillExists = assigneeSectionUsers.some((u) => u.id === selectedId);
+    if (!stillExists) {
+      setTableSection("all");
+    }
+  }, [assigneeSectionUsers, tableSection]);
+
+  const assigneeNavChildren = assigneeSectionUsers.map((u) => ({
+    id: `assigned:${u.id}`,
+    label: `Leads Sent To ${u.username}`,
+    count: tableCounts.by_assignee?.[String(u.id)] ?? 0,
+  }));
+
   const navItems: NavItem[] = [
     { id: "activity", label: "Email Activity", count: emailActivityUnread, alert: emailActivityUnread > 0 },
     { id: "email-templates", label: "Email templates", count: emailTemplateCount },
@@ -381,6 +447,7 @@ function DashboardApp() {
           label: "Did not receive call",
           count: tableCounts.not_received_call_clients,
         },
+        ...assigneeNavChildren,
       ],
     },
     {
@@ -547,7 +614,15 @@ function DashboardApp() {
             )}
             {tab === "chatbot" && <ChatbotPage onError={setError} />}
             {tab === "kpi" && <KpiPage onError={setError} />}
-            {tab === "users" && isAdmin && <UsersPage onError={setError} />}
+            {tab === "users" && isAdmin && (
+              <UsersPage
+                onError={setError}
+                onUsersChanged={() => {
+                  void loadAssigneeNavUsers();
+                  void loadTableCounts();
+                }}
+              />
+            )}
           </main>
         </div>
       </div>

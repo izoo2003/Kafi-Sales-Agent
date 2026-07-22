@@ -4,7 +4,8 @@ import { client, type DiscoveryCandidate } from "../api/client";
 // Import saves rows as-is (no per-row scraping), so batches can be large —
 // raised from the old 200/25 caps which forced spreadsheets to be split up.
 const MAX_CSV_IMPORT = 20000;
-const IMPORT_BATCH_SIZE = 500;
+const IMPORT_BATCH_SIZE = 2000;
+const IMPORT_PREVIEW_ROWS = 50;
 const IMPORT_FILE_ACCEPT = ".csv,.xlsx,.xls,.xlsm,.tsv";
 
 interface LeadsTableCsvImportProps {
@@ -99,6 +100,10 @@ export function LeadsTableCsvImport({
 
   const importable = useMemo(
     () => candidates.filter((candidate) => candidate.is_valid_business !== false),
+    [candidates],
+  );
+  const previewCandidates = useMemo(
+    () => candidates.slice(0, IMPORT_PREVIEW_ROWS),
     [candidates],
   );
 
@@ -366,6 +371,14 @@ export function LeadsTableCsvImport({
 
           {candidates.length > 0 && (
             <>
+              <p className="text-xs text-slate-500">
+                {candidates.length} row{candidates.length === 1 ? "" : "s"} loaded
+                {candidates.length > IMPORT_PREVIEW_ROWS
+                  ? ` · showing first ${IMPORT_PREVIEW_ROWS} in preview (all selected rows still import)`
+                  : ""}
+                {" · "}
+                {selected.size} selected
+              </p>
               <div className="overflow-x-auto rounded-lg border border-slate-800">
                 <table className="w-full min-w-[1600px] text-sm">
                   <thead>
@@ -403,7 +416,7 @@ export function LeadsTableCsvImport({
                     </tr>
                   </thead>
                   <tbody>
-                    {candidates.map((candidate) => (
+                    {previewCandidates.map((candidate) => (
                       <tr key={candidate.candidate_id} className="border-b border-slate-800/60">
                         <td className="py-2 px-3">
                           <input

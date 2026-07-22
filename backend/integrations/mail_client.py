@@ -1,4 +1,5 @@
-"""Outbound email — uses the company Outlook mailbox (Microsoft Graph Mail.Send)."""
+"""Outbound email — uses the company mailbox (SMTP AUTH, e.g. cPanel mail.kafi-group.com,
+or Microsoft Graph Mail.Send when Outlook OAuth is configured instead)."""
 
 from __future__ import annotations
 

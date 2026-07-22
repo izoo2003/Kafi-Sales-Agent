@@ -3,6 +3,7 @@ import { leadAssigneeLabel, normalizeAssigneeValue, UNASSIGNED } from "../utils/
 export type AssigneeOption = {
   value: string;
   label: string;
+  username?: string;
 };
 
 interface AssignedToSelectProps {

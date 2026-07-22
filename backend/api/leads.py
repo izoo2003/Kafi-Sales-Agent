@@ -24,6 +24,8 @@ from api.schemas import (
     LeadTableDedupeResponse,
     LeadTableBulkDeleteRequest,
     LeadTableBulkDeleteResponse,
+    LeadTableBulkAssignRequest,
+    LeadTableBulkAssignResponse,
     LeadTableFiltersRead,
     LeadTableIdsResponse,
     LeadTableResponse,
@@ -64,6 +66,38 @@ def _is_admin(user: AppUser) -> bool:
 def _assignee_scope(user: AppUser) -> int | None:
     """Non-admins only see leads assigned to them; admins see all."""
     return None if _is_admin(user) else user.id
+
+
+def _table_assignment_filters(
+    user: AppUser,
+    *,
+    assigned_to_user_id: int | None,
+    call_outcome: str | None,
+    source: str | None,
+    exclude_source: str | None,
+) -> tuple[int | None, bool, bool]:
+    """Resolve assignee scope for leads-table list/count queries.
+
+    Returns (assigned_to_user_id, unassigned_only, include_placed_outcomes).
+    """
+    scope = _assignee_scope(user)
+    if scope is not None:
+        # Sales users are always limited to their own assignments.
+        include_placed = (
+            assigned_to_user_id is not None
+            and call_outcome is None
+            and not source
+            and not exclude_source
+        )
+        return scope, False, include_placed
+
+    if assigned_to_user_id is not None:
+        # Admin viewing "Leads Sent To {username}" — show every lead sent.
+        return assigned_to_user_id, False, call_outcome is None and not source and not exclude_source
+
+    # Admin pool sections (Leads table / Old clients): hide assigned leads.
+    unassigned_only = call_outcome is None
+    return None, unassigned_only, False
 
 
 def _require_buyer_access(db, user: AppUser, buyer_id: int) -> None:
@@ -302,9 +336,17 @@ def list_leads_table(
     sort_dir: str = "desc",
     page: int = 1,
     page_size: int = 20,
+    assigned_to_user_id: int | None = None,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
+    assignee_id, unassigned_only, include_placed = _table_assignment_filters(
+        user,
+        assigned_to_user_id=assigned_to_user_id,
+        call_outcome=call_outcome,
+        source=source,
+        exclude_source=exclude_source,
+    )
     result = leads_module.list_leads_table(
         db,
         score=score,
@@ -323,7 +365,9 @@ def list_leads_table(
         sort_dir=sort_dir,
         page=page,
         page_size=page_size,
-        assigned_to_user_id=_assignee_scope(user),
+        assigned_to_user_id=assignee_id,
+        unassigned_only=unassigned_only,
+        include_placed_outcomes=include_placed,
     )
     return LeadTableResponse(**result)
 
@@ -344,9 +388,17 @@ def list_leads_table_ids(
     q: str | None = None,
     sort_by: str = "created_at",
     sort_dir: str = "desc",
+    assigned_to_user_id: int | None = None,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
+    assignee_id, unassigned_only, include_placed = _table_assignment_filters(
+        user,
+        assigned_to_user_id=assigned_to_user_id,
+        call_outcome=call_outcome,
+        source=source,
+        exclude_source=exclude_source,
+    )
     result = leads_module.list_leads_table_ids(
         db,
         score=score,
@@ -363,7 +415,9 @@ def list_leads_table_ids(
         q=q,
         sort_by=sort_by,
         sort_dir=sort_dir,
-        assigned_to_user_id=_assignee_scope(user),
+        assigned_to_user_id=assignee_id,
+        unassigned_only=unassigned_only,
+        include_placed_outcomes=include_placed,
     )
     return LeadTableIdsResponse(**result)
 
@@ -440,6 +494,26 @@ def bulk_delete_lead_table_rows(
     del user
     result = leads_module.delete_lead_table_rows(db, payload.lead_ids)
     return LeadTableBulkDeleteResponse(**result)
+
+
+@router.post("/table/bulk-assign", response_model=LeadTableBulkAssignResponse)
+def bulk_assign_lead_table_rows(
+    payload: LeadTableBulkAssignRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(require_admin),
+):
+    del user
+    if not payload.lead_ids:
+        raise HTTPException(400, "Select at least one lead to assign")
+    try:
+        result = leads_module.bulk_assign_lead_table_rows(
+            db,
+            payload.lead_ids,
+            assigned_to_user_id=payload.assigned_to_user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return LeadTableBulkAssignResponse(**result)
 
 
 @router.post("/table/dedupe", response_model=LeadTableDedupeResponse)

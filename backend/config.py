@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     mailbox_imap_port: int = 993
     mailbox_smtp_host: str = "smtp.office365.com"
     mailbox_smtp_port: int = 587
+    # When IMAP/SMTP hosts are a raw IP (Cloudflare bypass), validate the TLS
+    # certificate against this hostname (e.g. mail.kafi-group.com).
+    mailbox_ssl_hostname: str | None = None
     mailbox_email: str | None = None
     mailbox_password: str | None = None
     mailbox_display_name: str | None = None
@@ -131,6 +134,7 @@ class Settings(BaseSettings):
         "mailbox_email",
         "mailbox_password",
         "mailbox_display_name",
+        "mailbox_ssl_hostname",
         "mailbox_client_id",
         "mailbox_client_secret",
         "mailbox_refresh_token",

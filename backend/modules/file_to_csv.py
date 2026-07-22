@@ -75,14 +75,20 @@ def _html_table_to_csv(html: str) -> str:
     return content
 
 
-def _spreadsheet_rows_to_csv(rows: list[list[str]]) -> str:
+def _spreadsheet_rows_to_csv(rows) -> str:
     out = io.StringIO()
     writer = csv.writer(out)
     wrote_row = False
     for row in rows:
-        if not any(cell.strip() for cell in row):
+        cells = [
+            ""
+            if value is None
+            else str(value).replace("\r", " ").replace("\n", " ").strip()
+            for value in row
+        ]
+        if not any(cell.strip() for cell in cells):
             continue
-        writer.writerow(row)
+        writer.writerow(cells)
         wrote_row = True
     content = out.getvalue()
     if not wrote_row:
@@ -99,19 +105,10 @@ def _xlsx_to_csv(raw: bytes) -> str:
         ) from exc
     try:
         sheet = workbook.active
-        rows: list[list[str]] = []
-        for row in sheet.iter_rows(values_only=True):
-            rows.append(
-                [
-                    ""
-                    if value is None
-                    else str(value).replace("\r", " ").replace("\n", " ").strip()
-                    for value in row
-                ]
-            )
+        # Stream cells → CSV without buffering the whole sheet in a list first.
+        return _spreadsheet_rows_to_csv(sheet.iter_rows(values_only=True))
     finally:
         workbook.close()
-    return _spreadsheet_rows_to_csv(rows)
 
 
 def _binary_xls_to_csv(raw: bytes) -> str:
@@ -128,14 +125,12 @@ def _binary_xls_to_csv(raw: bytes) -> str:
             "Could not read this .xls file. Save it as .xlsx or .csv and upload again."
         ) from exc
     sheet = book.sheet_by_index(0)
-    rows: list[list[str]] = []
-    for row_idx in range(sheet.nrows):
-        row: list[str] = []
-        for col_idx in range(sheet.ncols):
-            value = sheet.cell_value(row_idx, col_idx)
-            row.append("" if value is None else str(value).strip())
-        rows.append(row)
-    return _spreadsheet_rows_to_csv(rows)
+
+    def _iter_rows():
+        for row_idx in range(sheet.nrows):
+            yield [sheet.cell_value(row_idx, col_idx) for col_idx in range(sheet.ncols)]
+
+    return _spreadsheet_rows_to_csv(_iter_rows())
 
 
 def _delimiter_separated_to_csv(content: str, delimiter: str) -> str:

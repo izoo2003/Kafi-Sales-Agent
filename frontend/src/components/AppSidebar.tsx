@@ -20,7 +20,20 @@ export type LeadsTableSection =
   | "old_clients"
   | "interested_clients"
   | "not_interested_clients"
-  | "not_received_call_clients";
+  | "not_received_call_clients"
+  | `assigned:${number}`;
+
+export function isAssignedLeadsSection(
+  section: string,
+): section is `assigned:${number}` {
+  return /^assigned:\d+$/.test(section);
+}
+
+export function assignedUserIdFromSection(section: LeadsTableSection): number | null {
+  if (!isAssignedLeadsSection(section)) return null;
+  const id = Number(section.slice("assigned:".length));
+  return Number.isFinite(id) ? id : null;
+}
 
 export type MailSection = "inbox" | "sent" | "trash" | "archive";
 

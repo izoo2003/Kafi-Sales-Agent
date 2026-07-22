@@ -303,13 +303,13 @@ export function InboxPage({
           return;
         }
         if (section === "inbox") {
-          const rows = await client.listInboxThreads({ limit: 60, unread_only: unreadOnly });
+          const rows = await client.listInboxThreads({ limit: 40, unread_only: unreadOnly });
           if (generation !== loadGenerationRef.current) return;
           setThreads(rows);
           setMessages([]);
         } else {
           const rows = await client.listInboxMessages({
-            limit: 60,
+            limit: 40,
             unread_only: unreadOnly && section !== "sent",
             folder: section,
           });
@@ -346,7 +346,7 @@ export function InboxPage({
     if (!status?.configured) return;
     pollTimerRef.current = window.setInterval(() => {
       void loadList({ silent: true });
-    }, 30_000);
+    }, 60_000);
     return () => {
       if (pollTimerRef.current !== null) window.clearInterval(pollTimerRef.current);
     };
@@ -382,9 +382,16 @@ export function InboxPage({
         setThreads((prev) =>
           prev.map((t) => (t.thread_id === threadId ? { ...t, unread_count: 0 } : t)),
         );
-        const s = await client.getInboxStatus();
-        onUnreadChangeRef.current?.(s.unread_count);
-        setStatus(s);
+        // Don't block the open conversation on badge refresh / AI analyze.
+        void client
+          .getInboxStatus()
+          .then((s) => {
+            onUnreadChangeRef.current?.(s.unread_count);
+            setStatus(s);
+          })
+          .catch(() => {
+            /* ignore */
+          });
         void runThreadAnalyze(threadId);
       } catch (e) {
         onErrorRef.current(e instanceof Error ? e.message : "Failed to open conversation");

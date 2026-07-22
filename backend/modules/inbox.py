@@ -2,12 +2,37 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from config import settings
 from integrations.outlook_client import FOLDER_KEYS, outlook_client
 from modules.email_threads import group_messages_into_threads, message_key
 from modules.inbox_cutoff import get_inbox_since, set_inbox_since_to_now
+
+# Brief cache so analyze / reopen does not re-hit IMAP for the same thread.
+_THREAD_DETAIL_CACHE: dict[str, dict[str, Any]] = {}
+_THREAD_DETAIL_TTL_SEC = 45.0
+
+
+def _thread_cache_get(thread_id: str) -> dict[str, Any] | None:
+    entry = _THREAD_DETAIL_CACHE.get(thread_id)
+    if not entry:
+        return None
+    if time.monotonic() - float(entry.get("at") or 0) > _THREAD_DETAIL_TTL_SEC:
+        _THREAD_DETAIL_CACHE.pop(thread_id, None)
+        return None
+    data = entry.get("data")
+    return dict(data) if isinstance(data, dict) else None
+
+
+def _thread_cache_set(thread_id: str, data: dict[str, Any]) -> None:
+    _THREAD_DETAIL_CACHE[thread_id] = {"at": time.monotonic(), "data": dict(data)}
+    # Bound memory — keep only the most recent few conversations.
+    if len(_THREAD_DETAIL_CACHE) > 20:
+        oldest = sorted(_THREAD_DETAIL_CACHE.items(), key=lambda item: item[1].get("at") or 0)
+        for key, _ in oldest[:-12]:
+            _THREAD_DETAIL_CACHE.pop(key, None)
 
 
 def is_configured() -> bool:
@@ -222,7 +247,9 @@ def _strip_thread_internals(thread: dict[str, Any]) -> dict[str, Any]:
 
 def list_threads(*, limit: int = 40, unread_only: bool = False) -> list[dict[str, Any]]:
     # Unchecked = all recent conversations; checked = only threads with unread mail.
-    fetch_limit = max(limit * 4, 120)
+    # Fetch ~2x the thread limit of headers (not bodies) — enough to form threads
+    # without downloading hundreds of full MIME messages.
+    fetch_limit = max(limit * 2, 60)
     raw = outlook_client.list_conversation_messages(
         limit=fetch_limit,
         unread_only=unread_only,
@@ -235,6 +262,12 @@ def list_threads(*, limit: int = 40, unread_only: bool = False) -> list[dict[str
 
 
 def get_thread(thread_id: str, *, mark_seen: bool = True) -> dict[str, Any] | None:
+    cached = _thread_cache_get(thread_id)
+    if cached and (not mark_seen or cached.get("unread_count", 0) == 0):
+        return cached
+
+    # Prefer the recent conversation-header cache from list_threads (same IMAP data)
+    # instead of always re-scanning Inbox+Sent just to resolve message keys.
     raw = outlook_client.list_conversation_messages(limit=120, unread_only=False)
     stamped = [{**m, "provider": "outlook"} for m in raw]
     threads = group_messages_into_threads(stamped, mailbox_email=settings.mailbox_email)
@@ -247,17 +280,31 @@ def get_thread(thread_id: str, *, mark_seen: bool = True) -> dict[str, Any] | No
     ordered = [detail_by_key[k] for k in match["message_keys"] if k in detail_by_key]
 
     if mark_seen:
-        for msg in ordered:
-            if msg.get("unread") and msg.get("direction") != "outbound":
-                try:
-                    mark_read(str(msg["uid"]), True, folder=msg.get("folder") or "INBOX")
-                    msg["unread"] = False
-                except Exception:  # noqa: BLE001
-                    pass
+        to_mark = [
+            (msg.get("folder") or "INBOX", str(msg["uid"]))
+            for msg in ordered
+            if msg.get("unread") and msg.get("direction") != "outbound"
+        ]
+        if to_mark:
+            try:
+                outlook_client.mark_read_many(to_mark, seen=True)
+                for msg in ordered:
+                    if msg.get("unread") and msg.get("direction") != "outbound":
+                        msg["unread"] = False
+            except Exception:  # noqa: BLE001
+                for folder, uid in to_mark:
+                    try:
+                        mark_read(uid, True, folder=folder)
+                        for msg in ordered:
+                            if str(msg.get("uid")) == uid:
+                                msg["unread"] = False
+                    except Exception:  # noqa: BLE001
+                        pass
 
     summary = _strip_thread_internals(match)
     summary["unread_count"] = sum(1 for m in ordered if m.get("unread"))
     summary["messages"] = ordered
+    _thread_cache_set(thread_id, summary)
     return summary
 
 

@@ -421,6 +421,7 @@ class LeadTableRowRead(BaseModel):
     city: Optional[str] = None
     address: Optional[str] = None
     remarks: Optional[str] = None
+    call_remarks: Optional[str] = None
     assigned_to: str = "unassigned"
     assigned_to_user_id: Optional[int] = None
     follow_up_at: Optional[datetime] = None
@@ -491,6 +492,7 @@ class LeadTableSectionCountsResponse(BaseModel):
     interested_clients: int
     not_interested_clients: int
     not_received_call_clients: int
+    by_assignee: dict[str, int] = Field(default_factory=dict)
 
 
 class DraftListResponse(BaseModel):
@@ -701,6 +703,18 @@ class LeadTableBulkDeleteRequest(BaseModel):
 class LeadTableBulkDeleteResponse(BaseModel):
     deleted_count: int
     deleted_ids: list[int]
+
+
+class LeadTableBulkAssignRequest(BaseModel):
+    lead_ids: list[int]
+    assigned_to_user_id: Optional[int] = None
+
+
+class LeadTableBulkAssignResponse(BaseModel):
+    assigned_count: int
+    assigned_ids: list[int]
+    assigned_to_user_id: Optional[int] = None
+    assigned_to: str = "unassigned"
 
 
 class DiscoverImportResponse(BaseModel):

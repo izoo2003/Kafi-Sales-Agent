@@ -104,15 +104,10 @@ def _content_without_notes(content: str | None) -> str:
     return base
 
 
-def _latest_call_outcomes_by_buyer(
+def _latest_call_fields_by_buyer(
     db: Session, *, buyer_ids: set[int] | None = None
-) -> dict[int, str | None]:
-    """Latest phone-call outcome per buyer.
-
-    Uses a window function so only one (the most recent) interaction row per
-    buyer is pulled from the DB — avoids loading the entire call history
-    table on every leads-table request, which gets slower as calls pile up.
-    """
+) -> dict[int, dict[str, str | None]]:
+    """Latest phone-call outcome + notes per buyer (one row each via window function)."""
     from sqlalchemy import func as sa_func
 
     if buyer_ids is not None and not buyer_ids:
@@ -140,10 +135,26 @@ def _latest_call_outcomes_by_buyer(
         db.query(ranked.c.buyer_id, ranked.c.content).filter(ranked.c.rn == 1).all()
     )
 
-    latest_by_buyer: dict[int, str | None] = {}
+    latest_by_buyer: dict[int, dict[str, str | None]] = {}
     for buyer_id, content in latest_rows:
-        latest_by_buyer[int(buyer_id)] = parse_call_fields(content).get("call_outcome")
+        fields = parse_call_fields(content)
+        notes = fields.get("notes")
+        outcome = fields.get("call_outcome")
+        latest_by_buyer[int(buyer_id)] = {
+            "call_outcome": str(outcome) if outcome else None,
+            "notes": str(notes).strip() if notes else None,
+        }
     return latest_by_buyer
+
+
+def _latest_call_outcomes_by_buyer(
+    db: Session, *, buyer_ids: set[int] | None = None
+) -> dict[int, str | None]:
+    """Latest phone-call outcome per buyer."""
+    return {
+        bid: fields.get("call_outcome")
+        for bid, fields in _latest_call_fields_by_buyer(db, buyer_ids=buyer_ids).items()
+    }
 
 
 def latest_call_outcomes_by_buyer(
@@ -151,6 +162,17 @@ def latest_call_outcomes_by_buyer(
 ) -> dict[int, str | None]:
     """Public accessor — latest phone-call outcome per buyer (see helper above)."""
     return _latest_call_outcomes_by_buyer(db, buyer_ids=buyer_ids)
+
+
+def latest_call_notes_by_buyer(
+    db: Session, *, buyer_ids: set[int] | None = None
+) -> dict[int, str | None]:
+    """Latest post-call remarks/notes per buyer."""
+    return {
+        bid: fields.get("notes")
+        for bid, fields in _latest_call_fields_by_buyer(db, buyer_ids=buyer_ids).items()
+        if fields.get("notes")
+    }
 
 
 def buyer_ids_with_latest_call_outcome(

@@ -3017,10 +3017,13 @@ def import_candidates(
         ((raw.get("source") or "").strip() for raw in candidates if (raw.get("source") or "").strip()),
         "",
     )
-    existing_names, existing_domains = _existing_buyer_keys(
+    scope = _import_scope_for_source(batch_source)
+    by_name, by_domain, existing_scores = buyers_module.build_buyer_lookup_index(
         db,
-        **_import_scope_for_source(batch_source),
+        **scope,
     )
+    existing_names = set(by_name.keys())
+    existing_domains = set(by_domain.keys())
 
     def _import_data_score(raw: dict[str, Any]) -> int:
         points = 0
@@ -3061,6 +3064,14 @@ def import_candidates(
         return points
 
     persist_each_row = not skip_enrichment
+    pending_since_flush = 0
+    FLUSH_EVERY = 75
+
+    def _flush_pending() -> None:
+        nonlocal pending_since_flush
+        if pending_since_flush > 0:
+            db.flush()
+            pending_since_flush = 0
 
     try:
         for raw in candidates:
@@ -3091,24 +3102,17 @@ def import_candidates(
 
             name_key = _normalize_name(name)
             domain = _domain(raw.get("website_url"))
-            duplicate = name_key in existing_names or (domain and domain in existing_domains)
-            if duplicate:
-                scope = _import_scope_for_source(raw.get("source"))
-                existing = buyers_module.find_buyer_by_name_or_domain(
-                    db,
-                    company_name=name,
-                    website_url=raw.get("website_url"),
-                    **scope,
-                )
+            existing = by_name.get(name_key) or (by_domain.get(domain) if domain else None)
+            if existing is not None:
                 should_replace = False
-                if replace_duplicates and existing:
-                    existing_score = buyers_module.buyer_data_score(db, existing)
-                    import_score = _import_data_score(raw)
-                    should_replace = (
-                        buyers_module.is_sparse_buyer(db, existing) or import_score > existing_score
+                if replace_duplicates:
+                    existing_score = existing_scores.get(
+                        existing.id, buyers_module.buyer_data_score(db, existing)
                     )
+                    import_score = _import_data_score(raw)
+                    should_replace = existing_score < 8 or import_score > existing_score
 
-                if should_replace and existing:
+                if should_replace:
                     if assigned_to_user_id is not None and existing.assigned_to_user_id not in (
                         None,
                         assigned_to_user_id,
@@ -3120,13 +3124,17 @@ def import_candidates(
                             }
                         )
                         continue
+                    _flush_pending()
                     leads_module.delete_lead_table_row(
                         db, existing.id, commit=persist_each_row
                     )
                     existing_names.discard(_normalize_name(existing.company_name))
+                    by_name.pop(_normalize_name(existing.company_name), None)
                     existing_domain = _domain(existing.website_url)
                     if existing_domain:
                         existing_domains.discard(existing_domain)
+                        by_domain.pop(existing_domain, None)
+                    existing_scores.pop(existing.id, None)
                     replaced.append(
                         {
                             "company_name": name,
@@ -3157,6 +3165,7 @@ def import_candidates(
                     "remarks": (raw.get("remarks") or None),
                 },
                 commit=persist_each_row,
+                flush=True,
             )
             if assigned_to_user_id is not None:
                 leads_module.apply_buyer_assignee(db, buyer, assigned_to_user_id)
@@ -3164,8 +3173,11 @@ def import_candidates(
                     db.commit()
                     db.refresh(buyer)
             existing_names.add(name_key)
+            by_name[name_key] = buyer
             if domain:
                 existing_domains.add(domain)
+                by_domain[domain] = buyer
+            existing_scores[buyer.id] = _import_data_score(raw)
             created.append(buyer)
             if persist_each_row:
                 log_action(
@@ -3222,7 +3234,12 @@ def import_candidates(
                         "consent_status": "unknown",
                     },
                     commit=persist_each_row,
+                    flush=persist_each_row,
                 )
+                if not persist_each_row:
+                    pending_since_flush += 1
+                    if pending_since_flush >= FLUSH_EVERY:
+                        _flush_pending()
 
             if auto_onboard:
                 try:
@@ -3245,6 +3262,7 @@ def import_candidates(
                     )
 
         if skip_enrichment:
+            _flush_pending()
             db.commit()
             log_action(
                 db,
@@ -3262,6 +3280,11 @@ def import_candidates(
         if skip_enrichment:
             db.rollback()
         raise
+
+    if created or replaced:
+        from modules.leads import invalidate_lead_table_filters_cache
+
+        invalidate_lead_table_filters_cache()
 
     return {
         "created_count": len(created),

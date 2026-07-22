@@ -49,8 +49,6 @@ def buyer_website_domain(url: str | None) -> str | None:
 
 def buyer_data_score(db: Session, buyer: Buyer) -> int:
     """Higher score = richer lead record; used to pick which duplicate to keep."""
-    from db.models import LeadScoreLabel
-
     contact = primary_contact_with_email(db, buyer.id)
     if not contact:
         contacts = list_contacts_for_buyer(db, buyer.id)
@@ -62,6 +60,15 @@ def buyer_data_score(db: Session, buyer: Buyer) -> int:
         .order_by(LeadScore.scored_at.desc())
         .first()
     )
+    return buyer_data_score_from_parts(buyer, contact, latest_score)
+
+
+def buyer_data_score_from_parts(
+    buyer: Buyer,
+    contact: Contact | None,
+    latest_score: LeadScore | None,
+) -> int:
+    from db.models import LeadScoreLabel
 
     points = 0
     if buyer.website_url:
@@ -107,9 +114,96 @@ def buyer_data_score(db: Session, buyer: Buyer) -> int:
     return points
 
 
+def preload_buyer_data_scores(db: Session, buyers: list[Buyer]) -> dict[int, int]:
+    """Score many buyers with two queries instead of 2–3 per buyer."""
+    if not buyers:
+        return {}
+
+    buyer_ids = [buyer.id for buyer in buyers]
+    contacts = (
+        db.query(Contact)
+        .filter(Contact.buyer_id.in_(buyer_ids))
+        .order_by(Contact.buyer_id.asc(), Contact.id.asc())
+        .all()
+    )
+    contact_by_buyer: dict[int, Contact] = {}
+    for contact in contacts:
+        current = contact_by_buyer.get(contact.buyer_id)
+        if current is None:
+            contact_by_buyer[contact.buyer_id] = contact
+        elif is_valid_email(contact.email) and not is_valid_email(current.email):
+            contact_by_buyer[contact.buyer_id] = contact
+
+    from sqlalchemy import func as sa_func
+
+    ranked = (
+        db.query(
+            LeadScore.id,
+            sa_func.row_number()
+            .over(partition_by=LeadScore.buyer_id, order_by=LeadScore.scored_at.desc())
+            .label("rn"),
+        )
+        .filter(LeadScore.buyer_id.in_(buyer_ids))
+        .subquery()
+    )
+    latest_scores = (
+        db.query(LeadScore)
+        .join(ranked, LeadScore.id == ranked.c.id)
+        .filter(ranked.c.rn == 1)
+        .all()
+    )
+    score_by_buyer = {row.buyer_id: row for row in latest_scores}
+
+    return {
+        buyer.id: buyer_data_score_from_parts(
+            buyer,
+            contact_by_buyer.get(buyer.id),
+            score_by_buyer.get(buyer.id),
+        )
+        for buyer in buyers
+    }
+
+
 def is_sparse_buyer(db: Session, buyer: Buyer) -> bool:
     """True when a lead has almost no scraped details (typical failed CSV import)."""
     return buyer_data_score(db, buyer) < 8
+
+
+def build_buyer_lookup_index(
+    db: Session,
+    *,
+    source: str | None = None,
+    exclude_source: str | None = None,
+) -> tuple[dict[str, Buyer], dict[str, Buyer], dict[int, int]]:
+    """One scoped load for import dedupe: name→buyer, domain→buyer, id→data score."""
+    from sqlalchemy import func as sa_func
+
+    excluded = {
+        part.strip().lower()
+        for part in (exclude_source or "").split(",")
+        if part.strip()
+    }
+    query = db.query(Buyer)
+    if source:
+        query = query.filter(sa_func.lower(Buyer.source) == source.strip().lower())
+    if excluded:
+        query = query.filter(
+            ~sa_func.lower(sa_func.coalesce(Buyer.source, "")).in_(excluded)
+        )
+
+    buyers = query.all()
+    by_name: dict[str, Buyer] = {}
+    by_domain: dict[str, Buyer] = {}
+    for buyer in buyers:
+        name_key = normalize_buyer_key(buyer.company_name)
+        if name_key and name_key not in by_name:
+            by_name[name_key] = buyer
+        domain = buyer_website_domain(buyer.website_url)
+        if domain and domain not in by_domain:
+            by_domain[domain] = buyer
+
+    scores = preload_buyer_data_scores(db, buyers)
+    return by_name, by_domain, scores
 
 
 def find_buyer_by_name_or_domain(
@@ -120,37 +214,12 @@ def find_buyer_by_name_or_domain(
     source: str | None = None,
     exclude_source: str | None = None,
 ) -> Buyer | None:
-    from sqlalchemy import func as sa_func
-
+    by_name, by_domain, _ = build_buyer_lookup_index(
+        db, source=source, exclude_source=exclude_source
+    )
     name_key = normalize_buyer_key(company_name)
     domain = buyer_website_domain(website_url)
-    match_by_name: Buyer | None = None
-    match_by_domain: Buyer | None = None
-    excluded = {
-        part.strip().lower()
-        for part in (exclude_source or "").split(",")
-        if part.strip()
-    }
-
-    # Scope to the relevant source at the SQL level (indexed) instead of
-    # pulling every buyer in the whole table for each duplicate encountered
-    # during an import — that pattern made large imports with many
-    # duplicates extremely slow.
-    query = db.query(Buyer)
-    if source:
-        query = query.filter(sa_func.lower(Buyer.source) == source.strip().lower())
-    if excluded:
-        query = query.filter(
-            ~sa_func.lower(sa_func.coalesce(Buyer.source, "")).in_(excluded)
-        )
-
-    for buyer in query.all():
-        if normalize_buyer_key(buyer.company_name) == name_key:
-            match_by_name = buyer
-        if domain and buyer_website_domain(buyer.website_url) == domain:
-            match_by_domain = buyer
-
-    return match_by_name or match_by_domain
+    return by_name.get(name_key) or (by_domain.get(domain) if domain else None)
 
 
 def primary_contact_with_email(db: Session, buyer_id: int) -> Contact | None:
@@ -177,13 +246,13 @@ def get_buyer(db: Session, buyer_id: int) -> Buyer | None:
     return db.get(Buyer, buyer_id)
 
 
-def create_buyer(db: Session, data: dict, *, commit: bool = True) -> Buyer:
+def create_buyer(db: Session, data: dict, *, commit: bool = True, flush: bool = True) -> Buyer:
     buyer = Buyer(**data)
     db.add(buyer)
     if commit:
         db.commit()
         db.refresh(buyer)
-    else:
+    elif flush:
         db.flush()
     return buyer
 
@@ -205,7 +274,7 @@ def get_contact(db: Session, contact_id: int) -> Contact | None:
     return db.get(Contact, contact_id)
 
 
-def create_contact(db: Session, data: dict, *, commit: bool = True) -> Contact:
+def create_contact(db: Session, data: dict, *, commit: bool = True, flush: bool = True) -> Contact:
     consent = data.pop("consent_status", "unknown")
     data["consent_status"] = ConsentStatus(consent)
     contact = Contact(**data)
@@ -213,7 +282,7 @@ def create_contact(db: Session, data: dict, *, commit: bool = True) -> Contact:
     if commit:
         db.commit()
         db.refresh(contact)
-    else:
+    elif flush:
         db.flush()
     return contact
 
