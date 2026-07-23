@@ -465,7 +465,16 @@ def update_lead_table_row(
     data = payload.model_dump(exclude_unset=True)
     if "assigned_to_user_id" in data or "assigned_to" in data:
         if not _is_admin(user):
-            # Non-admins may submit the current assignee with row edits — ignore, do not error.
+            # Non-admin row edits may still include the current assignee field —
+            # only block when they try to change who the lead is sent to.
+            buyer = buyers_module.get_buyer(db, lead_id)
+            requested = data.get("assigned_to_user_id", buyer.assigned_to_user_id if buyer else None)
+            current = buyer.assigned_to_user_id if buyer else None
+            if requested != current:
+                raise HTTPException(
+                    403,
+                    "Only an admin can assign leads to users. Ask an admin to send leads to you.",
+                )
             data.pop("assigned_to_user_id", None)
             data.pop("assigned_to", None)
         else:

@@ -727,7 +727,11 @@ export function LeadsTablePage({
     setSavingId(rowId);
     setSaveNotice(null);
     try {
-      const updated = await client.updateLeadTableRow(rowId, buildUpdatePayload(draft));
+      const payload = buildUpdatePayload(draft);
+      if (!isAdmin) {
+        delete payload.assigned_to_user_id;
+      }
+      const updated = await client.updateLeadTableRow(rowId, payload);
       applyAssigneeMove(rowId, updated, previousAssigneeId);
       await loadSectionCounts();
       setSaveNotice("Row saved.");
@@ -740,6 +744,10 @@ export function LeadsTablePage({
   }
 
   async function saveAssignedTo(rowId: number, assignedToUserId: number | null) {
+    if (!isAdmin) {
+      onError("Only an admin can assign leads to users.");
+      return;
+    }
     setAssigningId(rowId);
     try {
       const previousAssigneeId = rows.find((r) => r.id === rowId)?.assigned_to_user_id ?? null;
@@ -849,6 +857,15 @@ export function LeadsTablePage({
   }
 
   function renderAssignedToCell(row: LeadTableRow, draft: LeadTableRow) {
+    if (!isAdmin) {
+      return (
+        <span className="text-sm text-slate-300">
+          {!row.assigned_to || row.assigned_to === "unassigned"
+            ? "Unassigned"
+            : row.assigned_to}
+        </span>
+      );
+    }
     return (
       <AssignedToSelect
         value={editMode ? draft.assigned_to_user_id : row.assigned_to_user_id}
@@ -872,7 +889,7 @@ export function LeadsTablePage({
           }
           void saveAssignedTo(row.id, userId);
         }}
-        disabled={!isAdmin || assigningId === row.id || savingId === row.id}
+        disabled={assigningId === row.id || savingId === row.id}
       />
     );
   }
@@ -1126,7 +1143,11 @@ export function LeadsTablePage({
         dirtyIds.map(async (rowId) => {
           const draft = draftsRef.current[rowId];
           if (!draft) return null;
-          const updated = await client.updateLeadTableRow(rowId, buildUpdatePayload(draft));
+          const payload = buildUpdatePayload(draft);
+          if (!isAdmin) {
+            delete payload.assigned_to_user_id;
+          }
+          const updated = await client.updateLeadTableRow(rowId, payload);
           return [rowId, updated] as const;
         }),
       );
