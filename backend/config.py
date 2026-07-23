@@ -127,6 +127,12 @@ class Settings(BaseSettings):
     bulk_whatsapp_message_delay_seconds: float = 2.0
     bulk_whatsapp_max_per_request: int = 250
 
+    # DB connection pool — keep defaults small (2+3) to stay within Supabase limits
+    # on a single Railway worker.  Raise via env (DB_POOL_SIZE / DB_MAX_OVERFLOW)
+    # only after profiling pool-wait contention.
+    db_pool_size: int = 2
+    db_max_overflow: int = 3
+
     @field_validator("mailbox_imap_port", "mailbox_smtp_port", mode="before")
     @classmethod
     def _empty_port_uses_default(cls, value: object, info: ValidationInfo) -> object:

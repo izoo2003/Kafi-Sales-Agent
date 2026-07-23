@@ -3282,9 +3282,10 @@ def import_candidates(
         raise
 
     if created or replaced:
-        from modules.leads import invalidate_lead_table_filters_cache
+        from modules.leads import invalidate_lead_table_filters_cache, invalidate_section_counts_cache
 
         invalidate_lead_table_filters_cache()
+        invalidate_section_counts_cache()
 
     return {
         "created_count": len(created),

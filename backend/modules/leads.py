@@ -5,6 +5,7 @@ from sqlalchemy import func as sa_func
 from sqlalchemy.orm import Session
 
 from db.models import AppUser, AppUserRole, Buyer, Contact, LeadScore, LeadScoreLabel, MarketRole
+from modules.cache import MISS, cache
 from modules import buyers as buyers_module
 from modules.call_timing import get_call_recommendation
 from modules.countries import list_countries
@@ -681,7 +682,51 @@ def _filtered_lead_table_rows(
                     latest_scores, Buyer.id == latest_scores.c.buyer_id
                 ).filter(latest_scores.c.score == score_label)
 
-    # Lightweight ID+country fetch for call_recommended / sorting / paging.
+    sort_field = sort_by if sort_by in _SORT_FIELDS else "created_at"
+    reverse = sort_dir.lower() != "asc"
+
+    # Fast SQL path: push ORDER BY + LIMIT/OFFSET to Postgres when the sort is a
+    # plain Buyer column and call_recommended filtering is not needed.  This avoids
+    # fetching every matching row into Python just to sort and slice it.
+    _SQL_SORT_COLS = {
+        "created_at": Buyer.created_at,
+        "company_name": Buyer.company_name,
+        "country": Buyer.country,
+    }
+    use_sql_sort = (
+        not call_recommended
+        and not ids_only
+        and sort_field in _SQL_SORT_COLS
+        and page is not None
+        and page_size is not None
+    )
+
+    if use_sql_sort:
+        page = max(1, page)  # type: ignore[arg-type]
+        page_size = min(max(1, page_size), 100)  # type: ignore[arg-type]
+        col = _SQL_SORT_COLS[sort_field]
+        order_expr = col.desc() if reverse else col.asc()
+        # filtered_count via count query (cheap — no row transfer)
+        filtered_count = buyer_query.with_entities(sa_func.count(Buyer.id)).scalar() or 0
+        if filtered_count == 0:
+            return [], section_total, 0
+        start = (page - 1) * page_size
+        page_id_rows = (
+            buyer_query.order_by(order_expr, Buyer.id)
+            .offset(start)
+            .limit(page_size)
+            .with_entities(Buyer.id)
+            .all()
+        )
+        page_ids = [int(row[0]) for row in page_id_rows]
+        if not page_ids:
+            return [], section_total, filtered_count
+        buyers = db.query(Buyer).filter(Buyer.id.in_(page_ids)).all()
+        by_id = {buyer.id: buyer for buyer in buyers}
+        ordered_buyers = [by_id[bid] for bid in page_ids if bid in by_id]
+        return _hydrate_lead_table_rows(db, ordered_buyers), section_total, filtered_count
+
+    # Python sort path — used for exotic sorts, call_recommended filter, and ids_only.
     light_rows = buyer_query.with_entities(
         Buyer.id, Buyer.country, Buyer.company_name, Buyer.created_at, Buyer.market_role
     ).all()
@@ -704,9 +749,6 @@ def _filtered_lead_table_rows(
                     (buyer_id, country_val, company_name, created_at, role)
                 )
         light_rows = filtered_light
-
-    sort_field = sort_by if sort_by in _SORT_FIELDS else "created_at"
-    reverse = sort_dir.lower() != "asc"
 
     if sort_field == "company_name":
         light_rows.sort(
@@ -897,6 +939,15 @@ def list_leads_table(
     }
 
 
+_SECTION_COUNTS_TTL = 20.0
+_SECTION_COUNTS_PREFIX = "section_counts:"
+
+
+def invalidate_section_counts_cache() -> None:
+    """Call after any write that changes lead counts or call outcomes."""
+    cache.clear_prefix(_SECTION_COUNTS_PREFIX)
+
+
 def count_leads_table_sections(
     db: Session, *, assigned_to_user_id: int | None = None
 ) -> dict[str, object]:
@@ -908,7 +959,22 @@ def count_leads_table_sections(
 
     Admin (assigned_to_user_id=None): all / old_clients exclude assigned leads.
     by_assignee maps user_id string → total leads sent to that user.
+
+    Results are TTL-cached for 20 s per user scope and invalidated on writes.
     """
+    cache_key = f"{_SECTION_COUNTS_PREFIX}{assigned_to_user_id}"
+    cached = cache.get(cache_key)
+    if cached is not MISS:
+        return cached  # type: ignore[return-value]
+
+    result = _compute_section_counts(db, assigned_to_user_id=assigned_to_user_id)
+    cache.set(cache_key, result, ttl=_SECTION_COUNTS_TTL)
+    return result
+
+
+def _compute_section_counts(
+    db: Session, *, assigned_to_user_id: int | None = None
+) -> dict[str, object]:
     from modules.calls import latest_call_outcomes_by_buyer
 
     buyer_query = db.query(Buyer.id, Buyer.source, Buyer.assigned_to_user_id)
@@ -1289,6 +1355,7 @@ def delete_lead_table_row(db: Session, buyer_id: int, *, commit: bool = True) ->
 
     if commit:
         invalidate_lead_table_filters_cache()
+        invalidate_section_counts_cache()
         log_action(
             db,
             entity_type="buyer",
@@ -1328,6 +1395,7 @@ def delete_lead_table_rows(db: Session, buyer_ids: list[int]) -> dict[str, objec
 
     if deleted_ids:
         invalidate_lead_table_filters_cache()
+        invalidate_section_counts_cache()
         log_action(
             db,
             entity_type="buyer",

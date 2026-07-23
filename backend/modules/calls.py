@@ -665,6 +665,11 @@ def update_call_followup(
     db.commit()
     db.refresh(interaction)
 
+    if outcome_changed:
+        from modules.leads import invalidate_section_counts_cache
+
+        invalidate_section_counts_cache()
+
     if app_user_id:
         from modules import activity as activity_module
 
