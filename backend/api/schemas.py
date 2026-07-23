@@ -714,6 +714,13 @@ class LeadTableDedupeResponse(BaseModel):
     groups: list[LeadTableDedupeGroup]
 
 
+class RemoveOldClientOverlapsResponse(BaseModel):
+    removed_count: int
+    kept_count: int
+    old_clients_count: int
+    groups: list[LeadTableDedupeGroup] = Field(default_factory=list)
+
+
 class LeadTableCleanupResponse(BaseModel):
     removed_count: int
     removed: list[dict[str, Any]] = Field(default_factory=list)

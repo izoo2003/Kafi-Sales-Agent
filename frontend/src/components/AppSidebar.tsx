@@ -58,6 +58,8 @@ interface AppSidebarProps {
   navItems: NavItem[];
   activeTab: Tab;
   tableSection?: LeadsTableSection;
+  /** Section opened when the table parent is clicked. Admins: "all"; sales users: "old_clients". */
+  defaultTableSection?: LeadsTableSection;
   mailSection?: MailSection;
   onSelectTab: (tab: Tab) => void;
   onSelectTableSection?: (section: LeadsTableSection) => void;
@@ -72,6 +74,7 @@ export function AppSidebar({
   navItems,
   activeTab,
   tableSection = "all",
+  defaultTableSection = "all",
   mailSection = "inbox",
   onSelectTab,
   onSelectTableSection,
@@ -134,7 +137,7 @@ export function AppSidebar({
             : isMailParent
               ? setMailMenuOpen
               : undefined;
-          const defaultChildId = isTableParent ? "all" : "inbox";
+          const defaultChildId = isTableParent ? defaultTableSection : "inbox";
           const activeChildId = isTableParent ? tableSection : isMailParent ? mailSection : null;
           const parentHighlighted =
             isExpandableParent && isActive && activeChildId === defaultChildId
@@ -158,7 +161,7 @@ export function AppSidebar({
                     if (isTableParent) {
                       setLeadsMenuOpen(true);
                       onSelectTab("table");
-                      onSelectTableSection?.("all");
+                      onSelectTableSection?.(defaultTableSection);
                       return;
                     }
                     if (isMailParent) {

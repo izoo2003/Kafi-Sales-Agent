@@ -105,6 +105,14 @@ function DashboardApp() {
     }
   }, [isAdmin, tab]);
 
+  // Sales users only get client buckets — never the main Leads table or admin assignee views.
+  useEffect(() => {
+    if (isAdmin) return;
+    if (tableSection === "all" || isAssignedLeadsSection(tableSection)) {
+      setTableSection("old_clients");
+    }
+  }, [isAdmin, tableSection]);
+
   const loadDiscoverLeadsCount = useCallback(async () => {
     if (!isAdmin) {
       setDiscoverLeadsCount(0);
@@ -343,7 +351,11 @@ function DashboardApp() {
   }
 
   function handleSelectTableSection(section: LeadsTableSection) {
-    setTableSection(section);
+    if (!isAdmin && (section === "all" || isAssignedLeadsSection(section))) {
+      setTableSection("old_clients");
+    } else {
+      setTableSection(section);
+    }
     setSelectedLeadId(null);
   }
 
@@ -408,9 +420,9 @@ function DashboardApp() {
     if (selectedId == null) return;
     const stillExists = assigneeSectionUsers.some((u) => u.id === selectedId);
     if (!stillExists) {
-      setTableSection("all");
+      setTableSection(isAdmin ? "all" : "old_clients");
     }
-  }, [assigneeSectionUsers, tableSection]);
+  }, [assigneeSectionUsers, isAdmin, tableSection]);
 
   const assigneeNavChildren = isAdmin
     ? assigneeSectionUsers.map((u) => ({
@@ -419,6 +431,33 @@ function DashboardApp() {
         count: tableCounts.by_assignee?.[String(u.id)] ?? 0,
       }))
     : [];
+
+  const clientSectionNavChildren = [
+    { id: "old_clients" as const, label: "Old clients", count: tableCounts.old_clients },
+    {
+      id: "interested_clients" as const,
+      label: "Follow up clients",
+      count: tableCounts.interested_clients,
+    },
+    {
+      id: "not_interested_clients" as const,
+      label: "Not interested",
+      count: tableCounts.not_interested_clients,
+    },
+    {
+      id: "not_received_call_clients" as const,
+      label: "Did not receive call",
+      count: tableCounts.not_received_call_clients,
+    },
+  ];
+
+  const clientsTableCount =
+    tableCounts.old_clients +
+    tableCounts.interested_clients +
+    tableCounts.not_interested_clients +
+    tableCounts.not_received_call_clients;
+
+  const defaultTableSection: LeadsTableSection = isAdmin ? "all" : "old_clients";
 
   const navItems: NavItem[] = [
     { id: "activity", label: "Email Activity", count: emailActivityUnread, alert: emailActivityUnread > 0 },
@@ -430,25 +469,10 @@ function DashboardApp() {
       : []),
     {
       id: "table",
-      label: "Leads table",
-      count: tableCounts.all,
+      label: isAdmin ? "Leads table" : "Clients table",
+      count: isAdmin ? tableCounts.all : clientsTableCount,
       children: [
-        { id: "old_clients", label: "Old clients", count: tableCounts.old_clients },
-        {
-          id: "interested_clients",
-          label: "Follow up clients",
-          count: tableCounts.interested_clients,
-        },
-        {
-          id: "not_interested_clients",
-          label: "Not interested",
-          count: tableCounts.not_interested_clients,
-        },
-        {
-          id: "not_received_call_clients",
-          label: "Did not receive call",
-          count: tableCounts.not_received_call_clients,
-        },
+        ...clientSectionNavChildren,
         ...assigneeNavChildren,
       ],
     },
@@ -504,6 +528,7 @@ function DashboardApp() {
           navItems={navItems}
           activeTab={tab}
           tableSection={tableSection}
+          defaultTableSection={defaultTableSection}
           mailSection={mailSection}
           onSelectTab={handleSelectTab}
           onSelectTableSection={handleSelectTableSection}

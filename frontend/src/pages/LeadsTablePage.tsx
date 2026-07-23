@@ -18,6 +18,10 @@ import { LeadsTableCsvImport } from "../components/LeadsTableCsvImport";
 import { SocialLinksCell } from "../components/SocialLinksCell";
 import { BulkEmailModal } from "../components/BulkEmailModal";
 import { BulkWhatsAppModal } from "../components/BulkWhatsAppModal";
+import {
+  BulkActionProgressPanel,
+  type BulkActionProgress,
+} from "../components/BulkActionProgressPanel";
 import { CallLeadButton } from "../components/CallLeadButton";
 import { EmailComposeButton } from "../components/EmailComposeLink";
 import { Pagination } from "../components/Pagination";
@@ -44,6 +48,7 @@ interface LeadsTablePageProps {
 }
 
 type SortField =
+  | "created_at"
   | "company_name"
   | "country"
   | "latest_score"
@@ -73,9 +78,20 @@ const DEFAULT_TABLE_VIEW: StoredTableView = {
   city: "",
   callRecommended: "",
   search: "",
-  sortBy: "company_name",
+  sortBy: "created_at",
   sortDir: "desc",
 };
+
+function formatAddedAt(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
 
 function tableViewStorageKey(userId: number | undefined, section: LeadsTableSection): string {
   return `${TABLE_VIEW_STORAGE_PREFIX}:${userId ?? "anonymous"}:${section}`;
@@ -90,6 +106,7 @@ function readStoredTableView(
     if (!raw) return { ...DEFAULT_TABLE_VIEW };
     const parsed = JSON.parse(raw) as Partial<StoredTableView>;
     const validSortFields: SortField[] = [
+      "created_at",
       "company_name",
       "country",
       "latest_score",
@@ -131,6 +148,7 @@ const TD_PRIMARY = `${TD} text-slate-200 font-medium`;
 
 const MAX_BULK_ONBOARD = 25;
 const BULK_ONBOARD_DELAY_MS = 1000;
+const BULK_DELETE_CHUNK = 40;
 
 interface BulkOnboardRowResult {
   id: number;
@@ -189,7 +207,7 @@ function sectionDescription(
   assigneeUsername?: string | null,
 ): string {
   if (section === "old_clients") {
-    return "Past clients mapped from your spreadsheet. After a call outcome is set, the record moves to Follow up, Not interested, or Did not receive call. Assigning a lead moves it out of this table into that user's Leads Sent To section.";
+    return "Past clients from your spreadsheet only. Kept separate from Discover Leads / Leads table — companies here are never mixed into new discoveries.";
   }
   if (section === "interested_clients") {
     return "Clients moved here after a call is labeled Interested. Use the calendar on each row to set when you want a follow-up reminder — you are only notified on that date.";
@@ -203,7 +221,7 @@ function sectionDescription(
   if (isAssignedLeadsSection(section)) {
     return `All leads transferred to ${assigneeUsername || "this user"}. These no longer appear in the main Leads table or Old clients.`;
   }
-  return "Browse, filter, edit, delete, and export leads. After a call outcome is set, records move to Follow up, Not interested, or Did not receive call. Assigning a lead moves it to that user's Leads Sent To section.";
+  return "New discoveries from Discover Leads (and leads-table imports). Does not include Old clients — companies already in Old clients are blocked from being added here.";
 }
 
 function sectionEmptyMessage(section: LeadsTableSection): string | null {
@@ -358,11 +376,7 @@ export function LeadsTablePage({
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deletingSelected, setDeletingSelected] = useState(false);
   const [bulkOnboarding, setBulkOnboarding] = useState(false);
-  const [bulkProgress, setBulkProgress] = useState<{
-    current: number;
-    total: number;
-    name: string;
-  } | null>(null);
+  const [actionProgress, setActionProgress] = useState<BulkActionProgress | null>(null);
   const [bulkResults, setBulkResults] = useState<BulkOnboardRowResult[] | null>(null);
   const [showBulkEmail, setShowBulkEmail] = useState(false);
   const [showBulkWhatsApp, setShowBulkWhatsApp] = useState(false);
@@ -958,13 +972,22 @@ export function LeadsTablePage({
     setBulkOnboarding(true);
     setBulkResults(null);
     setSaveNotice(null);
+    const startedAt = Date.now();
 
     const results: BulkOnboardRowResult[] = [];
     for (let i = 0; i < ids.length; i++) {
       const id = ids[i];
       const row = rows.find((r) => r.id === id);
       const companyName = row?.company_name ?? `Lead #${id}`;
-      setBulkProgress({ current: i + 1, total: ids.length, name: companyName });
+      setActionProgress({
+        title: "Researching & scoring leads",
+        mode: "determinate",
+        current: i,
+        total: ids.length,
+        detail: companyName,
+        startedAt,
+        accent: "emerald",
+      });
 
       try {
         const result = await client.onboardLead(id);
@@ -984,12 +1007,22 @@ export function LeadsTablePage({
         });
       }
 
+      setActionProgress({
+        title: "Researching & scoring leads",
+        mode: "determinate",
+        current: i + 1,
+        total: ids.length,
+        detail: companyName,
+        startedAt,
+        accent: "emerald",
+      });
+
       if (i < ids.length - 1) {
         await new Promise((resolve) => setTimeout(resolve, BULK_ONBOARD_DELAY_MS));
       }
     }
 
-    setBulkProgress(null);
+    setActionProgress(null);
     setBulkOnboarding(false);
     setBulkResults(results);
     clearSelection();
@@ -1012,6 +1045,13 @@ export function LeadsTablePage({
 
     setDeduping(true);
     setSaveNotice(null);
+    setActionProgress({
+      title: isOldClients ? "Removing empty old-client imports" : "Removing empty CSV imports",
+      mode: "indeterminate",
+      detail: "Finding rows with no website, email, or score…",
+      startedAt: Date.now(),
+      accent: "amber",
+    });
     try {
       const result = await client.cleanupSparseCsvLeads(sectionTableScope(section));
       await loadTable();
@@ -1024,6 +1064,7 @@ export function LeadsTablePage({
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to remove empty imports");
     } finally {
+      setActionProgress(null);
       setDeduping(false);
     }
   }
@@ -1041,6 +1082,13 @@ export function LeadsTablePage({
 
     setDeduping(true);
     setSaveNotice(null);
+    setActionProgress({
+      title: `Removing duplicate ${scopeLabel}`,
+      mode: "indeterminate",
+      detail: "Matching by company name and website domain…",
+      startedAt: Date.now(),
+      accent: "amber",
+    });
     try {
       const result = await client.dedupeLeadsTable(sectionTableScope(section));
       await loadTable();
@@ -1053,6 +1101,44 @@ export function LeadsTablePage({
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to remove duplicates");
     } finally {
+      setActionProgress(null);
+      setDeduping(false);
+    }
+  }
+
+  async function removeOldClientOverlaps() {
+    if (!isAdmin || isOldClients) return;
+    const confirmed = window.confirm(
+      "Remove Discover / Leads table rows that match Old clients?\n\n" +
+        "• Matches by company name or website domain.\n" +
+        "• Old clients are never deleted — only overlapping new-discovery leads are removed.\n" +
+        "• Use this if Old clients were accidentally mixed into Discover Leads.\n\n" +
+        "Continue?",
+    );
+    if (!confirmed) return;
+
+    setDeduping(true);
+    setSaveNotice(null);
+    setActionProgress({
+      title: "Removing leads that match Old clients",
+      mode: "indeterminate",
+      detail: "Comparing Leads table against Old clients…",
+      startedAt: Date.now(),
+      accent: "violet",
+    });
+    try {
+      const result = await client.removeOldClientOverlaps();
+      await loadTable();
+      await loadSectionCounts();
+      setSaveNotice(
+        result.removed_count > 0
+          ? `Removed ${result.removed_count} lead${result.removed_count === 1 ? "" : "s"} that matched Old clients (${result.kept_count} discovery lead${result.kept_count === 1 ? "" : "s"} kept)`
+          : "No Discover / Leads table rows matched Old clients",
+      );
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to remove old-client overlaps");
+    } finally {
+      setActionProgress(null);
       setDeduping(false);
     }
   }
@@ -1080,40 +1166,78 @@ export function LeadsTablePage({
       setDeletingSelected(true);
     }
     setSaveNotice(null);
+    const startedAt = Date.now();
+    if (rowIds.length > 1) {
+      setActionProgress({
+        title: "Deleting selected leads",
+        mode: "determinate",
+        current: 0,
+        total: rowIds.length,
+        detail: preview,
+        startedAt,
+        accent: "red",
+      });
+    }
 
     try {
+      const deletedIds: number[] = [];
       if (rowIds.length === 1) {
         await client.deleteLeadTableRow(rowIds[0]);
+        deletedIds.push(rowIds[0]);
       } else {
-        await client.bulkDeleteLeadTableRows(rowIds);
+        for (let i = 0; i < rowIds.length; i += BULK_DELETE_CHUNK) {
+          const chunk = rowIds.slice(i, i + BULK_DELETE_CHUNK);
+          const firstName =
+            rows.find((row) => row.id === chunk[0])?.company_name ?? `Lead #${chunk[0]}`;
+          setActionProgress({
+            title: "Deleting selected leads",
+            mode: "determinate",
+            current: i,
+            total: rowIds.length,
+            detail: firstName,
+            startedAt,
+            accent: "red",
+          });
+          const result = await client.bulkDeleteLeadTableRows(chunk);
+          deletedIds.push(...(result.deleted_ids ?? chunk));
+          setActionProgress({
+            title: "Deleting selected leads",
+            mode: "determinate",
+            current: Math.min(i + chunk.length, rowIds.length),
+            total: rowIds.length,
+            detail: firstName,
+            startedAt,
+            accent: "red",
+          });
+        }
       }
-      setRows((prev) => prev.filter((row) => !rowIds.includes(row.id)));
-      setTotal((prev) => Math.max(0, prev - rowIds.length));
-      setFilteredCount((prev) => Math.max(0, prev - rowIds.length));
+      const removed = new Set(deletedIds.length > 0 ? deletedIds : rowIds);
+      setRows((prev) => prev.filter((row) => !removed.has(row.id)));
+      setTotal((prev) => Math.max(0, prev - removed.size));
+      setFilteredCount((prev) => Math.max(0, prev - removed.size));
       setSelected((prev) => {
         const next = new Set(prev);
-        for (const rowId of rowIds) next.delete(rowId);
+        for (const rowId of removed) next.delete(rowId);
         return next;
       });
       setDrafts((prev) => {
         const next = { ...prev };
-        for (const rowId of rowIds) delete next[rowId];
+        for (const rowId of removed) delete next[rowId];
         return next;
       });
       setOriginalKeys((prev) => {
         const next = { ...prev };
-        for (const rowId of rowIds) delete next[rowId];
+        for (const rowId of removed) delete next[rowId];
         return next;
       });
-      setSaveNotice(
-        `Deleted ${rowIds.length} lead${rowIds.length === 1 ? "" : "s"}`,
-      );
+      setSaveNotice(`Deleted ${removed.size} lead${removed.size === 1 ? "" : "s"}`);
       const updatedFilters = await client.listLeadTableFilters();
       setFilters(updatedFilters);
       await loadSectionCounts();
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to delete lead(s)");
     } finally {
+      setActionProgress(null);
       setDeletingId(null);
       setDeletingSelected(false);
     }
@@ -1178,6 +1302,29 @@ export function LeadsTablePage({
     setSortDir(field === "company_name" || field === "country" ? "asc" : "desc");
   }
 
+  function sortSelectValue(): string {
+    if (sortBy === "created_at") {
+      return sortDir === "asc" ? "oldest" : "recent";
+    }
+    return sortBy;
+  }
+
+  function applySortSelect(value: string) {
+    if (value === "recent") {
+      setSortBy("created_at");
+      setSortDir("desc");
+      return;
+    }
+    if (value === "oldest") {
+      setSortBy("created_at");
+      setSortDir("asc");
+      return;
+    }
+    const field = value as SortField;
+    setSortBy(field);
+    setSortDir(field === "company_name" || field === "country" ? "asc" : "desc");
+  }
+
   function clearFilters() {
     setScore("");
     setMarketRole("");
@@ -1189,7 +1336,7 @@ export function LeadsTablePage({
     setCallRecommended("");
     setSearch("");
     setDebouncedSearch("");
-    setSortBy("company_name");
+    setSortBy("created_at");
     setSortDir("desc");
   }
 
@@ -1329,42 +1476,87 @@ export function LeadsTablePage({
               bulkOnboarding ||
               deletingSelected ||
               deletingId !== null ||
+              deduping ||
               editMode
             }
             className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 border border-emerald-600/50 text-sm font-medium disabled:opacity-50"
           >
             {bulkOnboarding
-              ? bulkProgress
-                ? `Researching ${bulkProgress.current}/${bulkProgress.total}…`
+              ? actionProgress?.mode === "determinate" && actionProgress.total
+                ? `Researching ${actionProgress.current ?? 0}/${actionProgress.total}…`
                 : "Starting…"
               : `Research & score (${selected.size})`}
           </button>
           <button
             type="button"
             onClick={() => void deleteRows([...selected])}
-            disabled={selected.size === 0 || deletingSelected || deletingId !== null}
+            disabled={
+              selected.size === 0 ||
+              deletingSelected ||
+              deletingId !== null ||
+              bulkOnboarding ||
+              deduping
+            }
             className="px-3 py-1.5 rounded-lg bg-red-900/60 hover:bg-red-800 border border-red-800/60 text-sm text-red-200 disabled:opacity-50"
           >
-            {deletingSelected ? "Deleting…" : `Delete selected (${selected.size})`}
+            {deletingSelected
+              ? actionProgress?.mode === "determinate" && actionProgress.total
+                ? `Deleting ${actionProgress.current ?? 0}/${actionProgress.total}…`
+                : "Deleting…"
+              : `Delete selected (${selected.size})`}
           </button>
           {isOldClients && (
             <button
               type="button"
               onClick={() => void removeEmptyImports()}
-              disabled={deduping || rows.length === 0 || loading}
+              disabled={
+                deduping ||
+                rows.length === 0 ||
+                loading ||
+                bulkOnboarding ||
+                deletingSelected
+              }
               className="px-3 py-1.5 rounded-lg bg-amber-900/60 hover:bg-amber-800 border border-amber-800/60 text-sm text-amber-100 disabled:opacity-50"
             >
-              {deduping ? "Cleaning…" : "Remove empty imports"}
+              {deduping && actionProgress?.title.includes("empty")
+                ? "Cleaning…"
+                : "Remove empty imports"}
             </button>
           )}
           <button
             type="button"
             onClick={() => void removeDuplicates()}
-            disabled={deduping || rows.length === 0 || loading}
+            disabled={
+              deduping ||
+              rows.length === 0 ||
+              loading ||
+              bulkOnboarding ||
+              deletingSelected
+            }
             className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm disabled:opacity-50"
           >
-            Remove duplicates
+            {deduping && actionProgress?.title.includes("duplicate")
+              ? "Removing duplicates…"
+              : "Remove duplicates"}
           </button>
+          {isAdmin && section === "all" && (
+            <button
+              type="button"
+              onClick={() => void removeOldClientOverlaps()}
+              disabled={
+                deduping ||
+                loading ||
+                bulkOnboarding ||
+                deletingSelected
+              }
+              className="px-3 py-1.5 rounded-lg bg-violet-900/60 hover:bg-violet-800 border border-violet-700/50 text-sm text-violet-100 disabled:opacity-50"
+              title="Delete Leads table rows that match Old clients by name or website"
+            >
+              {deduping && actionProgress?.title.includes("Old clients")
+                ? "Cleaning overlaps…"
+                : "Remove old-client overlaps"}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => exportLeadsTableCsv(rows)}
@@ -1457,13 +1649,7 @@ export function LeadsTablePage({
         </p>
       )}
 
-      {bulkProgress && (
-        <p className="text-xs text-slate-300 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 shrink-0">
-          Researching &amp; scoring {bulkProgress.current} of {bulkProgress.total}:{" "}
-          <strong className="text-slate-200">{bulkProgress.name}</strong>
-          <span className="text-slate-500 ml-2">(one lead at a time — same quality as manual)</span>
-        </p>
-      )}
+      {actionProgress && <BulkActionProgressPanel progress={actionProgress} />}
 
       {bulkResults && bulkResults.length > 0 && (
         <div className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 space-y-2 shrink-0">
@@ -1525,6 +1711,21 @@ export function LeadsTablePage({
         >
           {isOldClients ? (
             <>
+              <label className="block text-xs text-slate-400">
+                Sort by
+                <select
+                  value={sortSelectValue()}
+                  onChange={(e) => applySortSelect(e.target.value)}
+                  className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
+                >
+                  <option value="recent">Recently added</option>
+                  <option value="oldest">Oldest first</option>
+                  <option value="company_name">Company name</option>
+                  <option value="country">Country</option>
+                  <option value="latest_score">Score</option>
+                </select>
+              </label>
+
               <label className="block text-xs text-slate-400">
                 Business type
                 <select
@@ -1660,6 +1861,22 @@ export function LeadsTablePage({
           ) : (
             <>
               <label className="block text-xs text-slate-400">
+                Sort by
+                <select
+                  value={sortSelectValue()}
+                  onChange={(e) => applySortSelect(e.target.value)}
+                  className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
+                >
+                  <option value="recent">Recently added</option>
+                  <option value="oldest">Oldest first</option>
+                  <option value="company_name">Company name</option>
+                  <option value="country">Country</option>
+                  <option value="latest_score">Score</option>
+                  <option value="market_role">Market role</option>
+                </select>
+              </label>
+
+              <label className="block text-xs text-slate-400">
                 Score
                 <select
                   value={score}
@@ -1771,7 +1988,10 @@ export function LeadsTablePage({
             {hasActiveFilters
               ? "No leads match these filters."
               : !isAdmin
-                ? "No leads in this section yet. Import a CSV or Excel file into Leads table or Old clients, or ask an admin to send you leads."
+                ? isOldClients
+                  ? "No old clients yet. Import a CSV or Excel file to map past clients into this table."
+                  : callOutcomeEmptyMessage ??
+                    "No clients in this section yet. After a call, clients move here from Old clients."
                 : isOldClients
                   ? "No old clients yet. Import a CSV or Excel file to map past clients into this table."
                   : callOutcomeEmptyMessage ?? "No leads in this section yet. Import a CSV or Excel file to get started."}
@@ -1825,7 +2045,16 @@ export function LeadsTablePage({
                     />
                   </th>
                   <th className={`${TH} min-w-[72px]`}>S. No</th>
-                  <th className={`${TH} min-w-[180px]`}>Company Name</th>
+                  <th className={`${TH} min-w-[180px]`}>
+                    <button type="button" onClick={() => toggleSort("company_name")} className="hover:text-slate-300">
+                      Company Name{sortIndicator("company_name")}
+                    </button>
+                  </th>
+                  <th className={`${TH} min-w-[120px]`}>
+                    <button type="button" onClick={() => toggleSort("created_at")} className="hover:text-slate-300">
+                      Added{sortIndicator("created_at")}
+                    </button>
+                  </th>
                   <th className={`${TH} min-w-[140px]`}>Business Type</th>
                   <th className={`${TH} min-w-[140px]`}>Companies Grading</th>
                   <th className={`${TH} min-w-[130px]`}>Designation</th>
@@ -1904,6 +2133,9 @@ export function LeadsTablePage({
                       </td>
                       <td className={TD_PRIMARY}>
                         {cell("company_name", row.company_name)}
+                      </td>
+                      <td className={TD_MUTED} title={row.created_at || undefined}>
+                        {formatAddedAt(row.created_at)}
                       </td>
                       <td className={TD_MUTED}>{cell("industry", row.industry ?? "")}</td>
                       <td className={TD_MUTED}>
@@ -2131,6 +2363,11 @@ export function LeadsTablePage({
                     Company{sortIndicator("company_name")}
                   </button>
                 </th>
+                <th className={`${TH} min-w-[120px]`}>
+                  <button type="button" onClick={() => toggleSort("created_at")} className="hover:text-slate-300">
+                    Added{sortIndicator("created_at")}
+                  </button>
+                </th>
                 <th className={`${TH} min-w-[88px]`}>
                   <button type="button" onClick={() => toggleSort("latest_score")} className="hover:text-slate-300">
                     Score{sortIndicator("latest_score")}
@@ -2203,6 +2440,9 @@ export function LeadsTablePage({
                           )}
                         </>
                       )}
+                    </td>
+                    <td className={TD_MUTED} title={row.created_at || undefined}>
+                      {formatAddedAt(row.created_at)}
                     </td>
                     <td className={TD}>
                       <ScoreBadge score={scoreLabel(row.latest_score)} />

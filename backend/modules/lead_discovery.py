@@ -401,11 +401,21 @@ def _value_or_none(value: str | None) -> str | None:
 
 
 def _import_scope_for_source(import_source: str | None) -> dict[str, str | None]:
-    """Keep old-client imports separate from the main leads table."""
+    """Keep old-client imports separate from the main leads table.
+
+    Used for section-scoped replace/dedupe during import. Discovery "already
+    exists" checks intentionally use all buyers (see discover paths) so an
+    old client cannot be re-imported as a new discovery.
+    """
     normalized = (import_source or "").strip().lower()
     if normalized == "old_clients":
         return {"source": "old_clients", "exclude_source": None}
     return {"source": None, "exclude_source": "old_clients"}
+
+
+def _discovery_existing_keys(db: Session) -> tuple[set[str], set[str]]:
+    """Keys for marking already_exists — includes old clients so they are not rediscovered."""
+    return _existing_buyer_keys(db)
 
 
 def _existing_buyer_keys(
@@ -2620,10 +2630,7 @@ def discover_leads(
     all_candidates = _dedupe_candidates(all_candidates)[:limit]
     if not skip_enrichment:
         _enrich_candidates(all_candidates)
-    existing_names, existing_domains = _existing_buyer_keys(
-        db,
-        **_import_scope_for_source(None),
-    )
+    existing_names, existing_domains = _discovery_existing_keys(db)
     _mark_existing(all_candidates, existing_names, existing_domains)
     result.candidates = all_candidates
 
@@ -2971,10 +2978,15 @@ def discover_from_csv(
         return result
 
     scope_source = import_source if import_source else None
-    existing_names, existing_domains = _existing_buyer_keys(
-        db,
-        **_import_scope_for_source(scope_source),
-    )
+    if (scope_source or "").strip().lower() == "old_clients":
+        # Old-clients spreadsheet: only flag duplicates within that section.
+        existing_names, existing_domains = _existing_buyer_keys(
+            db,
+            **_import_scope_for_source("old_clients"),
+        )
+    else:
+        # Discover / leads-table CSV: flag matches against old clients too.
+        existing_names, existing_domains = _discovery_existing_keys(db)
     invalid_count = _flag_invalid_candidates(candidates)
     if invalid_count:
         result.messages.append(
@@ -3026,6 +3038,17 @@ def import_candidates(
     )
     existing_names = set(by_name.keys())
     existing_domains = set(by_domain.keys())
+
+    # Cross-section blocklist: never create a leads-table row that matches an
+    # old client (and never delete/replace an old client from a leads import).
+    other_names: set[str] = set()
+    other_domains: set[str] = set()
+    if (batch_source or "").strip().lower() != "old_clients":
+        other_names, other_domains = _existing_buyer_keys(db, source="old_clients")
+    else:
+        other_names, other_domains = _existing_buyer_keys(
+            db, exclude_source="old_clients"
+        )
 
     def _import_data_score(raw: dict[str, Any]) -> int:
         points = 0
@@ -3156,6 +3179,18 @@ def import_candidates(
 
             name_key = _normalize_name(name)
             domain = _domain(raw.get("website_url"))
+
+            # Block cross-section duplicates (e.g. discovery matching an old client).
+            if name_key in other_names or (domain and domain in other_domains):
+                reason = (
+                    "Already an old client"
+                    if (batch_source or "").strip().lower() != "old_clients"
+                    else "Already in Discover / Leads table"
+                )
+                skipped.append({"company_name": name, "reason": reason})
+                _checkpoint_commit()
+                continue
+
             existing = by_name.get(name_key) or (by_domain.get(domain) if domain else None)
             if existing is not None:
                 should_replace = False

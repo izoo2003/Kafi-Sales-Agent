@@ -24,6 +24,7 @@ from api.schemas import (
     LeadScoreRead,
     LeadTableCleanupResponse,
     LeadTableDedupeResponse,
+    RemoveOldClientOverlapsResponse,
     LeadTableBulkDeleteRequest,
     LeadTableBulkDeleteResponse,
     LeadTableBulkAssignRequest,
@@ -125,7 +126,13 @@ router = APIRouter(prefix="/leads", tags=["leads"])
 
 @router.get("", response_model=BuyerListResponse)
 def list_leads(page: int = 1, page_size: int = 20, db: Session = Depends(get_db)):
-    return leads_module.list_buyers_with_scores(db, page=page, page_size=page_size)
+    """Discover Leads list — excludes old_clients (those live only in Old clients)."""
+    return leads_module.list_buyers_with_scores(
+        db,
+        page=page,
+        page_size=page_size,
+        exclude_source="old_clients",
+    )
 
 
 @router.post("", response_model=BuyerRead, status_code=201)
@@ -557,6 +564,19 @@ def dedupe_leads_table(
         exclude_source=exclude_source,
     )
     return LeadTableDedupeResponse(**result)
+
+
+@router.post("/table/remove-old-client-overlaps", response_model=RemoveOldClientOverlapsResponse)
+def remove_old_client_overlaps(
+    db: Session = Depends(get_db),
+    _: AppUser = Depends(require_admin),
+):
+    """Delete Discover / Leads-table rows that match an Old client by name or domain.
+
+    Old clients are kept. Only overlapping new-discovery leads are removed.
+    """
+    result = leads_module.remove_leads_overlapping_old_clients(db)
+    return RemoveOldClientOverlapsResponse(**result)
 
 
 @router.post("/table/unassign-imports")

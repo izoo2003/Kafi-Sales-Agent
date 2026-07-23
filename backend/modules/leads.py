@@ -149,19 +149,34 @@ def list_buyers_with_scores(
     *,
     page: int = 1,
     page_size: int = 20,
+    exclude_source: str | None = "old_clients",
 ) -> dict[str, object]:
-    """Return buyers enriched with latest HOT/WARM/COLD score (paginated)."""
+    """Return buyers enriched with latest HOT/WARM/COLD score (paginated).
+
+    Discover Leads excludes old_clients by default — those belong only in the
+    Old clients table, not in new-discovery surfaces.
+    """
     page = max(1, page)
     page_size = min(max(1, page_size), 100)
 
-    total = db.query(Buyer).count()
+    buyer_query = db.query(Buyer)
+    excluded = {
+        part.strip().lower()
+        for part in (exclude_source or "").split(",")
+        if part.strip()
+    }
+    if excluded:
+        buyer_query = buyer_query.filter(
+            ~sa_func.lower(sa_func.coalesce(Buyer.source, "")).in_(excluded)
+        )
+
+    total = buyer_query.with_entities(sa_func.count(Buyer.id)).scalar() or 0
     total_pages = max(1, (total + page_size - 1) // page_size) if total else 1
     if page > total_pages:
         page = total_pages
 
     buyers = (
-        db.query(Buyer)
-        .order_by(Buyer.created_at.desc())
+        buyer_query.order_by(Buyer.created_at.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
@@ -1288,6 +1303,111 @@ def _section_buyers_query(
             ~sa_func.lower(sa_func.coalesce(Buyer.source, "")).in_(excluded)
         )
     return query
+
+
+def remove_leads_overlapping_old_clients(db: Session) -> dict[str, object]:
+    """Delete Leads-table / Discover rows that match an Old client by name or domain.
+
+    Old clients are never deleted. Only non-old_clients buyers that collide with
+    an old client (normalized company name or website domain) are removed.
+    """
+    from modules.audit import log_action
+    from modules.lead_discovery import _domain, _normalize_name
+
+    old_clients = _section_buyers_query(db, source="old_clients").all()
+    if not old_clients:
+        return {
+            "removed_count": 0,
+            "kept_count": 0,
+            "groups": [],
+            "old_clients_count": 0,
+        }
+
+    old_names: set[str] = set()
+    old_domains: set[str] = set()
+    for buyer in old_clients:
+        name_key = _normalize_name(buyer.company_name)
+        if name_key:
+            old_names.add(name_key)
+        domain = _domain(buyer.website_url)
+        if domain:
+            old_domains.add(domain)
+
+    leads = _section_buyers_query(db, exclude_source="old_clients").all()
+    remove_ids: list[int] = []
+    groups: list[dict[str, object]] = []
+
+    for buyer in leads:
+        name_key = _normalize_name(buyer.company_name)
+        domain = _domain(buyer.website_url)
+        matched_by: list[str] = []
+        if name_key and name_key in old_names:
+            matched_by.append("company_name")
+        if domain and domain in old_domains:
+            matched_by.append("website_domain")
+        if not matched_by:
+            continue
+        remove_ids.append(buyer.id)
+        groups.append(
+            {
+                "company_name": buyer.company_name,
+                "kept_id": 0,
+                "removed_ids": [buyer.id],
+                "removed_names": [buyer.company_name],
+                "match": ",".join(matched_by),
+            }
+        )
+
+    removed_count = 0
+    import time
+
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+
+    CHUNK = 40
+    for start in range(0, len(remove_ids), CHUNK):
+        chunk = remove_ids[start : start + CHUNK]
+        for attempt in range(4):
+            try:
+                db.execute(text("SET LOCAL statement_timeout = '60s'"))
+                removed_count += buyers_module.delete_buyers_bulk(db, chunk, commit=True)
+                break
+            except OperationalError:
+                db.rollback()
+                if attempt >= 3:
+                    raise
+                time.sleep(1.5 * (attempt + 1))
+
+    if removed_count:
+        invalidate_lead_table_filters_cache()
+        invalidate_section_counts_cache()
+
+    log_action(
+        db,
+        entity_type="buyer",
+        entity_id=0,
+        action="removed_old_client_overlaps",
+        details={
+            "removed_count": removed_count,
+            "groups": len(groups),
+            "old_clients_count": len(old_clients),
+        },
+    )
+
+    return {
+        "removed_count": removed_count,
+        "kept_count": len(leads) - removed_count,
+        "groups": [
+            {
+                "company_name": g["company_name"],
+                "kept_id": 0,
+                "removed_ids": g["removed_ids"],
+                "removed_names": g["removed_names"],
+            }
+            for g in groups
+        ],
+        "old_clients_count": len(old_clients),
+    }
 
 
 def dedupe_leads_table(

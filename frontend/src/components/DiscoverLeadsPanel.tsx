@@ -393,8 +393,9 @@ export function DiscoverLeadsPanel({
         <div>
           <h3 className="text-sm font-medium text-slate-200">Discover leads</h3>
           <p className="text-xs text-slate-500 mt-1">
-            Find similar importers and distributors. Up to {MAX_DISCOVERY_BATCH} leads per batch —
-            enriched one at a time for quality. Preview before adding — no auto-outreach.
+            Find new importers and distributors for the Leads table. Companies already in
+            Old clients are flagged and skipped. Up to {MAX_DISCOVERY_BATCH} leads per batch —
+            preview before adding — no auto-outreach.
           </p>
         </div>
         {onCancel && (
@@ -738,7 +739,7 @@ export function DiscoverLeadsPanel({
                     </td>
                     <td className="py-2 text-xs">
                       {candidate.already_exists ? (
-                        <span className="text-amber-400/90">Already in leads</span>
+                        <span className="text-amber-400/90">Already in leads or Old clients</span>
                       ) : (
                         <span className="text-slate-500">New</span>
                       )}

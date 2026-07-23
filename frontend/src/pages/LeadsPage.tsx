@@ -55,12 +55,20 @@ export function LeadsPage({ onError, onSelectLead, onTotalChange }: LeadsPagePro
 
   return (
     <section className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-slate-400">
-          {total} lead{total === 1 ? "" : "s"}
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-100">Discover Leads</h2>
+          <p className="text-sm text-slate-400 mt-1 max-w-2xl">
+            New prospects found via web discovery or manual add. Old clients stay in the{" "}
+            <span className="text-slate-300">Old clients</span> table and never appear here.
+            Saved discoveries also land in the Leads table.
+          </p>
+          <p className="text-sm text-slate-500 mt-2">
+            {total} discovery lead{total === 1 ? "" : "s"}
+          </p>
+        </div>
         {!showCreateForm && (
-          <div className="flex gap-2">
+          <div className="flex gap-2 shrink-0">
             <button
               type="button"
               onClick={() => {

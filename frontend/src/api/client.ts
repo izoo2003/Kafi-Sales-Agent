@@ -55,7 +55,8 @@ function timeoutForPath(path: string): number {
   if (
     path.startsWith("/leads/table/dedupe") ||
     path.startsWith("/leads/table/unassign") ||
-    path.startsWith("/leads/table/cleanup")
+    path.startsWith("/leads/table/cleanup") ||
+    path.startsWith("/leads/table/remove-old-client-overlaps")
   ) {
     return 300_000; // bulk repair jobs can take a few minutes under lock waits
   }
@@ -887,6 +888,18 @@ export interface LeadTableDedupeResponse {
   }>;
 }
 
+export interface RemoveOldClientOverlapsResponse {
+  removed_count: number;
+  kept_count: number;
+  old_clients_count: number;
+  groups: Array<{
+    company_name: string;
+    kept_id: number;
+    removed_ids: number[];
+    removed_names: string[];
+  }>;
+}
+
 export interface LeadTableCleanupResponse {
   removed_count: number;
   removed: Array<{ id: number; company_name: string }>;
@@ -1255,6 +1268,10 @@ export const client = {
       { method: "POST" },
     );
   },
+  removeOldClientOverlaps: () =>
+    request<RemoveOldClientOverlapsResponse>("/leads/table/remove-old-client-overlaps", {
+      method: "POST",
+    }),
   cleanupSparseCsvLeads: (params: LeadTableSectionScope = {}) => {
     const search = new URLSearchParams();
     if (params.source) search.set("source", params.source);
