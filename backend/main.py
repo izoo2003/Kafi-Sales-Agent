@@ -150,7 +150,7 @@ _PUBLIC_API_PREFIXES = ("/api/webhooks/", "/api/track/")
 
 @app.middleware("http")
 async def require_api_auth(request, call_next):
-    """Require a valid bearer session for dashboard API routes."""
+    """Require a valid session (Bearer or httpOnly cookie) for dashboard API routes."""
     if request.method == "OPTIONS":
         return await call_next(request)
 
@@ -160,16 +160,19 @@ async def require_api_auth(request, call_next):
     if path in _PUBLIC_API_PATHS or any(path.startswith(prefix) for prefix in _PUBLIC_API_PREFIXES):
         return await call_next(request)
 
-    auth_header = request.headers.get("authorization") or ""
-    scheme, _, token = auth_header.partition(" ")
-    if scheme.lower() != "bearer" or not token.strip():
+    from modules import auth as auth_module
+
+    token = auth_module.extract_session_token(
+        authorization=request.headers.get("authorization"),
+        cookie_header=request.headers.get("cookie"),
+        cookies=request.cookies,
+    )
+    if not token:
         from fastapi.responses import JSONResponse
 
         return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
 
-    from modules import auth as auth_module
-
-    cached = auth_module.get_cached_auth(token.strip())
+    cached = auth_module.get_cached_auth(token)
     if cached:
         request.state.user_id = cached[0]
         request.state.user_role = cached[1]
@@ -177,7 +180,7 @@ async def require_api_auth(request, call_next):
 
     db = SessionLocal()
     try:
-        user = auth_module.get_user_by_token(db, token.strip())
+        user = auth_module.get_user_by_token(db, token)
         if not user:
             from fastapi.responses import JSONResponse
 

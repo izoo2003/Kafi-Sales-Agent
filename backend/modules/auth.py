@@ -17,9 +17,45 @@ DEFAULT_ADMIN_PASSWORD = "1234"
 DEFAULT_ADMIN_FULL_NAME = "Administrator"
 
 SESSION_DAYS = 30
+SESSION_COOKIE_NAME = "kafi_session"
 _PBKDF2_ITERATIONS = 120_000
 _TOKEN_CACHE_TTL_SECONDS = 45
 _token_user_cache: dict[str, tuple[float, int, str]] = {}
+
+
+def session_cookie_kwargs(*, secure: bool) -> dict:
+    """httpOnly session cookie flags. Secure+None for HTTPS (Vercel/Railway); Lax on local HTTP."""
+    return {
+        "key": SESSION_COOKIE_NAME,
+        "httponly": True,
+        "secure": secure,
+        "samesite": "none" if secure else "lax",
+        "max_age": SESSION_DAYS * 24 * 60 * 60,
+        "path": "/",
+    }
+
+
+def extract_session_token(
+    *,
+    authorization: str | None = None,
+    cookie_header: str | None = None,
+    cookies: dict[str, str] | None = None,
+) -> str | None:
+    """Prefer Authorization Bearer, then session cookie (CRM-style cookie auth)."""
+    if authorization:
+        scheme, _, value = authorization.partition(" ")
+        if scheme.lower() == "bearer" and value.strip():
+            return value.strip()
+    if cookies:
+        raw = cookies.get(SESSION_COOKIE_NAME)
+        if raw and raw.strip():
+            return raw.strip()
+    if cookie_header:
+        for part in cookie_header.split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == SESSION_COOKIE_NAME and value.strip():
+                return value.strip()
+    return None
 
 
 def _cache_auth_hit(token: str, user: AppUser) -> None:

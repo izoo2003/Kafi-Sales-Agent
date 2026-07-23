@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from db.models import AppUser, AppUserRole
@@ -11,24 +11,35 @@ from modules import auth as auth_module
 
 __all__ = [
     "get_db",
+    "get_session_token",
     "get_bearer_token",
     "get_current_user",
     "require_admin",
 ]
 
 
-def get_bearer_token(authorization: str | None = Header(default=None)) -> str | None:
-    if not authorization:
-        return None
-    scheme, _, value = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not value.strip():
-        return None
-    return value.strip()
+def get_session_token(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> str | None:
+    """Session token from Bearer header or httpOnly cookie."""
+    return auth_module.extract_session_token(
+        authorization=authorization,
+        cookies=request.cookies,
+    )
+
+
+# Back-compat alias used by older route signatures.
+def get_bearer_token(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> str | None:
+    return get_session_token(request, authorization)
 
 
 def get_current_user(
     db: Session = Depends(get_db),
-    token: str | None = Depends(get_bearer_token),
+    token: str | None = Depends(get_session_token),
 ) -> AppUser:
     user = auth_module.get_user_by_token(db, token)
     if not user:

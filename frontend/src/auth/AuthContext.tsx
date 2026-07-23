@@ -10,10 +10,9 @@ import {
 import { client } from "../api/client";
 import {
   clearSession,
-  getStoredToken,
   getStoredUser,
   isAdmin,
-  storeSession,
+  storeUser,
   type AuthUser,
 } from "./session";
 
@@ -28,20 +27,15 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+/** Max wait for session bootstrap before forcing login screen. */
+const AUTH_SAFETY_MS = 20_000;
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(() => getStoredUser());
-  const [loading, setLoading] = useState(() => Boolean(getStoredToken()));
+  // Always verify cookie session on boot (httpOnly cookie isn't readable from JS).
+  const [loading, setLoading] = useState(true);
 
   const refreshMe = useCallback(async () => {
-    const token = getStoredToken();
-    if (!token) {
-      setUser(null);
-      setLoading(false);
-      return;
-    }
-
-    // Hard safety net: if the /auth/me request hangs beyond this, unblock the UI.
-    // The fetch already has a 12s per-attempt timeout; this covers the full retry cycle.
     let safetyTimer: ReturnType<typeof setTimeout> | null = null;
     const safetyPromise = new Promise<void>((resolve) => {
       safetyTimer = setTimeout(() => {
@@ -49,7 +43,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(null);
         setLoading(false);
         resolve();
-      }, 30_000);
+      }, AUTH_SAFETY_MS);
     });
 
     const work = async () => {
@@ -62,7 +56,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           role: me.role === "admin" ? "admin" : "user",
           is_active: me.is_active,
         };
-        storeSession(token, next);
+        storeUser(next);
         setUser(next);
       } catch {
         clearSession();
@@ -99,7 +93,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       role: result.user.role === "admin" ? "admin" : "user",
       is_active: result.user.is_active,
     };
-    storeSession(result.token, next);
+    // Cookie is set by the API; we only cache the profile for UI.
+    storeUser(next);
     setUser(next);
   }, []);
 

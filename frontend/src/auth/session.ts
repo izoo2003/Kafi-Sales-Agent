@@ -1,4 +1,4 @@
-/** Persist dashboard auth session in localStorage. */
+/** Persist lightweight user profile hint; real auth is the httpOnly session cookie. */
 
 export type AppRole = "admin" | "user";
 
@@ -10,6 +10,7 @@ export interface AuthUser {
   is_active: boolean;
 }
 
+/** Legacy localStorage token — cleared on login/logout; Bearer still sent if present (migration). */
 const TOKEN_KEY = "kafi_auth_token";
 const USER_KEY = "kafi_auth_user";
 
@@ -33,9 +34,16 @@ export function getStoredUser(): AuthUser | null {
   }
 }
 
-export function storeSession(token: string, user: AuthUser): void {
-  localStorage.setItem(TOKEN_KEY, token);
+/** Cache display profile only — session lives in httpOnly cookie `kafi_session`. */
+export function storeUser(user: AuthUser): void {
   localStorage.setItem(USER_KEY, JSON.stringify(user));
+  // Drop legacy bearer tokens so cookie auth is the source of truth.
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+/** @deprecated Prefer storeUser — kept for call sites during migration. */
+export function storeSession(_token: string, user: AuthUser): void {
+  storeUser(user);
 }
 
 export function clearSession(): void {

@@ -1,10 +1,14 @@
 /**
  * Single API client for the FastAPI backend.
  * All pages/hooks must call through here — never scatter fetch() elsewhere.
+ *
+ * Auth: httpOnly cookie `kafi_session` (credentials: include) via same-origin /api
+ * proxy on Vercel. Optional legacy Bearer from localStorage during migration.
  */
 
 import { clearSession, getStoredToken } from "../auth/session";
 
+/** Prefer relative /api (Vercel rewrite / Vite proxy) so cookies stay same-site. */
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 
 /** External quotation agent (separate app). */
@@ -38,6 +42,8 @@ function parseErrorDetail(text: string, fallback: string): string {
 
 /** Max ms a single fetch attempt may take before it is aborted. */
 const FETCH_TIMEOUT_MS = 12_000;
+/** Tighter timeout for session bootstrap (/auth/me). */
+const AUTH_FETCH_TIMEOUT_MS = 8_000;
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = new Headers(authHeaders({ "Content-Type": "application/json" }));
@@ -48,15 +54,17 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
   const method = (options?.method || "GET").toUpperCase();
   const canRetry = method === "GET" || method === "HEAD";
+  const timeoutMs = path.startsWith("/auth/") ? AUTH_FETCH_TIMEOUT_MS : FETCH_TIMEOUT_MS;
   let lastNetworkError: Error | null = null;
 
   for (let attempt = 0; attempt < (canRetry ? 2 : 1); attempt += 1) {
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await fetch(`${API_BASE}${path}`, {
         ...options,
         headers,
+        credentials: "include",
         signal: controller.signal,
       });
       window.clearTimeout(timeoutId);
@@ -1230,6 +1238,7 @@ export const client = {
       method: "POST",
       body: form,
       headers: authHeaders(),
+      credentials: "include",
     });
     if (!res.ok) {
       let message = res.statusText;
@@ -1526,6 +1535,7 @@ export const client = {
       method: "POST",
       body: form,
       headers: authHeaders(),
+      credentials: "include",
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -1580,6 +1590,7 @@ export const client = {
       method: "POST",
       body: form,
       headers: authHeaders(),
+      credentials: "include",
     });
     if (!res.ok) {
       const text = await res.text();
@@ -1639,11 +1650,12 @@ export const client = {
     request<void>(`/calls/${interactionId}`, { method: "DELETE" }),
   getCallRecordingUrl: (interactionId: number, download = false) =>
     `${API_BASE}/calls/${interactionId}/recording${download ? "?download=1" : ""}`,
-  /** Authenticated fetch — browser <audio>/<a href> cannot send Bearer tokens. */
+  /** Authenticated fetch — prefers httpOnly cookie; Bearer only if legacy token remains. */
   fetchCallRecordingBlob: async (interactionId: number, download = false) => {
     const token = getStoredToken();
     const url = `${API_BASE}/calls/${interactionId}/recording${download ? "?download=1" : ""}`;
     const res = await fetch(url, {
+      credentials: "include",
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     if (res.status === 401) {

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from api.deps import get_bearer_token, get_current_user, get_db, require_admin
+from api.deps import get_current_user, get_db, get_session_token, require_admin
 from db.models import AppUser, AppUserRole
 from modules import auth as auth_module
 
@@ -58,24 +58,52 @@ def _to_user_read(user: AppUser) -> UserRead:
     )
 
 
+def _request_wants_secure_cookie(request: Request) -> bool:
+    """True for HTTPS clients (incl. behind Vercel/Railway proxies)."""
+    if request.url.scheme == "https":
+        return True
+    proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    return proto == "https"
+
+
 @router.post("/login", response_model=LoginResponse)
-def login(body: LoginRequest, db: Session = Depends(get_db)) -> Any:
+def login(
+    body: LoginRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> Any:
     user = auth_module.authenticate(db, body.username, body.password)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid username or password")
     session = auth_module.create_session(db, user)
+    secure = _request_wants_secure_cookie(request)
+    response.set_cookie(
+        value=session.token,
+        **auth_module.session_cookie_kwargs(secure=secure),
+    )
     return LoginResponse(token=session.token, user=_to_user_read(user))
 
 
 @router.post("/logout", status_code=204)
 def logout(
+    request: Request,
+    response: Response,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
-    token: str | None = Depends(get_bearer_token),
+    token: str | None = Depends(get_session_token),
 ) -> None:
     del user
     if token:
         auth_module.revoke_session(db, token)
+    secure = _request_wants_secure_cookie(request)
+    response.delete_cookie(
+        key=auth_module.SESSION_COOKIE_NAME,
+        path="/",
+        secure=secure,
+        httponly=True,
+        samesite="none" if secure else "lax",
+    )
 
 
 @router.get("/me", response_model=UserRead)
