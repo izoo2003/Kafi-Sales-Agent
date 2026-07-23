@@ -168,53 +168,18 @@ def _run_import(
             progress_callback=on_progress,
         )
 
-        # Serialize ORM rows to plain dicts before the session closes.
+        _update(job_id, status="verifying")
+        created_count, skipped_rows, replaced_rows, verified_total = _finalize_import_result(
+            db,
+            result,
+            import_source=import_source,
+            job_id=job_id,
+            user_id=user_id,
+        )
         created_rows = [
             {"id": buyer.id, "company_name": buyer.company_name}
             for buyer in result.get("created", [])
         ]
-        skipped_rows = list(result.get("skipped", []))
-        replaced_rows = list(result.get("replaced", []))
-
-        _update(job_id, status="verifying")
-        verified_total: int | None = None
-        if import_source:
-            from sqlalchemy import func as sa_func
-
-            from db.models import Buyer
-
-            verified_total = (
-                db.query(sa_func.count(Buyer.id))
-                .filter(Buyer.source == import_source)
-                .scalar()
-            ) or 0
-
-        created_count = len(created_rows)
-        if created_count > 0 and user_id is not None:
-            try:
-                from modules import activity as activity_module
-
-                activity_module.log_activity(
-                    db,
-                    user_id=user_id,
-                    activity_type=activity_module.LEADS_IMPORTED,
-                    title="Leads imported",
-                    summary=(
-                        f"Imported {created_count} lead{'s' if created_count != 1 else ''} "
-                        "into the table"
-                    ),
-                    quantity=created_count,
-                    entity_type="buyer",
-                    entity_id=None,
-                    details={
-                        "created_count": created_count,
-                        "skipped_count": len(skipped_rows),
-                        "replaced_count": len(replaced_rows),
-                        "import_job_id": job_id,
-                    },
-                )
-            except Exception:  # noqa: BLE001 — activity log must not fail the import
-                pass
 
         _update(
             job_id,
@@ -231,18 +196,102 @@ def _run_import(
             _finished_mono=time.monotonic(),
         )
     except Exception as exc:  # noqa: BLE001 — job must always reach a terminal state
-        # Rows are committed in checkpoints during the import (see COMMIT_EVERY in
-        # lead_discovery.import_candidates), so a mid-import failure does not roll
-        # back everything — whatever was committed up to the last checkpoint is
-        # already saved. `processed`/`created_count` above still reflect that.
-        _update(
-            job_id,
-            status="failed",
-            error=(
-                f"{exc or exc.__class__.__name__} — rows saved up to the last "
-                "checkpoint are still in the table; re-run the import for the rest."
-            ),
-            _finished_mono=time.monotonic(),
-        )
+        # import_candidates commits in checkpoints (see COMMIT_EVERY) and, on
+        # failure, makes a best-effort final commit of everything mapped so
+        # far before re-raising — attaching what actually landed in the DB as
+        # `partial_import_result`. Surface that here instead of reporting a
+        # bare failure with no rows saved.
+        partial = getattr(exc, "partial_import_result", None)
+        if partial:
+            created_count, skipped_rows, replaced_rows, verified_total = _finalize_import_result(
+                db,
+                partial,
+                import_source=import_source,
+                job_id=job_id,
+                user_id=user_id,
+            )
+            created_rows = [
+                {"id": buyer.id, "company_name": buyer.company_name}
+                for buyer in partial.get("created", [])
+            ]
+            _update(
+                job_id,
+                status="failed",
+                created_count=created_count,
+                skipped_count=len(skipped_rows),
+                replaced_count=len(replaced_rows),
+                verified_source_total=verified_total,
+                created=created_rows,
+                skipped=skipped_rows,
+                replaced=replaced_rows,
+                error=(
+                    f"{exc} — {created_count} lead(s) mapped before the error were "
+                    "still saved to the table; re-run the import for the remaining rows."
+                ),
+                _finished_mono=time.monotonic(),
+            )
+        else:
+            _update(
+                job_id,
+                status="failed",
+                error=str(exc) or exc.__class__.__name__,
+                _finished_mono=time.monotonic(),
+            )
     finally:
         db.close()
+
+
+def _finalize_import_result(
+    db: Any,
+    result: dict[str, Any],
+    *,
+    import_source: str | None,
+    job_id: str,
+    user_id: int | None,
+) -> tuple[int, list[dict[str, str]], list[dict[str, Any]], int | None]:
+    """Verify the DB row count for the import source and log the activity entry.
+
+    Shared by both the successful-completion path and the partial-failure path
+    so a mid-import error still gets an accurate, DB-verified saved count.
+    """
+    skipped_rows = list(result.get("skipped", []))
+    replaced_rows = list(result.get("replaced", []))
+    created_count = len(result.get("created", []))
+
+    verified_total: int | None = None
+    if import_source:
+        try:
+            from sqlalchemy import func as sa_func
+
+            from db.models import Buyer
+
+            verified_total = (
+                db.query(sa_func.count(Buyer.id)).filter(Buyer.source == import_source).scalar()
+            ) or 0
+        except Exception:  # noqa: BLE001 — verification is best-effort
+            verified_total = None
+
+    if created_count > 0 and user_id is not None:
+        try:
+            from modules import activity as activity_module
+
+            activity_module.log_activity(
+                db,
+                user_id=user_id,
+                activity_type=activity_module.LEADS_IMPORTED,
+                title="Leads imported",
+                summary=f"Imported {created_count} lead{'s' if created_count != 1 else ''} into the table",
+                quantity=created_count,
+                entity_type="buyer",
+                entity_id=None,
+                details={
+                    "created_count": created_count,
+                    "skipped_count": len(skipped_rows),
+                    "replaced_count": len(replaced_rows),
+                    "import_job_id": job_id,
+                },
+            )
+        except Exception:  # noqa: BLE001 — activity log must not fail the import
+            pass
+
+    return created_count, skipped_rows, replaced_rows, verified_total

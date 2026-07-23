@@ -3073,9 +3073,16 @@ def import_candidates(
     # contacts/buyers) held that lock for the entire import — long enough for
     # unrelated queries (someone loading/deleting leads elsewhere) to hit
     # Postgres's statement_timeout waiting on the lock. Commit periodically so
-    # locks are released in small batches instead of one multi-minute hold.
-    COMMIT_EVERY = 200
+    # locks are released in small batches instead of one multi-minute hold, and
+    # so a mid-import failure only loses a small window of rows (see the
+    # commit-then-rollback fallback in the except block below for the rest).
+    COMMIT_EVERY = 50
     rows_since_checkpoint = 0
+    # How much of `created` / `replaced` is actually committed to the DB right
+    # now (vs. only staged in this Python-level list). `skipped` never needs
+    # this — a skip has no DB side effect to roll back.
+    committed_created = 0
+    committed_replaced = 0
 
     if skip_enrichment:
         # Avoid per-attribute refresh queries after each periodic commit —
@@ -3090,7 +3097,7 @@ def import_candidates(
             pending_since_flush = 0
 
     def _checkpoint_commit() -> None:
-        nonlocal rows_since_checkpoint, pending_since_flush
+        nonlocal rows_since_checkpoint, pending_since_flush, committed_created, committed_replaced
         if not skip_enrichment:
             return
         rows_since_checkpoint += 1
@@ -3098,6 +3105,8 @@ def import_candidates(
             db.commit()
             rows_since_checkpoint = 0
             pending_since_flush = 0
+            committed_created = len(created)
+            committed_replaced = len(replaced)
 
     def _report_progress(processed: int, current_name: str) -> None:
         if progress_callback is None:
@@ -3328,9 +3337,43 @@ def import_candidates(
                     "skip_enrichment": True,
                 },
             )
-    except Exception:
+    except Exception as exc:
         if skip_enrichment:
-            db.rollback()
+            # Save whatever was already mapped and staged before the failure
+            # instead of discarding the whole import. This only fails (falling
+            # back to rollback) if the error itself already poisoned the
+            # current DB transaction — in that case at most the rows since the
+            # last COMMIT_EVERY checkpoint above are lost, not the whole batch.
+            try:
+                db.commit()
+                committed_created = len(created)
+                committed_replaced = len(replaced)
+            except Exception:  # noqa: BLE001 — transaction already broken, discard it
+                db.rollback()
+
+            # `skipped` never touched the DB, so it's always safe to report in
+            # full. `created` / `replaced` are trimmed to what's actually
+            # committed so the caller never claims a row was saved when it
+            # was rolled back.
+            saved_created = created[:committed_created]
+            saved_replaced = replaced[:committed_replaced]
+            if saved_created or saved_replaced:
+                from modules.leads import (
+                    invalidate_lead_table_filters_cache,
+                    invalidate_section_counts_cache,
+                )
+
+                invalidate_lead_table_filters_cache()
+                invalidate_section_counts_cache()
+
+            exc.partial_import_result = {  # type: ignore[attr-defined]
+                "created_count": len(saved_created),
+                "skipped_count": len(skipped),
+                "replaced_count": len(saved_replaced),
+                "created": saved_created,
+                "skipped": skipped,
+                "replaced": saved_replaced,
+            }
         raise
     finally:
         if skip_enrichment:
