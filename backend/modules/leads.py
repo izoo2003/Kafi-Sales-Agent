@@ -72,7 +72,8 @@ def user_can_access_buyer(db: Session, *, user: AppUser, buyer_id: int) -> bool:
     buyer = buyers_module.get_buyer(db, buyer_id)
     if not buyer:
         return False
-    return buyer.assigned_to_user_id == user.id
+    # Sales users can work the shared unassigned pool and leads an admin sent them.
+    return buyer.assigned_to_user_id in (None, user.id)
 
 
 def clear_assignments_for_user(db: Session, user_id: int) -> None:
@@ -80,6 +81,63 @@ def clear_assignments_for_user(db: Session, user_id: int) -> None:
     for buyer in buyers:
         buyer.assigned_to_user_id = None
         buyer.assigned_to = "unassigned"
+
+
+def unassign_spreadsheet_imports(db: Session) -> dict[str, int]:
+    """Move auto-imported spreadsheet leads back to the shared pool.
+
+    Older builds auto-assigned CSV / Old clients imports to the importing sales
+    user, which wrongly filled "Leads Sent To {username}". Only an admin
+    assignment should live there — this clears assignee on import sources.
+    """
+    import time
+
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+
+    id_rows = (
+        db.query(Buyer.id)
+        .filter(
+            sa_func.lower(sa_func.coalesce(Buyer.source, "")).in_(
+                ["csv", "old_clients"]
+            ),
+            Buyer.assigned_to_user_id.isnot(None),
+        )
+        .all()
+    )
+    ids = [int(row[0]) for row in id_rows]
+    updated = 0
+    # Tiny chunks — Supabase statement_timeout + lock waits kill bigger UPDATEs.
+    CHUNK = 25
+    for start in range(0, len(ids), CHUNK):
+        chunk = ids[start : start + CHUNK]
+        for attempt in range(4):
+            try:
+                db.execute(text("SET LOCAL statement_timeout = '60s'"))
+                updated += (
+                    db.query(Buyer)
+                    .filter(Buyer.id.in_(chunk))
+                    .update(
+                        {
+                            Buyer.assigned_to_user_id: None,
+                            Buyer.assigned_to: "unassigned",
+                        },
+                        synchronize_session=False,
+                    )
+                    or 0
+                )
+                db.commit()
+                break
+            except OperationalError:
+                db.rollback()
+                if attempt >= 3:
+                    raise
+                time.sleep(1.5 * (attempt + 1))
+
+    if updated:
+        invalidate_lead_table_filters_cache()
+        invalidate_section_counts_cache()
+    return {"unassigned_count": int(updated)}
 
 
 def research_buyer(db: Session, buyer_id: int, *, force_refresh: bool = False) -> BuyerProfile:
@@ -370,9 +428,20 @@ def _apply_lead_table_scope(
     exclude_source: str | None,
     assigned_to_user_id: int | None,
     unassigned_only: bool,
+    pool_for_user_id: int | None = None,
 ):
+    from sqlalchemy import or_
+
     if assigned_to_user_id is not None:
         buyer_query = buyer_query.filter(Buyer.assigned_to_user_id == assigned_to_user_id)
+    elif pool_for_user_id is not None:
+        # Sales user: shared unassigned pool + leads an admin sent them.
+        buyer_query = buyer_query.filter(
+            or_(
+                Buyer.assigned_to_user_id.is_(None),
+                Buyer.assigned_to_user_id == pool_for_user_id,
+            )
+        )
     elif unassigned_only:
         buyer_query = buyer_query.filter(Buyer.assigned_to_user_id.is_(None))
 
@@ -550,6 +619,7 @@ def _filtered_lead_table_rows(
     sort_dir: str = "desc",
     assigned_to_user_id: int | None = None,
     unassigned_only: bool = False,
+    pool_for_user_id: int | None = None,
     include_placed_outcomes: bool = False,
     page: int | None = None,
     page_size: int | None = None,
@@ -568,6 +638,7 @@ def _filtered_lead_table_rows(
         exclude_source=exclude_source,
         assigned_to_user_id=assigned_to_user_id,
         unassigned_only=unassigned_only,
+        pool_for_user_id=pool_for_user_id,
     )
     buyer_query, _ = _apply_call_outcome_scope(
         db,
@@ -847,6 +918,7 @@ def list_leads_table_ids(
     sort_dir: str = "desc",
     assigned_to_user_id: int | None = None,
     unassigned_only: bool = False,
+    pool_for_user_id: int | None = None,
     include_placed_outcomes: bool = False,
 ) -> dict[str, object]:
     rows, _section_total, filtered_count = _filtered_lead_table_rows(
@@ -867,6 +939,7 @@ def list_leads_table_ids(
         sort_dir=sort_dir,
         assigned_to_user_id=assigned_to_user_id,
         unassigned_only=unassigned_only,
+        pool_for_user_id=pool_for_user_id,
         include_placed_outcomes=include_placed_outcomes,
         ids_only=True,
     )
@@ -897,6 +970,7 @@ def list_leads_table(
     page_size: int = 20,
     assigned_to_user_id: int | None = None,
     unassigned_only: bool = False,
+    pool_for_user_id: int | None = None,
     include_placed_outcomes: bool = False,
 ) -> dict[str, object]:
     page = max(1, page)
@@ -920,6 +994,7 @@ def list_leads_table(
         sort_dir=sort_dir,
         assigned_to_user_id=assigned_to_user_id,
         unassigned_only=unassigned_only,
+        pool_for_user_id=pool_for_user_id,
         include_placed_outcomes=include_placed_outcomes,
         page=page,
         page_size=page_size,
@@ -949,7 +1024,10 @@ def invalidate_section_counts_cache() -> None:
 
 
 def count_leads_table_sections(
-    db: Session, *, assigned_to_user_id: int | None = None
+    db: Session,
+    *,
+    assigned_to_user_id: int | None = None,
+    pool_for_user_id: int | None = None,
 ) -> dict[str, object]:
     """Row counts for every leads-table section in a handful of cheap queries.
 
@@ -957,28 +1035,50 @@ def count_leads_table_sections(
     to read `.total` off a page_size=1 response — that used to run the full
     (expensive) row-building pipeline five times on every table view.
 
-    Admin (assigned_to_user_id=None): all / old_clients exclude assigned leads.
-    by_assignee maps user_id string → total leads sent to that user.
+    Admin (assigned_to_user_id=None, pool_for_user_id=None): all / old_clients
+    exclude assigned leads. by_assignee maps user_id string → total leads sent
+    to that user.
+
+    Sales user (pool_for_user_id=user.id): all / old_clients include the shared
+    unassigned pool plus leads an admin sent them. by_assignee is empty — that
+    nav is admin-only.
 
     Results are TTL-cached for 20 s per user scope and invalidated on writes.
     """
-    cache_key = f"{_SECTION_COUNTS_PREFIX}{assigned_to_user_id}"
+    cache_key = f"{_SECTION_COUNTS_PREFIX}{assigned_to_user_id}:{pool_for_user_id}"
     cached = cache.get(cache_key)
     if cached is not MISS:
         return cached  # type: ignore[return-value]
 
-    result = _compute_section_counts(db, assigned_to_user_id=assigned_to_user_id)
+    result = _compute_section_counts(
+        db,
+        assigned_to_user_id=assigned_to_user_id,
+        pool_for_user_id=pool_for_user_id,
+    )
     cache.set(cache_key, result, ttl=_SECTION_COUNTS_TTL)
     return result
 
 
 def _compute_section_counts(
-    db: Session, *, assigned_to_user_id: int | None = None
+    db: Session,
+    *,
+    assigned_to_user_id: int | None = None,
+    pool_for_user_id: int | None = None,
 ) -> dict[str, object]:
     from modules.calls import latest_call_outcomes_by_buyer
 
     buyer_query = db.query(Buyer.id, Buyer.source, Buyer.assigned_to_user_id)
-    if assigned_to_user_id is not None:
+    if pool_for_user_id is not None:
+        from sqlalchemy import or_
+
+        # Sales user: unassigned pool + own assignments.
+        buyer_query = buyer_query.filter(
+            or_(
+                Buyer.assigned_to_user_id.is_(None),
+                Buyer.assigned_to_user_id == pool_for_user_id,
+            )
+        )
+    elif assigned_to_user_id is not None:
         buyer_query = buyer_query.filter(Buyer.assigned_to_user_id == assigned_to_user_id)
 
     old_client_ids: set[int] = set()
@@ -999,7 +1099,8 @@ def _compute_section_counts(
                 unassigned_old_ids.add(buyer_id)
             else:
                 unassigned_other_ids.add(buyer_id)
-        else:
+        elif pool_for_user_id is None:
+            # Only admins need per-user "Leads Sent To" badge counts.
             key = str(assignee_id)
             by_assignee[key] = by_assignee.get(key, 0) + 1
 
@@ -1011,9 +1112,12 @@ def _compute_section_counts(
     not_received_ids = {bid for bid, v in outcomes.items() if v == "not_received_call"}
     placed_ids = interested_ids | not_interested_ids | not_received_ids
 
-    # Admin pool sections use unassigned-only rows; sales users are already
-    # scoped to their assignee id so their "all" / "old_clients" stay assigned.
-    if assigned_to_user_id is None:
+    if pool_for_user_id is not None:
+        # Sales user scope already filtered to unassigned + own assignments.
+        all_count = len(other_ids - placed_ids)
+        old_count = len(old_client_ids - placed_ids)
+    elif assigned_to_user_id is None:
+        # Admin pool: only unassigned rows.
         all_count = len(unassigned_other_ids - placed_ids)
         old_count = len(unassigned_old_ids - placed_ids)
     else:
@@ -1026,7 +1130,7 @@ def _compute_section_counts(
         "interested_clients": len(interested_ids),
         "not_interested_clients": len(not_interested_ids),
         "not_received_call_clients": len(not_received_ids),
-        "by_assignee": by_assignee,
+        "by_assignee": by_assignee if pool_for_user_id is None else {},
     }
 
 
@@ -1219,7 +1323,9 @@ def dedupe_leads_table(
     by_name: dict[str, list[int]] = defaultdict(list)
     by_domain: dict[str, list[int]] = defaultdict(list)
     for buyer in buyers:
-        by_name[_normalize_name(buyer.company_name)].append(buyer.id)
+        name_key = _normalize_name(buyer.company_name)
+        if name_key:
+            by_name[name_key].append(buyer.id)
         domain = _domain(buyer.website_url)
         if domain:
             by_domain[domain].append(buyer.id)
@@ -1235,7 +1341,13 @@ def dedupe_leads_table(
     for buyer in buyers:
         clusters[find_root(buyer.id)].append(buyer)
 
-    removed_count = 0
+    # Score each buyer once up front — calling buyer_data_score inside the
+    # keep/remove loop used to re-query contacts for every duplicate row.
+    score_by_id = {
+        buyer.id: buyers_module.buyer_data_score(db, buyer) for buyer in buyers
+    }
+
+    remove_ids: list[int] = []
     groups: list[dict[str, object]] = []
 
     for cluster in clusters.values():
@@ -1245,15 +1357,12 @@ def dedupe_leads_table(
         keeper = max(
             cluster,
             key=lambda buyer: (
-                buyers_module.buyer_data_score(db, buyer),
+                score_by_id.get(buyer.id, 0),
                 buyer.created_at.timestamp() if buyer.created_at else 0,
             ),
         )
         removed = [buyer for buyer in cluster if buyer.id != keeper.id]
-        for buyer in removed:
-            if buyers_module.delete_buyer(db, buyer.id, commit=False):
-                removed_count += 1
-
+        remove_ids.extend(buyer.id for buyer in removed)
         groups.append(
             {
                 "company_name": keeper.company_name,
@@ -1263,7 +1372,31 @@ def dedupe_leads_table(
             }
         )
 
-    db.commit()
+    removed_count = 0
+    # Delete in small chunks — large bulk deletes hit Supabase statement_timeout
+    # when row locks are contested (e.g. a concurrent import).
+    import time
+
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+
+    CHUNK = 40
+    for start in range(0, len(remove_ids), CHUNK):
+        chunk = remove_ids[start : start + CHUNK]
+        for attempt in range(4):
+            try:
+                db.execute(text("SET LOCAL statement_timeout = '60s'"))
+                removed_count += buyers_module.delete_buyers_bulk(db, chunk, commit=True)
+                break
+            except OperationalError:
+                db.rollback()
+                if attempt >= 3:
+                    raise
+                time.sleep(1.5 * (attempt + 1))
+
+    if removed_count:
+        invalidate_lead_table_filters_cache()
+        invalidate_section_counts_cache()
 
     log_action(
         db,

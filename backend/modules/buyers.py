@@ -416,12 +416,24 @@ def upsert_primary_contact(
 
 
 def delete_buyer(db: Session, buyer_id: int, *, commit: bool = True) -> bool:
-    buyer = get_buyer(db, buyer_id)
-    if not buyer:
-        return False
+    return delete_buyers_bulk(db, [buyer_id], commit=commit) > 0
+
+
+def delete_buyers_bulk(db: Session, buyer_ids: list[int], *, commit: bool = True) -> int:
+    """Delete many buyers and related rows in a few SQL statements.
+
+    Used by remove-duplicates — the per-row delete_buyer path times out on
+    hundreds of duplicates (statement_timeout / client abort).
+    """
+    ids = sorted({int(buyer_id) for buyer_id in buyer_ids if buyer_id})
+    if not ids:
+        return 0
+
+    from db.models import EmailActivityEvent
 
     contact_ids = [
-        contact.id for contact in list_contacts_for_buyer(db, buyer_id)
+        row[0]
+        for row in db.query(Contact.id).filter(Contact.buyer_id.in_(ids)).all()
     ]
     if contact_ids:
         db.query(Interaction).filter(Interaction.contact_id.in_(contact_ids)).delete(
@@ -430,19 +442,33 @@ def delete_buyer(db: Session, buyer_id: int, *, commit: bool = True) -> bool:
         db.query(ScheduledEvent).filter(ScheduledEvent.contact_id.in_(contact_ids)).delete(
             synchronize_session=False
         )
-        db.query(Contact).filter(Contact.buyer_id == buyer_id).delete(synchronize_session=False)
+        db.query(EmailActivityEvent).filter(
+            EmailActivityEvent.contact_id.in_(contact_ids)
+        ).update({EmailActivityEvent.contact_id: None}, synchronize_session=False)
+        db.query(Contact).filter(Contact.id.in_(contact_ids)).delete(
+            synchronize_session=False
+        )
 
-    db.query(LeadScore).filter(LeadScore.buyer_id == buyer_id).delete(synchronize_session=False)
-    db.query(Quotation).filter(Quotation.buyer_id == buyer_id).delete(synchronize_session=False)
-    db.query(ExportHistory).filter(ExportHistory.buyer_id == buyer_id).delete(
+    db.query(EmailActivityEvent).filter(EmailActivityEvent.buyer_id.in_(ids)).update(
+        {EmailActivityEvent.buyer_id: None}, synchronize_session=False
+    )
+    db.query(LeadScore).filter(LeadScore.buyer_id.in_(ids)).delete(
         synchronize_session=False
     )
-    db.query(BuyerResearchProfile).filter(BuyerResearchProfile.buyer_id == buyer_id).delete(
+    db.query(Quotation).filter(Quotation.buyer_id.in_(ids)).delete(
         synchronize_session=False
     )
-    db.delete(buyer)
+    db.query(ExportHistory).filter(ExportHistory.buyer_id.in_(ids)).delete(
+        synchronize_session=False
+    )
+    db.query(BuyerResearchProfile).filter(BuyerResearchProfile.buyer_id.in_(ids)).delete(
+        synchronize_session=False
+    )
+    deleted = (
+        db.query(Buyer).filter(Buyer.id.in_(ids)).delete(synchronize_session=False) or 0
+    )
     if commit:
         db.commit()
     else:
         db.flush()
-    return True
+    return int(deleted)

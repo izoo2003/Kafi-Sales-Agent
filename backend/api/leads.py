@@ -66,7 +66,11 @@ def _is_admin(user: AppUser) -> bool:
 
 
 def _assignee_scope(user: AppUser) -> int | None:
-    """Non-admins only see leads assigned to them; admins see all."""
+    """Non-admins only see leads assigned to them; admins see all.
+
+    Prefer `_table_assignment_filters` for leads-table queries — sales users
+    also see the shared unassigned pool there.
+    """
     return None if _is_admin(user) else user.id
 
 
@@ -77,29 +81,38 @@ def _table_assignment_filters(
     call_outcome: str | None,
     source: str | None,
     exclude_source: str | None,
-) -> tuple[int | None, bool, bool]:
+) -> tuple[int | None, bool, bool, int | None]:
     """Resolve assignee scope for leads-table list/count queries.
 
-    Returns (assigned_to_user_id, unassigned_only, include_placed_outcomes).
+    Returns
+    -------
+    assigned_to_user_id
+        Exact assignee filter (admin "Leads Sent To {user}").
+    unassigned_only
+        Admin pool sections — hide anything already sent to a sales user.
+    include_placed_outcomes
+        Whether call-outcome sections should include already-placed leads.
+    pool_for_user_id
+        Sales-user pool: unassigned OR assigned to this user. None for admins.
     """
-    scope = _assignee_scope(user)
-    if scope is not None:
-        # Sales users are always limited to their own assignments.
-        include_placed = (
-            assigned_to_user_id is not None
-            and call_outcome is None
-            and not source
-            and not exclude_source
-        )
-        return scope, False, include_placed
+    if _is_admin(user):
+        if assigned_to_user_id is not None:
+            # Admin viewing "Leads Sent To {username}" — show every lead sent.
+            return (
+                assigned_to_user_id,
+                False,
+                call_outcome is None and not source and not exclude_source,
+                None,
+            )
+        # Admin pool sections (Leads table / Old clients): hide assigned leads.
+        unassigned_only = call_outcome is None
+        return None, unassigned_only, False, None
 
-    if assigned_to_user_id is not None:
-        # Admin viewing "Leads Sent To {username}" — show every lead sent.
-        return assigned_to_user_id, False, call_outcome is None and not source and not exclude_source
-
-    # Admin pool sections (Leads table / Old clients): hide assigned leads.
-    unassigned_only = call_outcome is None
-    return None, unassigned_only, False
+    # Sales users work the shared unassigned pool plus leads an admin sent them.
+    # Spreadsheet imports stay unassigned so they appear here — NOT in
+    # "Leads Sent To {username}" (that nav is admin-only).
+    include_placed = call_outcome is None and not source and not exclude_source
+    return None, False, include_placed, user.id
 
 
 def _require_buyer_access(db, user: AppUser, buyer_id: int) -> None:
@@ -342,7 +355,7 @@ def list_leads_table(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
-    assignee_id, unassigned_only, include_placed = _table_assignment_filters(
+    assignee_id, unassigned_only, include_placed, pool_for_user_id = _table_assignment_filters(
         user,
         assigned_to_user_id=assigned_to_user_id,
         call_outcome=call_outcome,
@@ -369,6 +382,7 @@ def list_leads_table(
         page_size=page_size,
         assigned_to_user_id=assignee_id,
         unassigned_only=unassigned_only,
+        pool_for_user_id=pool_for_user_id,
         include_placed_outcomes=include_placed,
     )
     return LeadTableResponse(**result)
@@ -394,7 +408,7 @@ def list_leads_table_ids(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
-    assignee_id, unassigned_only, include_placed = _table_assignment_filters(
+    assignee_id, unassigned_only, include_placed, pool_for_user_id = _table_assignment_filters(
         user,
         assigned_to_user_id=assigned_to_user_id,
         call_outcome=call_outcome,
@@ -419,6 +433,7 @@ def list_leads_table_ids(
         sort_dir=sort_dir,
         assigned_to_user_id=assignee_id,
         unassigned_only=unassigned_only,
+        pool_for_user_id=pool_for_user_id,
         include_placed_outcomes=include_placed,
     )
     return LeadTableIdsResponse(**result)
@@ -430,7 +445,9 @@ def get_leads_table_section_counts(
     user: AppUser = Depends(get_current_user),
 ):
     counts = leads_module.count_leads_table_sections(
-        db, assigned_to_user_id=_assignee_scope(user)
+        db,
+        assigned_to_user_id=None,
+        pool_for_user_id=None if _is_admin(user) else user.id,
     )
     return LeadTableSectionCountsResponse(**counts)
 
@@ -523,6 +540,7 @@ def dedupe_leads_table(
     source: str | None = None,
     exclude_source: str | None = None,
     db: Session = Depends(get_db),
+    _: AppUser = Depends(get_current_user),
 ):
     result = leads_module.dedupe_leads_table(
         db,
@@ -532,11 +550,21 @@ def dedupe_leads_table(
     return LeadTableDedupeResponse(**result)
 
 
+@router.post("/table/unassign-imports")
+def unassign_spreadsheet_imports(
+    db: Session = Depends(get_db),
+    _: AppUser = Depends(require_admin),
+):
+    """Admin repair: move auto-imported CSV/old_clients leads out of 'Leads Sent To'."""
+    return leads_module.unassign_spreadsheet_imports(db)
+
+
 @router.post("/table/cleanup-sparse", response_model=LeadTableCleanupResponse)
 def cleanup_sparse_csv_leads(
     source: str | None = None,
     exclude_source: str | None = None,
     db: Session = Depends(get_db),
+    _: AppUser = Depends(get_current_user),
 ):
     result = leads_module.cleanup_sparse_csv_leads(
         db,
@@ -648,15 +676,16 @@ def import_discovered_leads(
 ):
     from modules import activity as activity_module
 
-    # Sales users only see assigned leads — auto-assign imports to the importer.
-    assign_to = None if _is_admin(user) else user.id
+    # Spreadsheet imports always land in the shared Leads / Old clients pool
+    # (unassigned). Only an admin "Send to user" assignment should put a lead
+    # into "Leads Sent To {username}".
     result = import_candidates(
         db,
         [c.model_dump() for c in payload.candidates],
         auto_onboard=payload.auto_onboard,
         replace_duplicates=payload.replace_duplicates,
         skip_enrichment=payload.skip_enrichment,
-        assigned_to_user_id=assign_to,
+        assigned_to_user_id=None,
     )
     created_count = int(result.get("created_count") or 0)
     if created_count > 0:
@@ -699,14 +728,14 @@ def import_discovered_leads_async(
     """
     from modules import import_jobs
 
-    assign_to = None if _is_admin(user) else user.id
+    # Keep imports unassigned — "Leads Sent To {user}" is admin-assignment only.
     try:
         job_id = import_jobs.start_import_job(
             [c.model_dump() for c in payload.candidates],
             auto_onboard=payload.auto_onboard,
             replace_duplicates=payload.replace_duplicates,
             skip_enrichment=payload.skip_enrichment,
-            assigned_to_user_id=assign_to,
+            assigned_to_user_id=None,
             user_id=user.id,
         )
     except ValueError as exc:

@@ -1027,6 +1027,7 @@ export function LeadsTablePage({
     try {
       const result = await client.dedupeLeadsTable(sectionTableScope(section));
       await loadTable();
+      await loadSectionCounts();
       setSaveNotice(
         result.removed_count > 0
           ? `Removed ${result.removed_count} duplicate lead${result.removed_count === 1 ? "" : "s"} (${result.groups.length} group${result.groups.length === 1 ? "" : "s"})`
@@ -1749,7 +1750,7 @@ export function LeadsTablePage({
             {hasActiveFilters
               ? "No leads match these filters."
               : !isAdmin
-                ? "No leads assigned to you yet. Import a CSV or Excel file, or ask an admin to assign leads."
+                ? "No leads in this section yet. Import a CSV or Excel file into Leads table or Old clients, or ask an admin to send you leads."
                 : isOldClients
                   ? "No old clients yet. Import a CSV or Excel file to map past clients into this table."
                   : callOutcomeEmptyMessage ?? "No leads in this section yet. Import a CSV or Excel file to get started."}

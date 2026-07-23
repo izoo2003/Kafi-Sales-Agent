@@ -53,6 +53,13 @@ const RETRY_BACKOFF_MS = [600, 1_800, 3_500] as const;
 function timeoutForPath(path: string): number {
   if (path.startsWith("/auth/")) return AUTH_FETCH_TIMEOUT_MS;
   if (
+    path.startsWith("/leads/table/dedupe") ||
+    path.startsWith("/leads/table/unassign") ||
+    path.startsWith("/leads/table/cleanup")
+  ) {
+    return 300_000; // bulk repair jobs can take a few minutes under lock waits
+  }
+  if (
     path.startsWith("/leads/table") ||
     path.startsWith("/leads/discover") ||
     path.startsWith("/leads/import-jobs") ||

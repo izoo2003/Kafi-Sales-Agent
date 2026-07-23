@@ -412,11 +412,13 @@ function DashboardApp() {
     }
   }, [assigneeSectionUsers, tableSection]);
 
-  const assigneeNavChildren = assigneeSectionUsers.map((u) => ({
-    id: `assigned:${u.id}`,
-    label: `Leads Sent To ${u.username}`,
-    count: tableCounts.by_assignee?.[String(u.id)] ?? 0,
-  }));
+  const assigneeNavChildren = isAdmin
+    ? assigneeSectionUsers.map((u) => ({
+        id: `assigned:${u.id}`,
+        label: `Leads Sent To ${u.username}`,
+        count: tableCounts.by_assignee?.[String(u.id)] ?? 0,
+      }))
+    : [];
 
   const navItems: NavItem[] = [
     { id: "activity", label: "Email Activity", count: emailActivityUnread, alert: emailActivityUnread > 0 },
