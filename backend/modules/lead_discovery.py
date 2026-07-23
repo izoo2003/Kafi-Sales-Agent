@@ -3068,11 +3068,35 @@ def import_candidates(
     persist_each_row = not skip_enrichment
     pending_since_flush = 0
     FLUSH_EVERY = 75
+    # Large imports (1000-2000+ rows) used to run as ONE transaction that only
+    # committed at the very end. Any row that replaced a duplicate (DELETE FROM
+    # contacts/buyers) held that lock for the entire import — long enough for
+    # unrelated queries (someone loading/deleting leads elsewhere) to hit
+    # Postgres's statement_timeout waiting on the lock. Commit periodically so
+    # locks are released in small batches instead of one multi-minute hold.
+    COMMIT_EVERY = 200
+    rows_since_checkpoint = 0
+
+    if skip_enrichment:
+        # Avoid per-attribute refresh queries after each periodic commit —
+        # buyer/contact objects created earlier in the loop are still read
+        # (e.g. existing.company_name, buyer.id) after later checkpoints.
+        db.expire_on_commit = False
 
     def _flush_pending() -> None:
         nonlocal pending_since_flush
         if pending_since_flush > 0:
             db.flush()
+            pending_since_flush = 0
+
+    def _checkpoint_commit() -> None:
+        nonlocal rows_since_checkpoint, pending_since_flush
+        if not skip_enrichment:
+            return
+        rows_since_checkpoint += 1
+        if rows_since_checkpoint >= COMMIT_EVERY:
+            db.commit()
+            rows_since_checkpoint = 0
             pending_since_flush = 0
 
     def _report_progress(processed: int, current_name: str) -> None:
@@ -3097,6 +3121,7 @@ def import_candidates(
             _report_progress(row_index, name)
             if not name:
                 skipped.append({"company_name": name or "(empty)", "reason": "Missing company name"})
+                _checkpoint_commit()
                 continue
 
             candidate = _import_raw_to_candidate(raw)
@@ -3114,6 +3139,7 @@ def import_candidates(
                         "reason": f"Not a valid business — {invalid_reason}",
                     }
                 )
+                _checkpoint_commit()
                 continue
 
             raw = _sync_candidate_to_raw(candidate, raw)
@@ -3142,6 +3168,7 @@ def import_candidates(
                                 "reason": "Already in leads (assigned to another user)",
                             }
                         )
+                        _checkpoint_commit()
                         continue
                     _flush_pending()
                     leads_module.delete_lead_table_row(
@@ -3163,6 +3190,7 @@ def import_candidates(
                     )
                 else:
                     skipped.append({"company_name": name, "reason": "Already in leads"})
+                    _checkpoint_commit()
                     continue
 
             buyer = buyers_module.create_buyer(
@@ -3280,6 +3308,8 @@ def import_candidates(
                         }
                     )
 
+            _checkpoint_commit()
+
         # Final report before commit — the job runner shows this as "committing".
         _report_progress(len(candidates), "")
 
@@ -3302,6 +3332,9 @@ def import_candidates(
         if skip_enrichment:
             db.rollback()
         raise
+    finally:
+        if skip_enrichment:
+            db.expire_on_commit = True
 
     if created or replaced:
         from modules.leads import invalidate_lead_table_filters_cache, invalidate_section_counts_cache

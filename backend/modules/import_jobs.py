@@ -231,10 +231,17 @@ def _run_import(
             _finished_mono=time.monotonic(),
         )
     except Exception as exc:  # noqa: BLE001 — job must always reach a terminal state
+        # Rows are committed in checkpoints during the import (see COMMIT_EVERY in
+        # lead_discovery.import_candidates), so a mid-import failure does not roll
+        # back everything — whatever was committed up to the last checkpoint is
+        # already saved. `processed`/`created_count` above still reflect that.
         _update(
             job_id,
             status="failed",
-            error=str(exc) or exc.__class__.__name__,
+            error=(
+                f"{exc or exc.__class__.__name__} — rows saved up to the last "
+                "checkpoint are still in the table; re-run the import for the rest."
+            ),
             _finished_mono=time.monotonic(),
         )
     finally:
