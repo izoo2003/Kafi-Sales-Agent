@@ -39,23 +39,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
       return;
     }
-    try {
-      const me = await client.getMe();
-      const next: AuthUser = {
-        id: me.id,
-        username: me.username,
-        full_name: me.full_name,
-        role: me.role === "admin" ? "admin" : "user",
-        is_active: me.is_active,
-      };
-      storeSession(token, next);
-      setUser(next);
-    } catch {
-      clearSession();
-      setUser(null);
-    } finally {
-      setLoading(false);
-    }
+
+    // Hard safety net: if the /auth/me request hangs beyond this, unblock the UI.
+    // The fetch already has a 12s per-attempt timeout; this covers the full retry cycle.
+    let safetyTimer: ReturnType<typeof setTimeout> | null = null;
+    const safetyPromise = new Promise<void>((resolve) => {
+      safetyTimer = setTimeout(() => {
+        clearSession();
+        setUser(null);
+        setLoading(false);
+        resolve();
+      }, 30_000);
+    });
+
+    const work = async () => {
+      try {
+        const me = await client.getMe();
+        const next: AuthUser = {
+          id: me.id,
+          username: me.username,
+          full_name: me.full_name,
+          role: me.role === "admin" ? "admin" : "user",
+          is_active: me.is_active,
+        };
+        storeSession(token, next);
+        setUser(next);
+      } catch {
+        clearSession();
+        setUser(null);
+      } finally {
+        if (safetyTimer !== null) clearTimeout(safetyTimer);
+        setLoading(false);
+      }
+    };
+
+    await Promise.race([work(), safetyPromise]);
   }, []);
 
   useEffect(() => {

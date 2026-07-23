@@ -36,6 +36,9 @@ function parseErrorDetail(text: string, fallback: string): string {
   return text;
 }
 
+/** Max ms a single fetch attempt may take before it is aborted. */
+const FETCH_TIMEOUT_MS = 12_000;
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = new Headers(authHeaders({ "Content-Type": "application/json" }));
   if (options?.headers) {
@@ -48,11 +51,15 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   let lastNetworkError: Error | null = null;
 
   for (let attempt = 0; attempt < (canRetry ? 2 : 1); attempt += 1) {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
       const res = await fetch(`${API_BASE}${path}`, {
         ...options,
         headers,
+        signal: controller.signal,
       });
+      window.clearTimeout(timeoutId);
       if (res.status === 401 && path !== "/auth/login") {
         clearSession();
         if (!window.location.hash.includes("login")) {
@@ -72,8 +79,11 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       }
       return JSON.parse(text) as T;
     } catch (err) {
+      window.clearTimeout(timeoutId);
+      const isAbort = err instanceof DOMException && err.name === "AbortError";
       const message = err instanceof Error ? err.message : String(err);
       const isNetwork =
+        isAbort ||
         err instanceof TypeError ||
         /failed to fetch|networkerror|load failed|fetch failed/i.test(message);
       if (isNetwork && canRetry && attempt === 0) {
