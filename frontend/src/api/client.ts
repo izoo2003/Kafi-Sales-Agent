@@ -276,6 +276,10 @@ export interface AppUser {
   full_name: string;
   role: "admin" | "user" | string;
   is_active: boolean;
+  mailbox_email?: string | null;
+  mailbox_display_name?: string | null;
+  mailbox_enabled?: boolean;
+  mailbox_configured?: boolean;
 }
 
 export interface KpiCounts {
@@ -1151,7 +1155,14 @@ export const client = {
   getMe: () => request<AppUser>("/auth/me"),
   listUsers: () => request<AppUser[]>("/auth/users"),
   listAssignees: () => request<AppUser[]>("/auth/assignees"),
-  createUser: (data: { username: string; full_name: string; password: string }) =>
+  createUser: (data: {
+    username: string;
+    full_name: string;
+    password: string;
+    mailbox_email?: string;
+    mailbox_password?: string;
+    mailbox_display_name?: string;
+  }) =>
     request<AppUser>("/auth/users", {
       method: "POST",
       body: JSON.stringify(data),
@@ -1168,6 +1179,11 @@ export const client = {
       full_name?: string;
       password?: string;
       is_active?: boolean;
+      mailbox_email?: string | null;
+      mailbox_password?: string;
+      mailbox_display_name?: string | null;
+      mailbox_enabled?: boolean;
+      clear_mailbox_password?: boolean;
     },
   ) =>
     request<AppUser>(`/auth/users/${userId}`, {

@@ -46,9 +46,23 @@ class Settings(BaseSettings):
     # When IMAP/SMTP hosts are a raw IP (Cloudflare bypass), validate the TLS
     # certificate against this hostname (e.g. mail.kafi-group.com).
     mailbox_ssl_hostname: str | None = None
+    # Legacy single-mailbox fallback (prefer per-user credentials on app_users).
     mailbox_email: str | None = None
     mailbox_password: str | None = None
     mailbox_display_name: str | None = None
+    # Fernet key for encrypting per-user mailbox passwords (url-safe base64, 32 bytes).
+    # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    mailbox_credentials_key: str | None = None
+    # Per-user mailbox credentials (synced onto app_users at startup).
+    mailbox_admin_email: str | None = None
+    mailbox_admin_password: str | None = None
+    mailbox_admin_display_name: str | None = None
+    mailbox_asim_email: str | None = None
+    mailbox_asim_password: str | None = None
+    mailbox_asim_display_name: str | None = None
+    mailbox_usman_email: str | None = None
+    mailbox_usman_password: str | None = None
+    mailbox_usman_display_name: str | None = None
     # OAuth — required for most Outlook.com accounts (password/IMAP basic auth is blocked).
     mailbox_client_id: str | None = None
     mailbox_client_secret: str | None = None
@@ -144,6 +158,16 @@ class Settings(BaseSettings):
         "mailbox_email",
         "mailbox_password",
         "mailbox_display_name",
+        "mailbox_credentials_key",
+        "mailbox_admin_email",
+        "mailbox_admin_password",
+        "mailbox_admin_display_name",
+        "mailbox_asim_email",
+        "mailbox_asim_password",
+        "mailbox_asim_display_name",
+        "mailbox_usman_email",
+        "mailbox_usman_password",
+        "mailbox_usman_display_name",
         "mailbox_ssl_hostname",
         "mailbox_client_id",
         "mailbox_client_secret",

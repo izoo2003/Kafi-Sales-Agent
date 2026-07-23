@@ -631,6 +631,7 @@ class CommsGenerator:
         template_name: str | None = None,
         template_language: str = "en_US",
         template_variables: list[str] | None = None,
+        mailbox_user=None,
     ) -> tuple[Interaction, dict | None]:
         draft = db.get(Interaction, interaction_id)
         if not draft:
@@ -652,6 +653,7 @@ class CommsGenerator:
                 draft,
                 record_activity=record_activity,
                 send_mode=send_mode,
+                mailbox_user=mailbox_user,
             )
         elif send and draft.channel == Channel.whatsapp:
             send_result = self._send_whatsapp_draft(
@@ -666,7 +668,13 @@ class CommsGenerator:
         return draft, send_result
 
     def _send_email_draft(
-        self, db: Session, draft: Interaction, *, record_activity: bool, send_mode: str = "individual"
+        self,
+        db: Session,
+        draft: Interaction,
+        *,
+        record_activity: bool,
+        send_mode: str = "individual",
+        mailbox_user=None,
     ) -> dict:
         contact = db.get(Contact, draft.contact_id)
         if not contact or not contact.email:
@@ -694,6 +702,7 @@ class CommsGenerator:
             attachments=draft.attachments or [],
             interaction_id=draft.id,
             send_mode=mode,
+            mailbox_user=mailbox_user,
         )
         if send_result.get("status") == "sent":
             draft.status = InteractionStatus.sent
@@ -946,6 +955,7 @@ class CommsGenerator:
         body: str,
         attachments: list[dict] | None = None,
         send: bool = True,
+        mailbox_user=None,
     ) -> dict:
         import time
 
@@ -1024,6 +1034,7 @@ class CommsGenerator:
                         send=True,
                         record_activity=record_each,
                         send_mode="bulk" if is_bulk_batch else "individual",
+                        mailbox_user=mailbox_user,
                     )
                     status = (send_result or {}).get("status")
                     item["sent"] = status == "sent"
@@ -1117,6 +1128,7 @@ class CommsGenerator:
         template_id: int,
         extra_attachments: list[dict] | None = None,
         send: bool = True,
+        mailbox_user=None,
     ) -> dict:
         import time
 
@@ -1173,6 +1185,7 @@ class CommsGenerator:
                         send=True,
                         record_activity=record_each,
                         send_mode="bulk" if is_bulk_batch else "individual",
+                        mailbox_user=mailbox_user,
                     )
                     status = (send_result or {}).get("status")
                     item["sent"] = status == "sent"
@@ -1266,6 +1279,7 @@ class CommsGenerator:
         approved_by: str = "sales_rep",
         send: bool = True,
         message_delay_seconds: float | None = None,
+        mailbox_user=None,
     ) -> dict:
         import time
 
@@ -1304,6 +1318,7 @@ class CommsGenerator:
                     send=send,
                     record_activity=not is_bulk_batch,
                     send_mode="bulk" if is_bulk_batch else "individual",
+                    mailbox_user=mailbox_user,
                 )
                 sent = draft.status == InteractionStatus.sent
                 if sent:

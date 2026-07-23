@@ -72,7 +72,11 @@ def create_email_draft(payload: EmailDraftRequest, db: Session = Depends(get_db)
 
 
 @router.post("/manual-email-draft", response_model=ManualEmailSendResponse, status_code=201)
-def create_manual_email_draft(payload: ManualEmailDraftRequest, db: Session = Depends(get_db)):
+def create_manual_email_draft(
+    payload: ManualEmailDraftRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
     try:
         draft = comms.create_manual_email_draft(
             db,
@@ -91,8 +95,9 @@ def create_manual_email_draft(payload: ManualEmailDraftRequest, db: Session = De
             draft, send_result = comms.approve_draft(
                 db,
                 draft.id,
-                approved_by="dashboard_user",
+                approved_by=user.username,
                 send=True,
+                mailbox_user=user,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -149,6 +154,7 @@ def create_bulk_manual_email_drafts(
             attachments=[a.model_dump() for a in payload.attachments],
             # Bulk compose always sends immediately — no approval queue.
             send=True,
+            mailbox_user=user,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -198,6 +204,7 @@ def create_bulk_email_drafts(
         extra_attachments=[a.model_dump() for a in payload.attachments],
         # Bulk compose always sends immediately — no approval queue.
         send=True,
+        mailbox_user=user,
     )
     log_action(
         db,
@@ -252,6 +259,7 @@ def bulk_approve_interactions(
         payload.interaction_ids,
         approved_by=payload.approved_by or user.username,
         send=payload.send,
+        mailbox_user=user,
     )
     log_action(
         db,
@@ -287,17 +295,19 @@ def approve_interaction(
     interaction_id: int,
     payload: InteractionApprove,
     db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
 ):
     try:
         approved, send_result = comms.approve_draft(
             db,
             interaction_id,
             content=payload.content,
-            approved_by=payload.approved_by,
+            approved_by=payload.approved_by or user.username,
             send=payload.send,
             template_name=payload.template_name,
             template_language=payload.template_language,
             template_variables=payload.template_variables or None,
+            mailbox_user=user,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

@@ -90,7 +90,12 @@ def _format_single_message_context(message: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _fallback_analysis(thread: dict[str, Any], *, mailbox_email: str | None) -> dict[str, Any]:
+def _fallback_analysis(
+    thread: dict[str, Any],
+    *,
+    mailbox_email: str | None,
+    mailbox_display: str | None = None,
+) -> dict[str, Any]:
     messages = thread.get("messages") or []
     latest = None
     for msg in reversed(messages):
@@ -109,7 +114,7 @@ def _fallback_analysis(thread: dict[str, Any], *, mailbox_email: str | None) -> 
         + (preview or "Open the message for full details.")
     )
     to_addr = _pick_reply_to(messages, mailbox_email)
-    display = settings.mailbox_display_name or "Kafi Commodities"
+    display = mailbox_display or settings.mailbox_display_name or "Kafi Commodities"
     draft = (
         f"Dear {who.split()[0] if who and '@' not in who else 'Sir/Madam'},\n\n"
         f"Thank you for your email regarding {thread.get('subject') or 'your enquiry'}. "
@@ -127,10 +132,24 @@ def _fallback_analysis(thread: dict[str, Any], *, mailbox_email: str | None) -> 
     }
 
 
-def analyze_thread(thread: dict[str, Any], *, goal: str | None = None) -> dict[str, Any]:
-    mailbox_email = settings.mailbox_email
-    mailbox_display = settings.mailbox_display_name or "Kafi Commodities"
-    fallback = _fallback_analysis(thread, mailbox_email=mailbox_email)
+def analyze_thread(
+    thread: dict[str, Any],
+    *,
+    goal: str | None = None,
+    mailbox_email: str | None = None,
+    mailbox_display: str | None = None,
+) -> dict[str, Any]:
+    from modules.mailbox_accounts import get_active_mailbox
+
+    active = get_active_mailbox()
+    email = mailbox_email or (active.email if active else None) or settings.mailbox_email
+    display = (
+        mailbox_display
+        or (active.display_name if active else None)
+        or settings.mailbox_display_name
+        or "Kafi Commodities"
+    )
+    fallback = _fallback_analysis(thread, mailbox_email=email, mailbox_display=display)
 
     if not llm_client.enabled:
         return fallback
@@ -142,8 +161,8 @@ def analyze_thread(thread: dict[str, Any], *, goal: str | None = None) -> dict[s
     prompt = _apply_prompt_template(
         template,
         goal=(goal or "").strip() or "Respond helpfully as Kafi Commodities sales.",
-        mailbox_email=mailbox_email or "",
-        mailbox_display_name=mailbox_display,
+        mailbox_email=email or "",
+        mailbox_display_name=display,
         thread_context=_format_thread_context(thread),
     )
     system = (
@@ -169,21 +188,49 @@ def analyze_thread(thread: dict[str, Any], *, goal: str | None = None) -> dict[s
     }
 
 
-def analyze_inbox_thread(thread_id: str, *, goal: str | None = None) -> dict[str, Any] | None:
-    thread = inbox_module.get_thread(thread_id, mark_seen=False)
-    if not thread:
+def analyze_inbox_thread(
+    user,
+    thread_id: str,
+    *,
+    goal: str | None = None,
+) -> dict[str, Any] | None:
+    from modules.mailbox_accounts import resolve_user_mailbox, use_mailbox
+
+    account = resolve_user_mailbox(user)
+    if not account:
         return None
-    return analyze_thread(thread, goal=goal)
+    with use_mailbox(account):
+        thread = inbox_module.get_thread(user, thread_id, mark_seen=False)
+        if not thread:
+            return None
+        return analyze_thread(
+            thread,
+            goal=goal,
+            mailbox_email=account.email,
+            mailbox_display=account.display_name,
+        )
 
 
 def analyze_inbox_message(
+    user,
     uid: str,
     *,
     folder: str = "INBOX",
     goal: str | None = None,
 ) -> dict[str, Any] | None:
-    message = inbox_module.get_message(uid, folder=folder)
-    if not message:
+    from modules.mailbox_accounts import resolve_user_mailbox, use_mailbox
+
+    account = resolve_user_mailbox(user)
+    if not account:
         return None
-    thread = _format_single_message_context(message)
-    return analyze_thread(thread, goal=goal)
+    with use_mailbox(account):
+        message = inbox_module.get_message(user, uid, folder=folder)
+        if not message:
+            return None
+        thread = _format_single_message_context(message)
+        return analyze_thread(
+            thread,
+            goal=goal,
+            mailbox_email=account.email,
+            mailbox_display=account.display_name,
+        )

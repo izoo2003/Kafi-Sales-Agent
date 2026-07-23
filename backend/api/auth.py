@@ -24,6 +24,9 @@ class UserCreateRequest(BaseModel):
     username: str = Field(min_length=1, max_length=100)
     full_name: str = Field(min_length=1, max_length=255)
     password: str = Field(min_length=4, max_length=128)
+    mailbox_email: str | None = Field(default=None, max_length=255)
+    mailbox_password: str | None = Field(default=None, max_length=255)
+    mailbox_display_name: str | None = Field(default=None, max_length=255)
 
 
 class UserUpdateRequest(BaseModel):
@@ -31,6 +34,11 @@ class UserUpdateRequest(BaseModel):
     full_name: str | None = Field(default=None, min_length=1, max_length=255)
     password: str | None = Field(default=None, min_length=4, max_length=128)
     is_active: bool | None = None
+    mailbox_email: str | None = Field(default=None, max_length=255)
+    mailbox_password: str | None = Field(default=None, max_length=255)
+    mailbox_display_name: str | None = Field(default=None, max_length=255)
+    mailbox_enabled: bool | None = None
+    clear_mailbox_password: bool | None = None
 
 
 class UserRead(BaseModel):
@@ -39,6 +47,10 @@ class UserRead(BaseModel):
     full_name: str
     role: str
     is_active: bool
+    mailbox_email: str | None = None
+    mailbox_display_name: str | None = None
+    mailbox_enabled: bool = True
+    mailbox_configured: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -49,12 +61,18 @@ class LoginResponse(BaseModel):
 
 
 def _to_user_read(user: AppUser) -> UserRead:
+    from modules.mailbox_accounts import user_mailbox_configured
+
     return UserRead(
         id=user.id,
         username=user.username,
         full_name=user.full_name,
         role=user.role.value if isinstance(user.role, AppUserRole) else str(user.role),
         is_active=user.is_active,
+        mailbox_email=user.mailbox_email,
+        mailbox_display_name=user.mailbox_display_name,
+        mailbox_enabled=bool(user.mailbox_enabled),
+        mailbox_configured=user_mailbox_configured(user),
     )
 
 
@@ -150,6 +168,9 @@ def create_user(
             full_name=body.full_name,
             password=body.password,
             role=AppUserRole.user,
+            mailbox_email=body.mailbox_email,
+            mailbox_password=body.mailbox_password,
+            mailbox_display_name=body.mailbox_display_name,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -173,6 +194,11 @@ def update_user(
             full_name=body.full_name,
             password=body.password,
             is_active=body.is_active,
+            mailbox_email=body.mailbox_email,
+            mailbox_password=body.mailbox_password,
+            mailbox_display_name=body.mailbox_display_name,
+            mailbox_enabled=body.mailbox_enabled,
+            clear_mailbox_password=bool(body.clear_mailbox_password),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

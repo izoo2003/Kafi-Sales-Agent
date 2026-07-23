@@ -12,6 +12,8 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
   const [username, setUsername] = useState("");
   const [fullName, setFullName] = useState("");
   const [password, setPassword] = useState("");
+  const [mailboxEmail, setMailboxEmail] = useState("");
+  const [mailboxPassword, setMailboxPassword] = useState("");
   const [creating, setCreating] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -19,6 +21,8 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
   const [editUsername, setEditUsername] = useState("");
   const [editFullName, setEditFullName] = useState("");
   const [editPassword, setEditPassword] = useState("");
+  const [editMailboxEmail, setEditMailboxEmail] = useState("");
+  const [editMailboxPassword, setEditMailboxPassword] = useState("");
   const [editActive, setEditActive] = useState(true);
   const [savingEdit, setSavingEdit] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
@@ -49,10 +53,19 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
         username: username.trim(),
         full_name: fullName.trim(),
         password,
+        ...(mailboxEmail.trim()
+          ? {
+              mailbox_email: mailboxEmail.trim(),
+              mailbox_password: mailboxPassword || undefined,
+              mailbox_display_name: fullName.trim(),
+            }
+          : {}),
       });
       setUsername("");
       setFullName("");
       setPassword("");
+      setMailboxEmail("");
+      setMailboxPassword("");
       await loadUsers();
       onUsersChanged?.();
     } catch (err) {
@@ -67,6 +80,8 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
     setEditUsername(user.username);
     setEditFullName(user.full_name);
     setEditPassword("");
+    setEditMailboxEmail(user.mailbox_email || "");
+    setEditMailboxPassword("");
     setEditActive(user.is_active);
     setEditError(null);
   }
@@ -74,6 +89,7 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
   function cancelEdit() {
     setEditingId(null);
     setEditPassword("");
+    setEditMailboxPassword("");
     setEditError(null);
   }
 
@@ -88,13 +104,21 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
         full_name: string;
         password?: string;
         is_active: boolean;
+        mailbox_email?: string | null;
+        mailbox_password?: string;
+        mailbox_display_name?: string | null;
       } = {
         username: editUsername.trim(),
         full_name: editFullName.trim(),
         is_active: editActive,
+        mailbox_email: editMailboxEmail.trim() || null,
+        mailbox_display_name: editFullName.trim(),
       };
       if (editPassword.trim()) {
         payload.password = editPassword;
+      }
+      if (editMailboxPassword.trim()) {
+        payload.mailbox_password = editMailboxPassword;
       }
       await client.updateUser(editingId, payload);
       cancelEdit();
@@ -130,7 +154,8 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
       <div>
         <h2 className="text-xl font-semibold tracking-tight text-slate-100">Users</h2>
         <p className="mt-1 text-sm text-slate-400">
-          Create, edit, or delete sales users. They can use every section except Discover Leads.
+          Create, edit, or delete sales users. Assign each person their own @kafi-group.com
+          mailbox so Inbox / Sent / outbound mail are private to them.
         </p>
       </div>
 
@@ -169,6 +194,25 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
               className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-emerald-500"
             />
           </label>
+          <label className="block sm:col-span-1">
+            <span className="text-xs text-slate-400">Company mailbox</span>
+            <input
+              type="email"
+              value={mailboxEmail}
+              onChange={(e) => setMailboxEmail(e.target.value)}
+              placeholder="name@kafi-group.com"
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-emerald-500"
+            />
+          </label>
+          <label className="block sm:col-span-1">
+            <span className="text-xs text-slate-400">Mailbox password</span>
+            <input
+              type="password"
+              value={mailboxPassword}
+              onChange={(e) => setMailboxPassword(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-emerald-500"
+            />
+          </label>
         </div>
         {formError && (
           <p className="text-sm text-red-300 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
@@ -190,6 +234,7 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
             <tr>
               <th className="px-4 py-3 font-medium">Username</th>
               <th className="px-4 py-3 font-medium">Name</th>
+              <th className="px-4 py-3 font-medium">Mailbox</th>
               <th className="px-4 py-3 font-medium">Role</th>
               <th className="px-4 py-3 font-medium">Status</th>
               <th className="px-4 py-3 font-medium text-right">Actions</th>
@@ -198,13 +243,13 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={5} className="px-4 py-6 text-slate-500">
+                <td colSpan={6} className="px-4 py-6 text-slate-500">
                   Loading…
                 </td>
               </tr>
             ) : users.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-4 py-6 text-slate-500">
+                <td colSpan={6} className="px-4 py-6 text-slate-500">
                   No users yet.
                 </td>
               </tr>
@@ -212,7 +257,7 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
               users.map((user) => (
                 <tr key={user.id} className="border-t border-slate-800 align-top">
                   {editingId === user.id ? (
-                    <td colSpan={5} className="px-4 py-4">
+                    <td colSpan={6} className="px-4 py-4">
                       <form onSubmit={handleSaveEdit} className="space-y-3 max-w-2xl">
                         <div className="grid gap-3 sm:grid-cols-2">
                           <label className="block">
@@ -235,7 +280,7 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
                           </label>
                           <label className="block sm:col-span-2">
                             <span className="text-xs text-slate-400">
-                              New password <span className="text-slate-500">(optional)</span>
+                              New login password <span className="text-slate-500">(optional)</span>
                             </span>
                             <input
                               type="password"
@@ -243,6 +288,28 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
                               onChange={(e) => setEditPassword(e.target.value)}
                               minLength={4}
                               placeholder="Leave blank to keep current password"
+                              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-emerald-500"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-xs text-slate-400">Company mailbox</span>
+                            <input
+                              type="email"
+                              value={editMailboxEmail}
+                              onChange={(e) => setEditMailboxEmail(e.target.value)}
+                              placeholder="name@kafi-group.com"
+                              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-emerald-500"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-xs text-slate-400">
+                              Mailbox password <span className="text-slate-500">(optional)</span>
+                            </span>
+                            <input
+                              type="password"
+                              value={editMailboxPassword}
+                              onChange={(e) => setEditMailboxPassword(e.target.value)}
+                              placeholder="Leave blank to keep current"
                               className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-emerald-500"
                             />
                           </label>
@@ -286,6 +353,15 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
                     <>
                       <td className="px-4 py-3 text-slate-100">{user.username}</td>
                       <td className="px-4 py-3 text-slate-300">{user.full_name}</td>
+                      <td className="px-4 py-3 text-slate-300">
+                        {user.mailbox_configured ? (
+                          <span className="text-emerald-300">{user.mailbox_email}</span>
+                        ) : user.mailbox_email ? (
+                          <span className="text-amber-300">{user.mailbox_email} (needs password)</span>
+                        ) : (
+                          <span className="text-slate-500">Not set</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3">
                         <span
                           className={`px-2 py-0.5 rounded text-xs font-medium border ${

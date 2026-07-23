@@ -20,3 +20,4 @@ ddgs>=9.0.0
 twilio>=9.0.0
 imap-tools>=1.5.0
 msal>=1.28.0
+cryptography>=42.0.0

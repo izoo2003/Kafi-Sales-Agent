@@ -215,7 +215,12 @@ def create_user(
     full_name: str,
     password: str,
     role: AppUserRole = AppUserRole.user,
+    mailbox_email: str | None = None,
+    mailbox_password: str | None = None,
+    mailbox_display_name: str | None = None,
 ) -> AppUser:
+    from modules.mailbox_accounts import set_user_mailbox
+
     normalized = username.strip().lower()
     if not normalized:
         raise ValueError("Username is required")
@@ -231,6 +236,14 @@ def create_user(
         password_hash=hash_password(password),
         is_active=True,
     )
+    if mailbox_email or mailbox_password or mailbox_display_name:
+        set_user_mailbox(
+            user,
+            mailbox_email=mailbox_email or "",
+            mailbox_password=mailbox_password,
+            mailbox_display_name=mailbox_display_name,
+            mailbox_enabled=True,
+        )
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -265,7 +278,14 @@ def update_user(
     full_name: str | None = None,
     password: str | None = None,
     is_active: bool | None = None,
+    mailbox_email: str | None = None,
+    mailbox_password: str | None = None,
+    mailbox_display_name: str | None = None,
+    mailbox_enabled: bool | None = None,
+    clear_mailbox_password: bool = False,
 ) -> AppUser | None:
+    from modules.mailbox_accounts import set_user_mailbox
+
     user = db.query(AppUser).filter(AppUser.id == user_id).first()
     if not user:
         return None
@@ -307,6 +327,22 @@ def update_user(
         user.is_active = is_active
         if not is_active:
             db.query(AppUserSession).filter(AppUserSession.user_id == user.id).delete()
+
+    if (
+        mailbox_email is not None
+        or mailbox_password is not None
+        or mailbox_display_name is not None
+        or mailbox_enabled is not None
+        or clear_mailbox_password
+    ):
+        set_user_mailbox(
+            user,
+            mailbox_email=mailbox_email,
+            mailbox_password=mailbox_password,
+            mailbox_display_name=mailbox_display_name,
+            mailbox_enabled=mailbox_enabled,
+            clear_password=clear_mailbox_password,
+        )
 
     db.commit()
     db.refresh(user)

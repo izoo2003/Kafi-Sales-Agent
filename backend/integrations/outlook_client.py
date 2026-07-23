@@ -21,15 +21,18 @@ import httpx
 
 from config import settings
 from modules.inbox_cutoff import as_utc, date_sort_key, get_inbox_since, message_is_after_cutoff
+from modules.mailbox_accounts import get_active_mailbox
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
 # Outlook personal IMAP often breaks under concurrent sessions from the same account.
-_IMAP_LOCK = threading.RLock()
-_FOLDER_COUNT_CACHE: dict[str, Any] = {"at": 0.0, "data": None}
+_IMAP_LOCKS: dict[str, threading.RLock] = {}
+_IMAP_LOCKS_GUARD = threading.Lock()
+# Caches keyed by mailbox email so users never share each other's list/unread state.
+_FOLDER_COUNT_CACHE: dict[str, dict[str, Any]] = {}
 _FOLDER_COUNT_TTL_SEC = 45.0
-_UNREAD_CACHE: dict[str, Any] = {"at": 0.0, "count": 0}
+_UNREAD_CACHE: dict[str, dict[str, Any]] = {}
 _UNREAD_TTL_SEC = 20.0
 # Short TTL for list endpoints — App + InboxPage polls used to hammer IMAP.
 _LIST_CACHE: dict[str, Any] = {}
@@ -38,8 +41,64 @@ _LIST_CACHE_TTL_SEC = 20.0
 _TOKEN_CACHE: dict[str, dict[str, Any]] = {}
 # Recent conversation summaries reused by get_thread so opening a mail does not
 # re-download the whole Inbox+Sent list.
-_CONV_SUMMARY_CACHE: dict[str, Any] = {"at": 0.0, "limit": 0, "data": None}
+_CONV_SUMMARY_CACHE: dict[str, dict[str, Any]] = {}
 _CONV_SUMMARY_TTL_SEC = 30.0
+
+
+def _account_cache_key() -> str:
+    acct = get_active_mailbox()
+    if acct and acct.email:
+        return acct.email.strip().lower()
+    return (settings.mailbox_email or "").strip().lower() or "_default"
+
+
+def _imap_lock() -> threading.RLock:
+    key = _account_cache_key()
+    with _IMAP_LOCKS_GUARD:
+        lock = _IMAP_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _IMAP_LOCKS[key] = lock
+        return lock
+
+
+def _password_auth_help() -> str:
+    return (
+        "Mailbox login failed. Check this user's mailbox email/password "
+        "(Users page) or legacy MAILBOX_EMAIL / MAILBOX_PASSWORD in backend/.env."
+    )
+
+
+def _invalidate_mail_caches(account_key: str | None = None) -> None:
+    key = account_key or _account_cache_key()
+    _UNREAD_CACHE.pop(key, None)
+    _FOLDER_COUNT_CACHE.pop(key, None)
+    _CONV_SUMMARY_CACHE.pop(key, None)
+    prefix = f"{key}:"
+    for cache_key in list(_LIST_CACHE.keys()):
+        if cache_key.startswith(prefix):
+            _LIST_CACHE.pop(cache_key, None)
+
+
+def _list_cache_get(key: str) -> list[dict[str, Any]] | None:
+    import time
+
+    full = f"{_account_cache_key()}:{key}"
+    entry = _LIST_CACHE.get(full)
+    if not entry:
+        return None
+    if time.monotonic() - float(entry.get("at") or 0) > _LIST_CACHE_TTL_SEC:
+        return None
+    data = entry.get("data")
+    return list(data) if isinstance(data, list) else None
+
+
+def _list_cache_set(key: str, data: list[dict[str, Any]]) -> None:
+    import time
+
+    full = f"{_account_cache_key()}:{key}"
+    _LIST_CACHE[full] = {"at": time.monotonic(), "data": list(data)}
+
 
 # Separate audiences — MSAL refreshes one resource at a time.
 IMAP_SCOPES = [
@@ -97,10 +156,6 @@ def _xoauth2_bytes(email: str, access_token: str) -> bytes:
     return f"user={email}\x01auth=Bearer {access_token}\x01\x01".encode()
 
 
-def _password_auth_help() -> str:
-    return "Mailbox login failed. Check MAILBOX_EMAIL and MAILBOX_PASSWORD in backend/.env."
-
-
 def _is_sent_folder(folder: str | None) -> bool:
     name = (folder or "").strip().lower()
     if not name:
@@ -110,42 +165,40 @@ def _is_sent_folder(folder: str | None) -> bool:
     return "sent" in name.split(".") or "sent" in name.split("/")
 
 
-def _invalidate_mail_caches() -> None:
-    _UNREAD_CACHE["at"] = 0.0
-    _FOLDER_COUNT_CACHE["data"] = None
-    _LIST_CACHE.clear()
-    _CONV_SUMMARY_CACHE["data"] = None
-    _CONV_SUMMARY_CACHE["at"] = 0.0
-
-
-def _list_cache_get(key: str) -> list[dict[str, Any]] | None:
-    import time
-
-    entry = _LIST_CACHE.get(key)
-    if not entry:
-        return None
-    if time.monotonic() - float(entry.get("at") or 0) > _LIST_CACHE_TTL_SEC:
-        return None
-    data = entry.get("data")
-    return list(data) if isinstance(data, list) else None
-
-
-def _list_cache_set(key: str, data: list[dict[str, Any]]) -> None:
-    import time
-
-    _LIST_CACHE[key] = {"at": time.monotonic(), "data": list(data)}
-
-
 class OutlookClient:
+    def _cred_email(self) -> str | None:
+        acct = get_active_mailbox()
+        if acct and acct.email:
+            return acct.email.strip()
+        return (settings.mailbox_email or "").strip() or None
+
+    def _cred_password(self) -> str | None:
+        acct = get_active_mailbox()
+        if acct and acct.password:
+            return acct.password
+        return self._cred_password()
+
+    def _cred_display_name(self) -> str | None:
+        acct = get_active_mailbox()
+        if acct and acct.display_name:
+            return acct.display_name
+        return self._cred_display_name()
+
     @property
     def is_configured(self) -> bool:
-        if not settings.mailbox_enabled or not settings.mailbox_email:
+        if not settings.mailbox_enabled:
             return False
-        if self._use_oauth():
+        email = self._cred_email()
+        if not email:
+            return False
+        if self._use_oauth() and get_active_mailbox() is None:
             return True
-        return bool(settings.mailbox_password)
+        return bool(self._cred_password())
 
     def _use_oauth(self) -> bool:
+        # Per-user cPanel accounts always use password auth; OAuth is legacy global only.
+        if get_active_mailbox() is not None:
+            return False
         return bool(
             settings.mailbox_client_id
             and settings.mailbox_refresh_token
@@ -236,13 +289,15 @@ class OutlookClient:
             token = self._acquire_access_token(IMAP_SCOPES)
             client.authenticate(
                 "XOAUTH2",
-                lambda _challenge: _xoauth2_bytes(settings.mailbox_email, token),
+                lambda _challenge: _xoauth2_bytes(self._cred_email() or "", token),
             )
         else:
-            if not settings.mailbox_password:
+            password = self._cred_password()
+            email = self._cred_email()
+            if not password or not email:
                 raise RuntimeError("Mailbox password is not configured")
             try:
-                login_result = client.login(settings.mailbox_email, settings.mailbox_password)
+                login_result = client.login(email, password)
             except Exception as exc:
                 raise RuntimeError(_password_auth_help()) from exc
             if login_result[0] != "OK":
@@ -256,7 +311,8 @@ class OutlookClient:
     def _mailbox(self, folder: str = "INBOX"):
         if not self.is_configured:
             raise RuntimeError(
-                "Mailbox is not enabled. Set MAILBOX_ENABLED=true and MAILBOX_EMAIL in backend/.env"
+                "Mailbox is not enabled. Set MAILBOX_ENABLED=true and configure "
+                "this user's mailbox email/password (or legacy MAILBOX_EMAIL in .env)."
             )
         mailbox = self._connect_imap()
         if folder and folder != "INBOX":
@@ -329,7 +385,7 @@ class OutlookClient:
 
     def resolve_folders(self) -> dict[str, str | None]:
         """Return logical key → IMAP folder name (or None if missing)."""
-        with _IMAP_LOCK:
+        with _imap_lock():
             mailbox = self._mailbox("INBOX")
             try:
                 names = self._list_folder_names(mailbox)
@@ -348,11 +404,16 @@ class OutlookClient:
         import time
 
         now = time.monotonic()
-        cached = _FOLDER_COUNT_CACHE.get("data")
-        if cached is not None and now - float(_FOLDER_COUNT_CACHE.get("at") or 0) < _FOLDER_COUNT_TTL_SEC:
-            return cached
+        cache_key = _account_cache_key()
+        cached_entry = _FOLDER_COUNT_CACHE.get(cache_key)
+        if (
+            cached_entry is not None
+            and cached_entry.get("data") is not None
+            and now - float(cached_entry.get("at") or 0) < _FOLDER_COUNT_TTL_SEC
+        ):
+            return cached_entry["data"]
 
-        with _IMAP_LOCK:
+        with _imap_lock():
             mailbox = self._mailbox("INBOX")
             try:
                 names = self._list_folder_names(mailbox)
@@ -377,11 +438,13 @@ class OutlookClient:
                         "key": key,
                         "imap_name": imap_name,
                         "available": True,
-                        "count": total if total > 0 else min(limit, total),
-                        "unread_count": unseen,
+                        "count": min(int(total), max(limit, 1) * 50),
+                        "unread_count": int(unseen),
                     }
-                _FOLDER_COUNT_CACHE["at"] = time.monotonic()
-                _FOLDER_COUNT_CACHE["data"] = out
+                _FOLDER_COUNT_CACHE[cache_key] = {
+                    "at": time.monotonic(),
+                    "data": out,
+                }
                 return out
             finally:
                 try:
@@ -400,7 +463,7 @@ class OutlookClient:
         if key not in FOLDER_KEYS:
             raise ValueError(f"Unknown folder: {folder_key}")
 
-        with _IMAP_LOCK:
+        with _imap_lock():
             mailbox = self._mailbox("INBOX")
             try:
                 imap_name = self._resolve_folder_name(mailbox, key)
@@ -438,7 +501,7 @@ class OutlookClient:
             return {"status": "error", "message": f"Unknown destination folder: {to_folder_key}"}
 
         source = (from_folder or "INBOX").strip() or "INBOX"
-        with _IMAP_LOCK:
+        with _imap_lock():
             mailbox = self._mailbox(source)
             try:
                 dest = self._resolve_folder_name(mailbox, to_key)
@@ -475,7 +538,7 @@ class OutlookClient:
 
     def empty_trash(self) -> dict[str, Any]:
         """Permanently delete all messages currently in Trash / Deleted Items."""
-        with _IMAP_LOCK:
+        with _imap_lock():
             mailbox = self._mailbox("INBOX")
             try:
                 trash = self._resolve_folder_name(mailbox, "trash")
@@ -535,7 +598,7 @@ class OutlookClient:
         return None
 
     def _direction(self, from_email: str | None, folder: str) -> str:
-        mailbox_email = (settings.mailbox_email or "").strip().lower()
+        mailbox_email = (self._cred_email() or "").strip().lower()
         if _is_sent_folder(folder):
             return "outbound"
         if from_email and mailbox_email and from_email.strip().lower() == mailbox_email:
@@ -649,7 +712,7 @@ class OutlookClient:
         if cached is not None:
             return cached[:limit]
 
-        with _IMAP_LOCK:
+        with _imap_lock():
             mailbox = self._mailbox("INBOX")
             try:
                 summaries = self._fetch_folder(
@@ -682,7 +745,7 @@ class OutlookClient:
 
         # Reuse a fresh full-scan cache when a smaller limit is requested.
         now = time.monotonic()
-        conv = _CONV_SUMMARY_CACHE
+        conv = _CONV_SUMMARY_CACHE.get(_account_cache_key()) or {}
         if (
             not unread_only
             and conv.get("data") is not None
@@ -693,7 +756,7 @@ class OutlookClient:
             _list_cache_set(cache_key, data)
             return data
 
-        with _IMAP_LOCK:
+        with _imap_lock():
             mailbox = self._mailbox("INBOX")
             try:
                 per_folder = max(limit, 1)
@@ -736,15 +799,17 @@ class OutlookClient:
 
         _list_cache_set(cache_key, unique)
         if not unread_only:
-            _CONV_SUMMARY_CACHE["at"] = time.monotonic()
-            _CONV_SUMMARY_CACHE["limit"] = limit
-            _CONV_SUMMARY_CACHE["data"] = list(unique)
+            _CONV_SUMMARY_CACHE[_account_cache_key()] = {
+                "at": time.monotonic(),
+                "limit": limit,
+                "data": list(unique),
+            }
         return unique
 
     def get_message(self, uid: str, *, folder: str = "INBOX") -> dict[str, Any] | None:
         from imap_tools import AND
 
-        with _IMAP_LOCK:
+        with _imap_lock():
             mailbox = self._mailbox(folder)
             try:
                 messages = list(
@@ -777,7 +842,7 @@ class OutlookClient:
             grouped.setdefault(folder, []).append(uid)
 
         out: list[dict[str, Any]] = []
-        with _IMAP_LOCK:
+        with _imap_lock():
             mailbox = self._mailbox("INBOX")
             try:
                 for folder, uids in grouped.items():
@@ -826,10 +891,12 @@ class OutlookClient:
         import time
 
         now = time.monotonic()
-        if now - float(_UNREAD_CACHE.get("at") or 0) < _UNREAD_TTL_SEC:
-            return int(_UNREAD_CACHE.get("count") or 0)
+        cache_key = _account_cache_key()
+        cached = _UNREAD_CACHE.get(cache_key)
+        if cached is not None and now - float(cached.get("at") or 0) < _UNREAD_TTL_SEC:
+            return int(cached.get("count") or 0)
 
-        with _IMAP_LOCK:
+        with _imap_lock():
             mailbox = self._mailbox("INBOX")
             try:
                 _total, unseen = self._folder_status_counts(mailbox, "INBOX")
@@ -838,8 +905,7 @@ class OutlookClient:
                     mailbox.logout()
                 except Exception:  # noqa: BLE001
                     pass
-        _UNREAD_CACHE["at"] = time.monotonic()
-        _UNREAD_CACHE["count"] = unseen
+        _UNREAD_CACHE[cache_key] = {"at": time.monotonic(), "count": unseen}
         return unseen
 
     def mark_read(self, uid: str, seen: bool = True, *, folder: str = "INBOX") -> None:
@@ -858,7 +924,7 @@ class OutlookClient:
         for folder, uid in items:
             grouped.setdefault(folder or "INBOX", []).append(str(uid))
 
-        with _IMAP_LOCK:
+        with _imap_lock():
             mailbox = self._mailbox("INBOX")
             try:
                 for folder, uids in grouped.items():
@@ -923,14 +989,14 @@ class OutlookClient:
         from modules.email_attachments import load_bytes
         from modules.email_tracking import build_tracked_bodies
 
-        if not settings.mailbox_password:
+        if not self._cred_password():
             return {
                 "status": "error",
                 "message": "Mailbox password is not configured. Set MAILBOX_PASSWORD in backend/.env.",
             }
 
-        from_addr = settings.mailbox_email
-        display_name = settings.mailbox_display_name
+        from_addr = self._cred_email()
+        display_name = self._cred_display_name()
         plain_body, html_body = build_tracked_bodies(
             body,
             interaction_id=interaction_id,
@@ -1002,7 +1068,7 @@ class OutlookClient:
                 server.starttls(context=ssl_context)
                 server.ehlo()
             try:
-                server.login(settings.mailbox_email, settings.mailbox_password)
+                server.login(self._cred_email(), self._cred_password())
                 server.sendmail(from_addr, recipients, message.as_string())
             finally:
                 try:
@@ -1026,7 +1092,7 @@ class OutlookClient:
         import imaplib
         import time
 
-        with _IMAP_LOCK:
+        with _imap_lock():
             mailbox = self._mailbox("INBOX")
             try:
                 sent_folder = self._resolve_sent_folder(mailbox)
@@ -1095,11 +1161,11 @@ class OutlookClient:
             ),
             "toRecipients": [{"emailAddress": {"address": to}}],
         }
-        if settings.mailbox_display_name:
+        if self._cred_display_name():
             message["from"] = {
                 "emailAddress": {
-                    "address": settings.mailbox_email,
-                    "name": settings.mailbox_display_name,
+                    "address": self._cred_email(),
+                    "name": self._cred_display_name(),
                 }
             }
         if cc:

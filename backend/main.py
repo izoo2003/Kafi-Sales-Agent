@@ -100,6 +100,11 @@ async def lifespan(app: FastAPI):
         try:
             seed_sample_data(db)
             ensure_default_admin(db)
+            from modules.mailbox_env_sync import sync_mailboxes_from_env
+
+            synced = sync_mailboxes_from_env(db)
+            if synced:
+                print(f"Synced mailboxes from .env for: {', '.join(synced)}", flush=True)
         finally:
             db.close()
     except Exception as exc:

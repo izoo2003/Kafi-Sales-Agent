@@ -609,13 +609,12 @@ export function InboxPage({
       <section className="space-y-4">
         <h2 className="text-lg font-medium text-slate-100">Mail</h2>
         <div className="p-6 rounded-xl border border-slate-800 bg-slate-900/40 text-slate-400 text-sm space-y-2">
-          <p>Mail is not enabled yet.</p>
+          <p>Mail is not enabled for your account yet.</p>
           <p>
-            Set <code className="text-slate-300">MAILBOX_ENABLED=true</code>,{" "}
-            <code className="text-slate-300">MAILBOX_EMAIL</code>, and{" "}
-            <code className="text-slate-300">MAILBOX_PASSWORD</code> (plus IMAP/SMTP host
-            and ports) in <code className="text-slate-300">backend/.env</code>, then
-            restart the backend.
+            Ask an admin to set your company mailbox (email + password) on the Users page.
+            Shared IMAP/SMTP hosts must be configured in{" "}
+            <code className="text-slate-300">backend/.env</code> with{" "}
+            <code className="text-slate-300">MAILBOX_ENABLED=true</code>.
           </p>
         </div>
       </section>

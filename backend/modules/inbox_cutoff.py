@@ -1,4 +1,4 @@
-"""Optional inbox start moment — only applied when explicitly set."""
+"""Optional inbox start moment — only applied when explicitly set (per user)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ from pathlib import Path
 from config import settings
 
 _BACKEND_DIR = Path(__file__).resolve().parents[1]
-_CUTOFF_FILE = _BACKEND_DIR / "storage" / "inbox_cutoff.json"
+_CUTOFF_DIR = _BACKEND_DIR / "storage" / "inbox_cutoffs"
+_LEGACY_CUTOFF_FILE = _BACKEND_DIR / "storage" / "inbox_cutoff.json"
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
@@ -29,64 +30,91 @@ def _parse_datetime(value: str) -> datetime | None:
         return None
 
 
-def _read_file_cutoff() -> datetime | None:
-    if not _CUTOFF_FILE.is_file():
-        return None
+def _cutoff_file(user_id: int | None) -> Path:
+    if user_id is None:
+        return _LEGACY_CUTOFF_FILE
+    return _CUTOFF_DIR / f"user_{user_id}.json"
+
+
+def _read_file_cutoff(user_id: int | None = None) -> datetime | None:
+    path = _cutoff_file(user_id)
+    if not path.is_file():
+        # Fall back to legacy global cutoff only when no per-user file exists.
+        if user_id is not None and _LEGACY_CUTOFF_FILE.is_file():
+            path = _LEGACY_CUTOFF_FILE
+        else:
+            return None
     try:
-        data = json.loads(_CUTOFF_FILE.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
         return _parse_datetime(str(data.get("since", "")))
     except (OSError, json.JSONDecodeError, TypeError):
         return None
 
 
-def _write_file_cutoff(value: datetime) -> None:
-    _CUTOFF_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _CUTOFF_FILE.write_text(
+def _write_file_cutoff(value: datetime, user_id: int | None = None) -> None:
+    path = _cutoff_file(user_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         json.dumps({"since": value.astimezone(timezone.utc).isoformat()}, indent=2) + "\n",
         encoding="utf-8",
     )
 
 
-def clear_inbox_cutoff() -> None:
+def clear_inbox_cutoff(user_id: int | None = None) -> None:
     """Remove the optional cutoff so all mailbox mail is eligible again."""
     try:
-        if _CUTOFF_FILE.is_file():
-            _CUTOFF_FILE.unlink()
+        path = _cutoff_file(user_id)
+        if path.is_file():
+            path.unlink()
     except OSError:
         pass
 
 
-def has_active_cutoff() -> bool:
+def has_active_cutoff(user_id: int | None = None) -> bool:
+    if user_id is None:
+        try:
+            from modules.mailbox_accounts import get_active_mailbox_user_id
+
+            user_id = get_active_mailbox_user_id()
+        except Exception:  # noqa: BLE001
+            user_id = None
     return bool(
         _parse_datetime(settings.inbox_since or settings.gmail_inbox_since or "")
-        or _read_file_cutoff()
+        or _read_file_cutoff(user_id)
     )
 
 
-def get_inbox_since(*, initialize: bool = False) -> datetime:
+def get_inbox_since(*, initialize: bool = False, user_id: int | None = None) -> datetime:
     """Earliest message time to include.
 
     Unlike before, this does NOT auto-create a "now" cutoff on first use —
     that hid all existing mail. With no cutoff configured, returns epoch (show all).
     """
+    if user_id is None:
+        try:
+            from modules.mailbox_accounts import get_active_mailbox_user_id
+
+            user_id = get_active_mailbox_user_id()
+        except Exception:  # noqa: BLE001
+            user_id = None
+
     env_value = _parse_datetime(settings.inbox_since or settings.gmail_inbox_since or "")
     if env_value:
         return env_value
 
-    stored = _read_file_cutoff()
+    stored = _read_file_cutoff(user_id)
     if stored:
         return stored
 
     if initialize:
-        # Kept for callers that still pass initialize=True; still do not hide mail.
         return _EPOCH
     return _EPOCH
 
 
-def set_inbox_since_to_now() -> datetime:
+def set_inbox_since_to_now(user_id: int | None = None) -> datetime:
     """Ignore all mail before right now (explicit user action)."""
     now = datetime.now(timezone.utc)
-    _write_file_cutoff(now)
+    _write_file_cutoff(now, user_id=user_id)
     return now
 
 
@@ -114,11 +142,13 @@ def date_sort_key(value: object) -> datetime:
     return _EPOCH
 
 
-def message_is_after_cutoff(message_date: datetime | None) -> bool:
-    if not has_active_cutoff():
+def message_is_after_cutoff(
+    message_date: datetime | None, *, user_id: int | None = None
+) -> bool:
+    if not has_active_cutoff(user_id):
         return True
     msg = as_utc(message_date)
     if msg is None:
         return True
-    cutoff = as_utc(get_inbox_since()) or _EPOCH
+    cutoff = as_utc(get_inbox_since(user_id=user_id)) or _EPOCH
     return msg >= cutoff
