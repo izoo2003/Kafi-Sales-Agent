@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     mailbox_usman_email: str | None = None
     mailbox_usman_password: str | None = None
     mailbox_usman_display_name: str | None = None
+    mailbox_sadia_email: str | None = None
+    mailbox_sadia_password: str | None = None
+    mailbox_sadia_display_name: str | None = None
     # OAuth — required for most Outlook.com accounts (password/IMAP basic auth is blocked).
     mailbox_client_id: str | None = None
     mailbox_client_secret: str | None = None
@@ -168,6 +171,9 @@ class Settings(BaseSettings):
         "mailbox_usman_email",
         "mailbox_usman_password",
         "mailbox_usman_display_name",
+        "mailbox_sadia_email",
+        "mailbox_sadia_password",
+        "mailbox_sadia_display_name",
         "mailbox_ssl_hostname",
         "mailbox_client_id",
         "mailbox_client_secret",

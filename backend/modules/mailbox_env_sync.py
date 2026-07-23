@@ -17,11 +17,12 @@ _ENV_USER_MAILBOXES: tuple[tuple[str, str, str, str], ...] = (
     ("admin", "mailbox_admin_email", "mailbox_admin_password", "mailbox_admin_display_name"),
     ("asim", "mailbox_asim_email", "mailbox_asim_password", "mailbox_asim_display_name"),
     ("usmankhan", "mailbox_usman_email", "mailbox_usman_password", "mailbox_usman_display_name"),
+    ("sadia", "mailbox_sadia_email", "mailbox_sadia_password", "mailbox_sadia_display_name"),
 )
 
 
 def sync_mailboxes_from_env(db: Session) -> list[str]:
-    """Apply MAILBOX_ADMIN_* / MAILBOX_ASIM_* / MAILBOX_USMAN_* from .env to users.
+    """Apply MAILBOX_*_* per-user mailbox vars from .env onto app_users.
 
     Returns usernames that were updated.
     """
