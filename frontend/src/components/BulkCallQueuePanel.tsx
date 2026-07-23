@@ -1,5 +1,5 @@
 import { type CallQueueState, BATCH_SIZE, GAP_SECONDS } from "../hooks/useCallQueue";
-import { CALL_OUTCOMES, type CallOutcome } from "../utils/callOutcomes";
+import { CALL_OUTCOMES } from "../utils/callOutcomes";
 
 interface BulkCallQueuePanelProps {
   queue: CallQueueState;
