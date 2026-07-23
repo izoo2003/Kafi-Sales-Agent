@@ -750,6 +750,32 @@ class DiscoverImportResponse(BaseModel):
     onboard_results: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ImportJobStartResponse(BaseModel):
+    job_id: str
+    total: int
+
+
+class ImportJobStatusResponse(BaseModel):
+    job_id: str
+    status: str  # queued | running | committing | verifying | completed | failed
+    phase_label: str = ""
+    total: int
+    processed: int
+    created_count: int
+    skipped_count: int
+    replaced_count: int
+    current_company: Optional[str] = None
+    error: Optional[str] = None
+    import_source: Optional[str] = None
+    # Total rows in the DB with this source after the import commits — proof
+    # the leads actually landed in the table.
+    verified_source_total: Optional[int] = None
+    created: Optional[list[dict[str, Any]]] = None
+    skipped: Optional[list[dict[str, str]]] = None
+    replaced: Optional[list[dict[str, Any]]] = None
+    elapsed_seconds: float = 0.0
+
+
 class CallConfigRead(BaseModel):
     configured: bool
     webhooks_ready: bool

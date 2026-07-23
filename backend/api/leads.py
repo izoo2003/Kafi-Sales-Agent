@@ -18,6 +18,8 @@ from api.schemas import (
     DiscoverLeadsResponse,
     DiscoveryCandidateRead,
     DiscoveryRegionsResponse,
+    ImportJobStartResponse,
+    ImportJobStatusResponse,
     InteractionRead,
     LeadScoreRead,
     LeadTableCleanupResponse,
@@ -682,6 +684,47 @@ def import_discovered_leads(
         replaced=result.get("replaced", []),
         onboard_results=result["onboard_results"],
     )
+
+
+@router.post("/discover/import-async", response_model=ImportJobStartResponse)
+def import_discovered_leads_async(
+    payload: DiscoverImportRequest,
+    user: AppUser = Depends(get_current_user),
+):
+    """Start a background import job and return immediately.
+
+    Large spreadsheets (1000-2000+ rows) exceed request timeouts when imported
+    synchronously; the frontend polls GET /leads/import-jobs/{job_id} instead
+    to drive a live progress bar.
+    """
+    from modules import import_jobs
+
+    assign_to = None if _is_admin(user) else user.id
+    try:
+        job_id = import_jobs.start_import_job(
+            [c.model_dump() for c in payload.candidates],
+            auto_onboard=payload.auto_onboard,
+            replace_duplicates=payload.replace_duplicates,
+            skip_enrichment=payload.skip_enrichment,
+            assigned_to_user_id=assign_to,
+            user_id=user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return ImportJobStartResponse(job_id=job_id, total=len(payload.candidates))
+
+
+@router.get("/import-jobs/{job_id}", response_model=ImportJobStatusResponse)
+def get_import_job_status(
+    job_id: str,
+    _: AppUser = Depends(get_current_user),
+):
+    from modules import import_jobs
+
+    job = import_jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Import job not found (it may have expired after a server restart)")
+    return ImportJobStatusResponse(**job)
 
 
 @router.get("/{lead_id}/cross-sell")

@@ -1,12 +1,17 @@
 import { useMemo, useState } from "react";
-import { client, type DiscoveryCandidate } from "../api/client";
+import { client, type DiscoveryCandidate, type ImportJobStatus } from "../api/client";
 
-// Import saves rows as-is (no per-row scraping), so batches can be large —
-// raised from the old 200/25 caps which forced spreadsheets to be split up.
+// Import saves rows as-is (no per-row scraping). The whole selection goes to
+// the backend as one background job; progress is polled live from the server.
 const MAX_CSV_IMPORT = 20000;
-const IMPORT_BATCH_SIZE = 2000;
 const IMPORT_PREVIEW_ROWS = 50;
 const IMPORT_FILE_ACCEPT = ".csv,.xlsx,.xls,.xlsm,.tsv";
+const JOB_POLL_INTERVAL_MS = 800;
+const MAX_POLL_FAILURES = 6;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
 
 interface LeadsTableCsvImportProps {
   onClose: () => void;
@@ -80,6 +85,94 @@ function mappingLooksBroken(candidates: DiscoveryCandidate[]): boolean {
   return !hasMappedDetail;
 }
 
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.round(seconds % 60);
+  return `${mins}m ${secs}s`;
+}
+
+function sourceDisplayName(source: string): string {
+  if (source === "old_clients") return "Old clients";
+  return source.replace(/_/g, " ");
+}
+
+function ImportProgressPanel({
+  status,
+  sourceLabel,
+}: {
+  status: ImportJobStatus;
+  sourceLabel: string;
+}) {
+  const done = status.status === "completed";
+  const settling = status.status === "committing" || status.status === "verifying";
+  const percent = done
+    ? 100
+    : status.total > 0
+      ? Math.min(99, Math.floor((status.processed / status.total) * 100))
+      : 0;
+  const tableName = sourceDisplayName(status.import_source ?? sourceLabel);
+
+  return (
+    <div className="rounded-lg border border-slate-700 bg-slate-950 px-4 py-3 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-medium text-slate-100">
+          {done ? `Import complete — saved to ${tableName}` : status.phase_label}
+        </p>
+        <span className="text-xs tabular-nums text-slate-400">
+          {percent}% · {formatElapsed(status.elapsed_seconds)}
+        </span>
+      </div>
+
+      <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-800">
+        <div
+          className={`h-full rounded-full transition-[width] duration-500 ease-out ${
+            done
+              ? "bg-emerald-500"
+              : settling
+                ? "bg-violet-500 animate-pulse"
+                : "bg-gradient-to-r from-violet-600 to-emerald-500"
+          }`}
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs tabular-nums">
+        <span className="text-slate-300">
+          {Math.min(status.processed, status.total)} / {status.total} rows
+        </span>
+        <span className="text-emerald-300">{status.created_count} added</span>
+        {status.replaced_count > 0 && (
+          <span className="text-violet-300">{status.replaced_count} replaced</span>
+        )}
+        {status.skipped_count > 0 && (
+          <span className="text-amber-300">{status.skipped_count} skipped</span>
+        )}
+      </div>
+
+      {!done && !settling && status.current_company && (
+        <p className="text-xs text-slate-500 truncate">
+          Processing: <span className="text-slate-300">{status.current_company}</span>
+        </p>
+      )}
+      {settling && (
+        <p className="text-xs text-slate-500">
+          {status.status === "committing"
+            ? "All rows processed — writing everything to the database in one transaction…"
+            : `Counting rows in the ${tableName} table to confirm the import landed…`}
+        </p>
+      )}
+      {done && status.verified_source_total != null && (
+        <p className="text-xs text-emerald-300/90">
+          Verified in database — the {tableName} table now holds{" "}
+          <strong>{status.verified_source_total.toLocaleString()}</strong> leads
+          {status.created_count > 0 ? ` (+${status.created_count.toLocaleString()} from this import)` : ""}.
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function LeadsTableCsvImport({
   onClose,
   onImported,
@@ -93,9 +186,7 @@ export function LeadsTableCsvImport({
   const [candidates, setCandidates] = useState<DiscoveryCandidate[]>([]);
   const [messages, setMessages] = useState<string[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [progress, setProgress] = useState<{ current: number; total: number; name: string } | null>(
-    null,
-  );
+  const [jobStatus, setJobStatus] = useState<ImportJobStatus | null>(null);
   const [results, setResults] = useState<ImportRowResult[] | null>(null);
 
   const importable = useMemo(
@@ -111,6 +202,7 @@ export function LeadsTableCsvImport({
     setParsing(true);
     setMessages([]);
     setResults(null);
+    setJobStatus(null);
     try {
       const result = await client.discoverLeadsFromCsv(file, undefined, true, importSource);
       setCandidates(result.candidates);
@@ -196,67 +288,83 @@ export function LeadsTableCsvImport({
 
     setImporting(true);
     setResults(null);
-    const rowResults: ImportRowResult[] = [];
+    setJobStatus(null);
 
+    // Start the background import job — the backend processes every row in one
+    // job and we poll its live progress (processed rows, created/skipped counts,
+    // current company, commit + verification phases).
+    let jobId: string;
     try {
-      let completed = 0;
-      for (let start = 0; start < toImport.length; start += IMPORT_BATCH_SIZE) {
-        const batch = toImport.slice(start, start + IMPORT_BATCH_SIZE);
-        setProgress({
-          current: completed,
-          total: toImport.length,
-          name: `Batch ${Math.floor(start / IMPORT_BATCH_SIZE) + 1} of ${Math.ceil(toImport.length / IMPORT_BATCH_SIZE)}`,
-        });
-
-        const result = await client.importDiscoveredLeads({
-          candidates: batch.map((candidate) => candidateToImportPayload(candidate, importSource)),
-          auto_onboard: false,
-          replace_duplicates: true,
-          skip_enrichment: true,
-        });
-
-        const skippedByName = new Map(
-          result.skipped.map((item) => [item.company_name.toLowerCase(), item.reason]),
-        );
-        const createdNames = new Set(
-          result.created.map((buyer) => buyer.company_name.trim().toLowerCase()),
-        );
-
-        for (const candidate of batch) {
-          const key = candidate.company_name.trim().toLowerCase();
-          if (createdNames.has(key)) {
-            rowResults.push({
-              candidate_id: candidate.candidate_id,
-              company_name: candidate.company_name,
-              status: "success",
-            });
-            continue;
-          }
-          const reason = skippedByName.get(key) ?? "Skipped";
-          const isInvalid = reason.toLowerCase().includes("not a valid business");
-          rowResults.push({
-            candidate_id: candidate.candidate_id,
-            company_name: candidate.company_name,
-            status: isInvalid ? "invalid" : "skipped",
-            error: reason,
-          });
-        }
-
-        completed += batch.length;
-        setProgress({
-          current: completed,
-          total: toImport.length,
-          name: batch[batch.length - 1]?.company_name ?? "",
-        });
-      }
+      const job = await client.startLeadsImportJob({
+        candidates: toImport.map((candidate) => candidateToImportPayload(candidate, importSource)),
+        auto_onboard: false,
+        replace_duplicates: true,
+        skip_enrichment: true,
+      });
+      jobId = job.job_id;
     } catch (e) {
-      onError(e instanceof Error ? e.message : "Import failed");
+      onError(e instanceof Error ? e.message : "Could not start the import");
       setImporting(false);
-      setProgress(null);
       return;
     }
 
-    setProgress(null);
+    let finalStatus: ImportJobStatus | null = null;
+    let pollFailures = 0;
+    while (finalStatus === null) {
+      await sleep(JOB_POLL_INTERVAL_MS);
+      try {
+        const status = await client.getLeadsImportJob(jobId);
+        pollFailures = 0;
+        setJobStatus(status);
+        if (status.status === "completed" || status.status === "failed") {
+          finalStatus = status;
+        }
+      } catch {
+        pollFailures += 1;
+        if (pollFailures >= MAX_POLL_FAILURES) {
+          onError(
+            "Lost connection to the import job. The import may still be running on the server — refresh the table in a minute to check.",
+          );
+          setImporting(false);
+          return;
+        }
+      }
+    }
+
+    if (finalStatus.status === "failed") {
+      onError(finalStatus.error || "Import failed — no rows were saved.");
+      setImporting(false);
+      return;
+    }
+
+    const skippedByName = new Map(
+      (finalStatus.skipped ?? []).map((item) => [item.company_name.toLowerCase(), item.reason]),
+    );
+    const createdNames = new Set(
+      (finalStatus.created ?? []).map((row) => row.company_name.trim().toLowerCase()),
+    );
+
+    const rowResults: ImportRowResult[] = [];
+    for (const candidate of toImport) {
+      const key = candidate.company_name.trim().toLowerCase();
+      if (createdNames.has(key)) {
+        rowResults.push({
+          candidate_id: candidate.candidate_id,
+          company_name: candidate.company_name,
+          status: "success",
+        });
+        continue;
+      }
+      const reason = skippedByName.get(key) ?? "Skipped";
+      const isInvalid = reason.toLowerCase().includes("not a valid business");
+      rowResults.push({
+        candidate_id: candidate.candidate_id,
+        company_name: candidate.company_name,
+        status: isInvalid ? "invalid" : "skipped",
+        error: reason,
+      });
+    }
+
     setImporting(false);
     setResults(rowResults);
     setCandidates((prev) =>
@@ -308,7 +416,7 @@ export function LeadsTableCsvImport({
               />
             </label>
             <span className="text-xs text-slate-500">
-              Up to {MAX_CSV_IMPORT} rows per import · saves in batches of {IMPORT_BATCH_SIZE}
+              Up to {MAX_CSV_IMPORT} rows per import · live progress while saving
             </span>
           </div>
 
@@ -326,11 +434,8 @@ export function LeadsTableCsvImport({
             </div>
           )}
 
-          {progress && (
-            <p className="text-xs text-slate-300 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">
-              Importing {progress.current} of {progress.total}:{" "}
-              <strong className="text-slate-100">{progress.name}</strong>
-            </p>
+          {jobStatus && (importing || jobStatus.status === "completed") && (
+            <ImportProgressPanel status={jobStatus} sourceLabel={importSource} />
           )}
 
           {results && results.length > 0 && (
@@ -509,8 +614,8 @@ export function LeadsTableCsvImport({
                   className="px-3 py-1.5 rounded-lg bg-violet-700 hover:bg-violet-600 text-sm font-medium disabled:opacity-50"
                 >
                   {importing
-                    ? progress
-                      ? `Importing ${progress.current}/${progress.total}…`
+                    ? jobStatus
+                      ? `Importing ${Math.min(jobStatus.processed, jobStatus.total)}/${jobStatus.total}…`
                       : "Starting…"
                     : `Import only (${selected.size})`}
                 </button>

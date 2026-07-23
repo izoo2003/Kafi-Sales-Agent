@@ -7,6 +7,7 @@ import html
 import io
 import re
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any
@@ -3005,6 +3006,7 @@ def import_candidates(
     replace_duplicates: bool = False,
     skip_enrichment: bool = False,
     assigned_to_user_id: int | None = None,
+    progress_callback: Callable[[int, str, dict[str, int]], None] | None = None,
 ) -> dict[str, Any]:
     from modules import leads as leads_module
     from modules.audit import log_action
@@ -3073,9 +3075,26 @@ def import_candidates(
             db.flush()
             pending_since_flush = 0
 
+    def _report_progress(processed: int, current_name: str) -> None:
+        if progress_callback is None:
+            return
+        try:
+            progress_callback(
+                processed,
+                current_name,
+                {
+                    "created": len(created),
+                    "skipped": len(skipped),
+                    "replaced": len(replaced),
+                },
+            )
+        except Exception:  # noqa: BLE001 — progress reporting must never break the import
+            pass
+
     try:
-        for raw in candidates:
+        for row_index, raw in enumerate(candidates):
             name = (raw.get("company_name") or "").strip()
+            _report_progress(row_index, name)
             if not name:
                 skipped.append({"company_name": name or "(empty)", "reason": "Missing company name"})
                 continue
@@ -3260,6 +3279,9 @@ def import_candidates(
                             "error": str(exc),
                         }
                     )
+
+        # Final report before commit — the job runner shows this as "committing".
+        _report_progress(len(candidates), "")
 
         if skip_enrichment:
             _flush_pending()

@@ -804,6 +804,31 @@ export interface DiscoverImportResponse {
   onboard_results: Array<Record<string, unknown>>;
 }
 
+export interface ImportJobStart {
+  job_id: string;
+  total: number;
+}
+
+export interface ImportJobStatus {
+  job_id: string;
+  status: "queued" | "running" | "committing" | "verifying" | "completed" | "failed";
+  phase_label: string;
+  total: number;
+  processed: number;
+  created_count: number;
+  skipped_count: number;
+  replaced_count: number;
+  current_company: string | null;
+  error: string | null;
+  import_source: string | null;
+  /** Rows in the DB with this source after commit — proof leads landed in the table. */
+  verified_source_total: number | null;
+  created: Array<{ id: number; company_name: string }> | null;
+  skipped: Array<{ company_name: string; reason: string }> | null;
+  replaced: Array<{ company_name: string; replaced_id?: number; reason: string }> | null;
+  elapsed_seconds: number;
+}
+
 export interface LeadTableDedupeResponse {
   removed_count: number;
   kept_count: number;
@@ -1263,6 +1288,15 @@ export const client = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+
+  startLeadsImportJob: (data: DiscoverImportRequest) =>
+    request<ImportJobStart>("/leads/discover/import-async", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  getLeadsImportJob: (jobId: string) =>
+    request<ImportJobStatus>(`/leads/import-jobs/${jobId}`),
 
   getCrossSell: (leadId: number) =>
     request<CrossSellRecommendation[]>(`/leads/${leadId}/cross-sell`),
