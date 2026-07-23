@@ -40,10 +40,41 @@ function parseErrorDetail(text: string, fallback: string): string {
   return text;
 }
 
-/** Max ms a single fetch attempt may take before it is aborted. */
-const FETCH_TIMEOUT_MS = 12_000;
-/** Tighter timeout for session bootstrap (/auth/me). */
-const AUTH_FETCH_TIMEOUT_MS = 8_000;
+/**
+ * Timeouts must stay above Railway pool waits + Vercel→Railway hop.
+ * A 12s abort used to fire while Postgres pool_timeout (15s) was still waiting,
+ * which looked like "API unreachable" even though the backend was alive.
+ */
+const FETCH_TIMEOUT_MS = 30_000;
+const AUTH_FETCH_TIMEOUT_MS = 20_000;
+const HEAVY_FETCH_TIMEOUT_MS = 60_000;
+const RETRY_BACKOFF_MS = [600, 1_800, 3_500] as const;
+
+function timeoutForPath(path: string): number {
+  if (path.startsWith("/auth/")) return AUTH_FETCH_TIMEOUT_MS;
+  if (
+    path.startsWith("/leads/table") ||
+    path.startsWith("/leads/discover") ||
+    path.startsWith("/leads/import-jobs") ||
+    path.startsWith("/inbox") ||
+    path.startsWith("/email") ||
+    path.startsWith("/calls")
+  ) {
+    return HEAVY_FETCH_TIMEOUT_MS;
+  }
+  return FETCH_TIMEOUT_MS;
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 502 || status === 503 || status === 504;
+}
+
+function networkErrorMessage(isTimeout: boolean): string {
+  if (isTimeout) {
+    return "The API is taking too long to respond. Railway may be warming up or busy — wait a few seconds and try again.";
+  }
+  return "Cannot reach the API right now. Check your connection, then refresh. If this keeps happening, Railway may be restarting.";
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = new Headers(authHeaders({ "Content-Type": "application/json" }));
@@ -54,10 +85,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
   const method = (options?.method || "GET").toUpperCase();
   const canRetry = method === "GET" || method === "HEAD";
-  const timeoutMs = path.startsWith("/auth/") ? AUTH_FETCH_TIMEOUT_MS : FETCH_TIMEOUT_MS;
+  const timeoutMs = timeoutForPath(path);
+  const maxAttempts = canRetry ? RETRY_BACKOFF_MS.length + 1 : 1;
   let lastNetworkError: Error | null = null;
+  let lastWasTimeout = false;
 
-  for (let attempt = 0; attempt < (canRetry ? 2 : 1); attempt += 1) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -68,6 +101,14 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
         signal: controller.signal,
       });
       window.clearTimeout(timeoutId);
+
+      if (isRetryableStatus(res.status) && canRetry && attempt < maxAttempts - 1) {
+        lastNetworkError = new Error(`Upstream ${res.status}`);
+        lastWasTimeout = false;
+        await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS[attempt] ?? 3_500));
+        continue;
+      }
+
       if (res.status === 401 && path !== "/auth/login") {
         clearSession();
         if (!window.location.hash.includes("login")) {
@@ -94,21 +135,20 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
         isAbort ||
         err instanceof TypeError ||
         /failed to fetch|networkerror|load failed|fetch failed/i.test(message);
-      if (isNetwork && canRetry && attempt === 0) {
+      if (isNetwork && canRetry && attempt < maxAttempts - 1) {
         lastNetworkError = err instanceof Error ? err : new Error(message);
-        await new Promise((resolve) => setTimeout(resolve, 400));
+        lastWasTimeout = isAbort;
+        await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS[attempt] ?? 3_500));
         continue;
       }
       if (isNetwork) {
-        throw new Error(
-          "Cannot reach the API right now. Check your connection, then refresh. If this keeps happening, Railway may be restarting.",
-        );
+        throw new Error(networkErrorMessage(isAbort || lastWasTimeout));
       }
       throw err;
     }
   }
 
-  throw lastNetworkError ?? new Error("Cannot reach the API right now.");
+  throw lastNetworkError ?? new Error(networkErrorMessage(lastWasTimeout));
 }
 
 export interface InboxMailboxStatus {
@@ -1071,6 +1111,16 @@ export interface WhatsAppReplyResponse {
 
 export const client = {
   health: () => request<{ status: string }>("/health"),
+
+  /** Fire-and-forget wake for Railway cold starts before session bootstrap. */
+  wakeBackend: async (): Promise<boolean> => {
+    try {
+      await request<{ status: string }>("/health");
+      return true;
+    } catch {
+      return false;
+    }
+  },
 
   login: (data: { username: string; password: string }) =>
     request<LoginResponse>("/auth/login", {

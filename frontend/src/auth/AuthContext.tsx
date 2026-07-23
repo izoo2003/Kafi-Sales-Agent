@@ -28,7 +28,7 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 /** Max wait for session bootstrap before forcing login screen. */
-const AUTH_SAFETY_MS = 20_000;
+const AUTH_SAFETY_MS = 55_000;
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(() => getStoredUser());
@@ -48,6 +48,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const work = async () => {
       try {
+        // Wake Railway (cold start / idle) before /auth/me so the first
+        // authenticated call is less likely to abort mid-hop.
+        await client.wakeBackend();
         const me = await client.getMe();
         const next: AuthUser = {
           id: me.id,
