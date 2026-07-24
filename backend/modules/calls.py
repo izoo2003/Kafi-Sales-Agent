@@ -765,3 +765,154 @@ def delete_call_log(db: Session, *, interaction_id: int) -> bool:
 
 def update_call_notes(db: Session, *, interaction_id: int, notes: str) -> dict:
     return update_call_followup(db, interaction_id=interaction_id, notes=notes)
+
+
+def _contact_has_dialable_phone(contact: Contact) -> bool:
+    phone = (contact.phone or "").strip()
+    if phone:
+        return True
+    primary = (contact.primary_phone or "").strip()
+    if primary:
+        return True
+    secondary = (contact.secondary_mobile or "").strip()
+    return bool(secondary)
+
+
+def _dial_phone_for_contact(contact: Contact) -> str | None:
+    for value in (contact.phone, contact.primary_phone, contact.secondary_mobile):
+        cleaned = (value or "").strip()
+        if cleaned:
+            return cleaned
+    return None
+
+
+def list_dialable_leads(
+    db: Session,
+    *,
+    assigned_to_user_id: int | None = None,
+    unassigned_only: bool = False,
+    country: str | None = None,
+    valid_now: str | None = None,
+    page: int = 1,
+    page_size: int = 25,
+) -> dict[str, object]:
+    """Leads that have at least one contact phone number — for Quick Dial.
+
+    ``valid_now``: ``yes`` / ``no`` / empty (all). Uses the same 10 AM–5 PM
+    country window as the leads table call badges.
+    """
+    from sqlalchemy import func as sa_func, or_
+
+    from modules.call_timing import countries_valid_to_call_now, get_call_recommendation
+    from modules.leads import _apply_lead_table_scope
+
+    page = max(1, page)
+    page_size = min(max(1, page_size), 100)
+
+    phone_contacts = (
+        db.query(Contact)
+        .filter(
+            or_(
+                sa_func.trim(sa_func.coalesce(Contact.phone, "")) != "",
+                sa_func.trim(sa_func.coalesce(Contact.primary_phone, "")) != "",
+                sa_func.trim(sa_func.coalesce(Contact.secondary_mobile, "")) != "",
+            )
+        )
+        .order_by(Contact.buyer_id.asc(), Contact.id.asc())
+        .all()
+    )
+    phone_by_buyer: dict[int, Contact] = {}
+    for contact in phone_contacts:
+        if contact.buyer_id not in phone_by_buyer and _contact_has_dialable_phone(contact):
+            phone_by_buyer[contact.buyer_id] = contact
+
+    if not phone_by_buyer:
+        return {
+            "total": 0,
+            "page": 1,
+            "page_size": page_size,
+            "total_pages": 1,
+            "rows": [],
+            "countries": [],
+            "countries_valid_now": countries_valid_to_call_now(),
+        }
+
+    buyer_query = _apply_lead_table_scope(
+        db.query(Buyer),
+        source=None,
+        exclude_source=None,
+        assigned_to_user_id=assigned_to_user_id,
+        unassigned_only=unassigned_only,
+        pool_for_user_id=None,
+    ).filter(Buyer.id.in_(list(phone_by_buyer.keys())))
+
+    if country:
+        from modules.countries import country_search_terms
+
+        terms = [term for term in country_search_terms(country) if term]
+        if terms:
+            buyer_query = buyer_query.filter(
+                or_(
+                    *[
+                        sa_func.lower(sa_func.coalesce(Buyer.country, "")).like(f"%{term}%")
+                        for term in terms
+                    ]
+                )
+            )
+
+    light_rows = buyer_query.with_entities(
+        Buyer.id, Buyer.company_name, Buyer.country, Buyer.created_at
+    ).all()
+
+    want = (valid_now or "").strip().lower()
+    filtered: list[tuple[int, str, str | None, object]] = []
+    country_set: set[str] = set()
+    for buyer_id, company_name, country_val, created_at in light_rows:
+        timing = get_call_recommendation(country_val)
+        recommended = timing["call_recommended"]
+        if want in {"yes", "true", "recommended", "valid"}:
+            if recommended is not True:
+                continue
+        elif want in {"no", "false", "not_now", "not-now"}:
+            if recommended is not False:
+                continue
+        filtered.append((buyer_id, company_name, country_val, created_at))
+        if country_val and str(country_val).strip():
+            country_set.add(str(country_val).strip())
+
+    filtered.sort(key=lambda row: ((row[1] or "").lower(), row[0]))
+    total = len(filtered)
+    total_pages = max(1, (total + page_size - 1) // page_size) if total else 1
+    if page > total_pages:
+        page = total_pages
+    start = (page - 1) * page_size
+    page_rows = filtered[start : start + page_size]
+
+    rows: list[dict[str, object]] = []
+    for buyer_id, company_name, country_val, _created_at in page_rows:
+        contact = phone_by_buyer.get(buyer_id)
+        timing = get_call_recommendation(country_val)
+        rows.append(
+            {
+                "id": buyer_id,
+                "company_name": company_name,
+                "country": country_val,
+                "call_recommended": timing["call_recommended"],
+                "call_local_time": timing["call_local_time"],
+                "call_timezone": timing["call_timezone"],
+                "call_reason": timing["call_reason"],
+                "contact_id": contact.id if contact else None,
+                "contact_name": contact.full_name if contact else None,
+                "contact_phone": _dial_phone_for_contact(contact) if contact else None,
+            }
+        )
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "rows": rows,
+        "countries": sorted(country_set, key=lambda c: c.lower()),
+        "countries_valid_now": countries_valid_to_call_now(),
+    }

@@ -10,16 +10,22 @@ from api.schemas import (
     CallInitiateRequest,
     CallInitiateResponse,
     CallNotesRequest,
+    DialableLeadsResponse,
     ManualCallRequest,
     VoiceTokenRead,
 )
-from db.models import AppUser
+from db.models import AppUser, AppUserRole
 from db.session import SessionLocal
 from integrations.voice_client import voice_client
 from modules import calls as calls_module
 from modules import leads as leads_module
 
 from config import settings
+
+
+def _is_admin(user: AppUser) -> bool:
+    role = user.role.value if isinstance(user.role, AppUserRole) else str(user.role)
+    return role == AppUserRole.admin.value
 
 
 def _require_lead_access(db: Session, user: AppUser, lead_id: int) -> None:
@@ -67,6 +73,37 @@ def _transcribe_in_background(interaction_id: int) -> None:
 def get_call_config():
     cfg = calls_module.call_config()
     return CallConfigRead(**cfg)
+
+
+@router.get("/calls/dialable-leads", response_model=DialableLeadsResponse)
+def list_dialable_leads(
+    page: int = 1,
+    page_size: int = 25,
+    country: str | None = None,
+    valid_now: str | None = Query(
+        default=None,
+        description="yes = inside calling hours now; no = outside; omit = all",
+    ),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    """Quick Dial list: leads with phone numbers, scoped by role."""
+    if _is_admin(user):
+        assigned_to_user_id = None
+        unassigned_only = False
+    else:
+        assigned_to_user_id = user.id
+        unassigned_only = False
+    result = calls_module.list_dialable_leads(
+        db,
+        assigned_to_user_id=assigned_to_user_id,
+        unassigned_only=unassigned_only,
+        country=country,
+        valid_now=valid_now,
+        page=page,
+        page_size=page_size,
+    )
+    return DialableLeadsResponse(**result)
 
 
 @router.get("/calls/voice-token", response_model=VoiceTokenRead)

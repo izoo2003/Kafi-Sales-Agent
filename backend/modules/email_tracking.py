@@ -152,6 +152,19 @@ def record_open(
             company = buyer.company_name
 
     mode = "bulk" if send_mode == "bulk" else "individual"
+    sender_user_id = None
+    prior = (
+        db.query(EmailActivityEvent)
+        .filter(
+            EmailActivityEvent.interaction_id == interaction_id,
+            EmailActivityEvent.user_id.isnot(None),
+        )
+        .order_by(EmailActivityEvent.created_at.desc())
+        .first()
+    )
+    if prior:
+        sender_user_id = prior.user_id
+
     event = email_activity.record_event(
         db,
         event_type="opened",
@@ -160,6 +173,7 @@ def record_open(
             f"Recipient opened “{interaction.subject or 'email'}”"
             f"{f' ({to_email})' if to_email else ''}."
         ),
+        user_id=sender_user_id,
         buyer_id=buyer_id,
         contact_id=interaction.contact_id,
         interaction_id=interaction_id,

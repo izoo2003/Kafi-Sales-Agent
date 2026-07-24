@@ -1,13 +1,17 @@
 ---
-description: Always push GitHub changes to izoo2003 only
+description: Always push GitHub changes to izoo2003 Kafi-Sales-Agent only
 alwaysApply: true
 ---
 
 # GitHub push target
 
-When the user asks to push, commit-and-push, or sync anything to GitHub:
+Owner: **izoo2003** · email **izaanmujeeb420@gmail.com** · repo **Kafi-Sales-Agent**.
 
-- Push only to the **izoo2003** repo (`origin` → `https://github.com/izoo2003/Kafi-Sales-Agent.git`).
+When the user asks to push, commit-and-push, sync, or “ship it” to GitHub:
+
+- Push **only** to `origin` → `https://github.com/izoo2003/Kafi-Sales-Agent.git`.
+- Do a **quick push**: `git push origin HEAD` (or the branch’s existing `origin` upstream). No extra remotes, no PR unless asked.
 - There is **no** Sales-Agent repo under `kafi-group` — never add that remote or push there.
-- Prefer `git push origin HEAD` (or the current branch’s upstream if it already tracks `origin`).
-- If unsure which remote is which, run `git remote -v` and confirm `origin` is `izoo2003` before pushing.
+- The `vercel` remote (`izoo2003/kafi_sales_agent`) is separate — do **not** push there unless the user explicitly asks.
+- If unsure which remote is which, run `git remote -v` and confirm `origin` is `izoo2003/Kafi-Sales-Agent` before pushing.
+- Do not change `git config` user.name / user.email unless the user explicitly asks.

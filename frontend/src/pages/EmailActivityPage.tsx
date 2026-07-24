@@ -7,13 +7,14 @@ import {
   type EmailActivityModeStats,
 } from "../api/client";
 import { Pagination } from "../components/Pagination";
+import { useAuth } from "../auth/AuthContext";
 
 interface EmailActivityPageProps {
   onError: (message: string) => void;
   onUnreadChange?: (count: number) => void;
 }
 
-const PAGE_SIZE = 30;
+const PAGE_SIZE = 25;
 const POLL_MS = 12_000;
 
 type InsightsPeriod = 7 | 30 | 90 | null;
@@ -108,6 +109,7 @@ function ModeBlock({
 }
 
 export function EmailActivityPage({ onError, onUnreadChange }: EmailActivityPageProps) {
+  const { isAdmin } = useAuth();
   const [page, setPage] = useState(1);
   const [rows, setRows] = useState<EmailActivityEvent[]>([]);
   const [total, setTotal] = useState(0);
@@ -193,8 +195,9 @@ export function EmailActivityPage({ onError, onUnreadChange }: EmailActivityPage
         <div>
           <h2 className="text-lg font-medium text-slate-100">Email Activity</h2>
           <p className="text-sm text-slate-500 mt-1 max-w-2xl">
-            Live notifications for outbound email — sent, failed, bulk batches, mailbox issues,
-            skips, and engagement events when available.
+            {isAdmin
+              ? "Outbound email notifications for all users — sent, failed, bulk batches, and engagement."
+              : "Your outbound email notifications — sent, failed, bulk batches, and engagement. Other users’ activity is hidden."}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -404,6 +407,11 @@ export function EmailActivityPage({ onError, onUnreadChange }: EmailActivityPage
                           New
                         </span>
                       )}
+                      {isAdmin && (event.user_full_name || event.user_username) ? (
+                        <span className="text-[10px] uppercase tracking-wide rounded bg-slate-950/40 px-1.5 py-0.5 opacity-80">
+                          {event.user_full_name || event.user_username}
+                        </span>
+                      ) : null}
                     </div>
                     <p className="text-sm font-medium mt-1">{event.title}</p>
                     <p className="text-sm opacity-90 mt-1 whitespace-pre-wrap">{event.message}</p>
@@ -425,7 +433,7 @@ export function EmailActivityPage({ onError, onUnreadChange }: EmailActivityPage
         </ul>
       )}
 
-      {totalPages > 1 && (
+      {total > 0 && (
         <Pagination
           page={page}
           totalPages={totalPages}

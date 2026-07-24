@@ -7,7 +7,25 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from db.models import EmailActivityEvent
+from db.models import AppUser, EmailActivityEvent
+
+DEFAULT_PAGE_SIZE = 25
+
+
+def _scoped_query(db: Session, *, user_id: int | None, is_admin: bool):
+    """Admins see all events; other users only see their own."""
+    query = db.query(EmailActivityEvent)
+    if not is_admin:
+        if user_id is None:
+            return query.filter(EmailActivityEvent.id < 0)
+        query = query.filter(EmailActivityEvent.user_id == user_id)
+    return query
+
+
+def _actor_user_id(mailbox_user) -> int | None:
+    if mailbox_user is None:
+        return None
+    return getattr(mailbox_user, "id", None)
 
 # Canonical event types. Some are emitted today; others are reserved for ESP/webhook tracking.
 EVENT_CATALOG: dict[str, dict[str, str]] = {
@@ -168,17 +186,21 @@ def record_event(
     event_type: str,
     title: str,
     message: str,
+    user_id: int | None = None,
     buyer_id: int | None = None,
     contact_id: int | None = None,
     interaction_id: int | None = None,
     details: dict[str, Any] | None = None,
     severity: str | None = None,
+    mailbox_user=None,
 ) -> EmailActivityEvent:
+    actor_id = user_id if user_id is not None else _actor_user_id(mailbox_user)
     event = EmailActivityEvent(
         event_type=event_type,
         severity=severity or SEVERITY_BY_TYPE.get(event_type, "info"),
         title=title,
         message=message,
+        user_id=actor_id,
         buyer_id=buyer_id,
         contact_id=contact_id,
         interaction_id=interaction_id,
@@ -196,11 +218,13 @@ def record_send_result(
     send_result: dict | None,
     company_name: str,
     to_email: str | None,
+    user_id: int | None = None,
     buyer_id: int | None = None,
     contact_id: int | None = None,
     interaction_id: int | None = None,
     subject: str | None = None,
     send_mode: str = "individual",
+    mailbox_user=None,
 ) -> EmailActivityEvent:
     event_type = classify_send_result(send_result)
     catalog = EVENT_CATALOG.get(event_type, {})
@@ -223,9 +247,11 @@ def record_send_result(
         event_type=event_type,
         title=title,
         message=message,
+        user_id=user_id,
         buyer_id=buyer_id,
         contact_id=contact_id,
         interaction_id=interaction_id,
+        mailbox_user=mailbox_user,
         details={
             "company_name": company_name,
             "to_email": to_email,
@@ -240,17 +266,19 @@ def list_events(
     db: Session,
     *,
     page: int = 1,
-    page_size: int = 30,
+    page_size: int = DEFAULT_PAGE_SIZE,
     unread_only: bool = False,
+    user_id: int | None = None,
+    is_admin: bool = False,
 ) -> tuple[list[EmailActivityEvent], int, int]:
     page = max(1, page)
     page_size = min(max(1, page_size), 100)
-    query = db.query(EmailActivityEvent)
+    query = _scoped_query(db, user_id=user_id, is_admin=is_admin)
     if unread_only:
         query = query.filter(EmailActivityEvent.read_at.is_(None))
     total = query.count()
     unread = (
-        db.query(EmailActivityEvent)
+        _scoped_query(db, user_id=user_id, is_admin=is_admin)
         .filter(EmailActivityEvent.read_at.is_(None))
         .count()
     )
@@ -263,9 +291,18 @@ def list_events(
     return rows, total, unread
 
 
-def mark_read(db: Session, event_ids: list[int] | None = None, *, mark_all: bool = False) -> int:
+def mark_read(
+    db: Session,
+    event_ids: list[int] | None = None,
+    *,
+    mark_all: bool = False,
+    user_id: int | None = None,
+    is_admin: bool = False,
+) -> int:
     now = datetime.now(timezone.utc)
-    query = db.query(EmailActivityEvent).filter(EmailActivityEvent.read_at.is_(None))
+    query = _scoped_query(db, user_id=user_id, is_admin=is_admin).filter(
+        EmailActivityEvent.read_at.is_(None)
+    )
     if mark_all:
         updated = query.update({EmailActivityEvent.read_at: now}, synchronize_session=False)
     elif event_ids:
@@ -279,7 +316,7 @@ def mark_read(db: Session, event_ids: list[int] | None = None, *, mark_all: bool
     return int(updated or 0)
 
 
-def event_to_dict(event: EmailActivityEvent) -> dict[str, Any]:
+def event_to_dict(event: EmailActivityEvent, *, actor: AppUser | None = None) -> dict[str, Any]:
     catalog = EVENT_CATALOG.get(event.event_type, {})
     return {
         "id": event.id,
@@ -288,6 +325,9 @@ def event_to_dict(event: EmailActivityEvent) -> dict[str, Any]:
         "severity": event.severity,
         "title": event.title,
         "message": event.message,
+        "user_id": event.user_id,
+        "user_username": actor.username if actor else None,
+        "user_full_name": (actor.full_name if actor else None) or None,
         "buyer_id": event.buyer_id,
         "contact_id": event.contact_id,
         "interaction_id": event.interaction_id,
@@ -295,6 +335,14 @@ def event_to_dict(event: EmailActivityEvent) -> dict[str, Any]:
         "read_at": event.read_at.isoformat() if event.read_at else None,
         "created_at": event.created_at.isoformat() if event.created_at else None,
     }
+
+
+def actors_for_events(db: Session, events: list[EmailActivityEvent]) -> dict[int, AppUser]:
+    user_ids = {e.user_id for e in events if e.user_id is not None}
+    if not user_ids:
+        return {}
+    rows = db.query(AppUser).filter(AppUser.id.in_(user_ids)).all()
+    return {row.id: row for row in rows}
 
 
 def catalog_list() -> list[dict[str, str]]:
@@ -321,11 +369,17 @@ _FAIL_TYPES = {
 }
 
 
-def insights_stats(db: Session, *, days: int | None = 30) -> dict[str, Any]:
+def insights_stats(
+    db: Session,
+    *,
+    days: int | None = 30,
+    user_id: int | None = None,
+    is_admin: bool = False,
+) -> dict[str, Any]:
     """Aggregate outbound email activity into bulk vs individual insight cards."""
     from modules.email_tracking import public_api_base
 
-    query = db.query(EmailActivityEvent)
+    query = _scoped_query(db, user_id=user_id, is_admin=is_admin)
     since = None
     if days and days > 0:
         from datetime import timedelta

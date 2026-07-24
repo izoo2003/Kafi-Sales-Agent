@@ -462,6 +462,9 @@ class EmailActivityEvent(Base):
     severity: Mapped[str] = mapped_column(String(20), nullable=False, default="info")
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     buyer_id: Mapped[Optional[int]] = mapped_column(ForeignKey("buyers.id"), nullable=True)
     contact_id: Mapped[Optional[int]] = mapped_column(ForeignKey("contacts.id"), nullable=True)
     interaction_id: Mapped[Optional[int]] = mapped_column(ForeignKey("interactions.id"), nullable=True)

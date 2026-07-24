@@ -527,6 +527,9 @@ class EmailActivityEventRead(BaseModel):
     severity: str
     title: str
     message: str
+    user_id: Optional[int] = None
+    user_username: Optional[str] = None
+    user_full_name: Optional[str] = None
     buyer_id: Optional[int] = None
     contact_id: Optional[int] = None
     interaction_id: Optional[int] = None
@@ -539,7 +542,7 @@ class EmailActivityListResponse(BaseModel):
     total: int
     unread_count: int
     page: int = 1
-    page_size: int = 30
+    page_size: int = 25
     total_pages: int = 1
     rows: list[EmailActivityEventRead]
 
@@ -867,6 +870,35 @@ class CallHistoryListResponse(BaseModel):
     total_pages: int = 1
     since_days: Optional[int] = 30
     rows: list[CallHistoryItem]
+
+
+class DialableLeadRow(BaseModel):
+    id: int
+    company_name: str
+    country: Optional[str] = None
+    call_recommended: Optional[bool] = None
+    call_local_time: Optional[str] = None
+    call_timezone: Optional[str] = None
+    call_reason: Optional[str] = None
+    contact_id: Optional[int] = None
+    contact_name: Optional[str] = None
+    contact_phone: Optional[str] = None
+
+
+class DialableCountryNow(BaseModel):
+    country: str
+    local_time: str = ""
+    timezone: str = ""
+
+
+class DialableLeadsResponse(BaseModel):
+    total: int
+    page: int = 1
+    page_size: int = 25
+    total_pages: int = 1
+    rows: list[DialableLeadRow]
+    countries: list[str] = Field(default_factory=list)
+    countries_valid_now: list[DialableCountryNow] = Field(default_factory=list)
 
 
 class CallNotesRequest(BaseModel):

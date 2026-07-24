@@ -264,3 +264,20 @@ def get_call_recommendation(
         "call_timezone": tz_name,
         "call_reason": reason,
     }
+
+
+def countries_valid_to_call_now(*, now: datetime | None = None) -> list[dict[str, str]]:
+    """Countries currently inside the 10 AM–5 PM calling window."""
+    moment = now or datetime.now(timezone.utc)
+    rows: list[dict[str, str]] = []
+    for country in sorted(COUNTRY_TIMEZONES):
+        timing = get_call_recommendation(country, now=moment)
+        if timing["call_recommended"] is True:
+            rows.append(
+                {
+                    "country": country,
+                    "local_time": str(timing["call_local_time"] or ""),
+                    "timezone": str(timing["call_timezone"] or ""),
+                }
+            )
+    return rows

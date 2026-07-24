@@ -544,6 +544,35 @@ export interface CallHistoryListResponse {
   rows: CallHistoryItem[];
 }
 
+export interface DialableLeadRow {
+  id: number;
+  company_name: string;
+  country: string | null;
+  call_recommended: boolean | null;
+  call_local_time: string | null;
+  call_timezone: string | null;
+  call_reason: string | null;
+  contact_id: number | null;
+  contact_name: string | null;
+  contact_phone: string | null;
+}
+
+export interface DialableCountryNow {
+  country: string;
+  local_time: string;
+  timezone: string;
+}
+
+export interface DialableLeadsResponse {
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  rows: DialableLeadRow[];
+  countries: string[];
+  countries_valid_now: DialableCountryNow[];
+}
+
 export interface ApproveDraftResult {
   interaction: DraftInteraction;
   sent: boolean;
@@ -613,6 +642,9 @@ export interface EmailActivityEvent {
   severity: string;
   title: string;
   message: string;
+  user_id: number | null;
+  user_username: string | null;
+  user_full_name: string | null;
   buyer_id: number | null;
   contact_id: number | null;
   interaction_id: number | null;
@@ -1793,6 +1825,21 @@ export const client = {
       },
     ),
   getVoiceToken: () => request<VoiceToken>("/calls/voice-token"),
+  listDialableLeads: (
+    params: {
+      page?: number;
+      page_size?: number;
+      country?: string;
+      valid_now?: "yes" | "no" | "";
+    } = {},
+  ) => {
+    const search = new URLSearchParams();
+    search.set("page", String(params.page ?? 1));
+    search.set("page_size", String(params.page_size ?? 25));
+    if (params.country) search.set("country", params.country);
+    if (params.valid_now) search.set("valid_now", params.valid_now);
+    return request<DialableLeadsResponse>(`/calls/dialable-leads?${search}`);
+  },
   listCallHistory: (params: { page?: number; page_size?: number; since_days?: number } = {}) => {
     const search = new URLSearchParams();
     search.set("page", String(params.page ?? 1));

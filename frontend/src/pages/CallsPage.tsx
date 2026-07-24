@@ -3,7 +3,8 @@ import {
   client,
   type CallConfig,
   type CallHistoryItem,
-  type LeadTableRow,
+  type DialableCountryNow,
+  type DialableLeadRow,
 } from "../api/client";
 import { CallLeadButton } from "../components/CallLeadButton";
 import { CallManualDialer } from "../components/CallManualDialer";
@@ -14,7 +15,6 @@ import { BulkCallQueuePanel } from "../components/BulkCallQueuePanel";
 import { CountrySelect } from "../components/CountrySelect";
 import { Pagination } from "../components/Pagination";
 import { type CallOutcome, callOutcomeBadge, callOutcomeLabel, callOutcomeListNotice } from "../utils/callOutcomes";
-import { countryMatches } from "../data/countries";
 import { useCallQueue, BATCH_SIZE } from "../hooks/useCallQueue";
 
 interface CallsPageProps {
@@ -26,6 +26,9 @@ interface CallsPageProps {
 const POLL_INTERVAL_MS = 15_000;
 const RECENT_CALLS_PAGE_SIZE = 10;
 const RECENT_CALLS_SINCE_DAYS = 30;
+const QUICK_DIAL_PAGE_SIZE = 25;
+
+type ValidNowFilter = "" | "yes" | "no";
 
 function formatDate(value: string): string {
   const date = new Date(value);
@@ -58,7 +61,12 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
   const [historyPage, setHistoryPage] = useState(1);
   const [historyTotal, setHistoryTotal] = useState(0);
   const [historyTotalPages, setHistoryTotalPages] = useState(1);
-  const [dialableLeads, setDialableLeads] = useState<LeadTableRow[]>([]);
+  const [dialableLeads, setDialableLeads] = useState<DialableLeadRow[]>([]);
+  const [dialableTotal, setDialableTotal] = useState(0);
+  const [dialablePage, setDialablePage] = useState(1);
+  const [dialableTotalPages, setDialableTotalPages] = useState(1);
+  const [dialableCountries, setDialableCountries] = useState<string[]>([]);
+  const [countriesValidNow, setCountriesValidNow] = useState<DialableCountryNow[]>([]);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [selectedCallId, setSelectedCallId] = useState<number | null>(null);
@@ -67,33 +75,65 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
   const [savingFollowUp, setSavingFollowUp] = useState(false);
   const [deletingCallId, setDeletingCallId] = useState<number | null>(null);
   const [countryFilter, setCountryFilter] = useState<string>("");
+  const [validNowFilter, setValidNowFilter] = useState<ValidNowFilter>("");
   const [selectedLeadIds, setSelectedLeadIds] = useState<Set<number>>(new Set());
   const [showBulkQueue, setShowBulkQueue] = useState(false);
   const callQueue = useCallQueue();
   const pollRef = useRef<number | null>(null);
 
+  const loadHistory = useCallback(
+    async (page: number) => {
+      const calls = await client.listCallHistory({
+        page,
+        page_size: RECENT_CALLS_PAGE_SIZE,
+        since_days: RECENT_CALLS_SINCE_DAYS,
+      });
+      setHistory(calls.rows);
+      setHistoryPage(calls.page);
+      setHistoryTotal(calls.total);
+      setHistoryTotalPages(calls.total_pages);
+    },
+    [],
+  );
+
+  const loadDialable = useCallback(
+    async (page: number, country: string, validNow: ValidNowFilter) => {
+      const table = await client.listDialableLeads({
+        page,
+        page_size: QUICK_DIAL_PAGE_SIZE,
+        country: country || undefined,
+        valid_now: validNow || undefined,
+      });
+      setDialableLeads(table.rows);
+      setDialableTotal(table.total);
+      setDialablePage(table.page);
+      setDialableTotalPages(table.total_pages);
+      setDialableCountries(table.countries);
+      setCountriesValidNow(table.countries_valid_now);
+    },
+    [],
+  );
+
   const loadData = useCallback(
-    async (options?: { silent?: boolean; page?: number }) => {
-      const page = options?.page ?? historyPage;
+    async (options?: {
+      silent?: boolean;
+      historyPage?: number;
+      dialablePage?: number;
+      country?: string;
+      validNow?: ValidNowFilter;
+    }) => {
       if (!options?.silent) setLoading(true);
+      const nextHistoryPage = options?.historyPage ?? historyPage;
+      const nextDialablePage = options?.dialablePage ?? dialablePage;
+      const nextCountry = options?.country ?? countryFilter;
+      const nextValidNow = options?.validNow ?? validNowFilter;
       try {
-        const [cfg, calls, table] = await Promise.all([
-          client.getCallConfig(),
-          client.listCallHistory({
-            page,
-            page_size: RECENT_CALLS_PAGE_SIZE,
-            since_days: RECENT_CALLS_SINCE_DAYS,
-          }),
-          client.listLeadsTable({ page: 1, page_size: 100 }),
-        ]);
+        const cfg = await client.getCallConfig();
         setConfig(cfg);
-        setHistory(calls.rows);
-        setHistoryPage(calls.page);
-        setHistoryTotal(calls.total);
-        setHistoryTotalPages(calls.total_pages);
-        setDialableLeads(
-          table.rows.filter((row) => row.contact_phone && row.contact_phone.trim()),
-        );
+        await Promise.all([
+          loadHistory(nextHistoryPage),
+          loadDialable(nextDialablePage, nextCountry, nextValidNow),
+        ]);
       } catch (e) {
         if (!options?.silent) {
           onError(e instanceof Error ? e.message : "Failed to load calls");
@@ -102,7 +142,7 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
         if (!options?.silent) setLoading(false);
       }
     },
-    [historyPage, onError],
+    [countryFilter, dialablePage, historyPage, loadDialable, loadHistory, onError, validNowFilter],
   );
 
   useEffect(() => {
@@ -121,19 +161,10 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
 
   const selectedCall = history.find((c) => c.id === selectedCallId) ?? null;
 
-  const dialableCountries = useMemo(() => {
-    const unique = new Set<string>();
-    for (const lead of dialableLeads) {
-      const country = lead.country?.trim();
-      if (country) unique.add(country);
-    }
-    return [...unique].sort((a, b) => a.localeCompare(b));
-  }, [dialableLeads]);
-
-  const filteredDialableLeads = useMemo(() => {
-    if (!countryFilter) return dialableLeads;
-    return dialableLeads.filter((lead) => countryMatches(lead.country, countryFilter));
-  }, [dialableLeads, countryFilter]);
+  const validNowCountryNames = useMemo(
+    () => new Set(countriesValidNow.map((row) => row.country)),
+    [countriesValidNow],
+  );
 
   async function saveFollowUp() {
     if (!selectedCallId) return;
@@ -172,9 +203,9 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
       if (nextHistory.length === 0 && historyPage > 1) {
         const prevPage = historyPage - 1;
         setHistoryPage(prevPage);
-        await loadData({ page: prevPage, silent: true });
+        await loadData({ historyPage: prevPage, silent: true });
       } else {
-        await loadData({ page: historyPage, silent: true });
+        await loadData({ historyPage, silent: true });
       }
       if (selectedCallId === call.id) {
         setSelectedCallId(null);
@@ -203,7 +234,7 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
   }
 
   function selectAllVisible() {
-    setSelectedLeadIds(new Set(filteredDialableLeads.map((l) => l.id)));
+    setSelectedLeadIds(new Set(dialableLeads.map((l) => l.id)));
   }
 
   function clearSelection() {
@@ -211,7 +242,7 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
   }
 
   function startBulkCall() {
-    const leads = filteredDialableLeads
+    const leads = dialableLeads
       .filter((l) => selectedLeadIds.has(l.id))
       .map((l) => ({
         leadId: l.id,
@@ -223,6 +254,18 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
     clearSelection();
     setShowBulkQueue(true);
     callQueue.start(leads);
+  }
+
+  function applyCountryFilter(next: string) {
+    setCountryFilter(next);
+    setDialablePage(1);
+    setSelectedLeadIds(new Set());
+  }
+
+  function applyValidNowFilter(next: ValidNowFilter) {
+    setValidNowFilter(next);
+    setDialablePage(1);
+    setSelectedLeadIds(new Set());
   }
 
   if (!loading && config && !config.configured) {
@@ -289,7 +332,6 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
         </p>
       )}
 
-      {/* Bulk call queue panel */}
       {showBulkQueue && callQueue.status !== "idle" && (
         <BulkCallQueuePanel
           queue={callQueue}
@@ -311,123 +353,183 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
           />
 
           <div className="rounded-xl border border-slate-800 bg-slate-900 flex flex-col overflow-hidden">
-          <div className="px-4 py-3 border-b border-slate-800 space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <div>
-                <h3 className="text-sm font-medium text-slate-300">Quick dial</h3>
-                <p className="text-xs text-slate-500 mt-1">Uses your browser mic &amp; speakers</p>
-              </div>
-              {countryFilter && (
-                <button
-                  type="button"
-                  onClick={() => setCountryFilter("")}
-                  className="shrink-0 text-xs text-sky-400 hover:text-sky-300"
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-            <CountrySelect
-              value={countryFilter}
-              onChange={setCountryFilter}
-              allowEmpty
-              emptyLabel={`All countries (${dialableLeads.length})`}
-            />
-            {countryFilter && (
-              <p className="text-xs text-slate-500">
-                {filteredDialableLeads.length} lead
-                {filteredDialableLeads.length === 1 ? "" : "s"} in {countryFilter}
-                {dialableCountries.length > 0 &&
-                  !dialableCountries.some((c) => countryMatches(c, countryFilter)) &&
-                  " (no leads with this country yet)"}
-              </p>
-            )}
-
-            {/* Bulk call controls */}
-            {filteredDialableLeads.length > 0 && (
-              <div className="flex items-center gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={selectedLeadIds.size > 0 ? clearSelection : selectAllVisible}
-                  className="text-xs text-sky-400 hover:text-sky-300"
-                >
-                  {selectedLeadIds.size > 0
-                    ? `Clear (${selectedLeadIds.size})`
-                    : `Select all (${filteredDialableLeads.length})`}
-                </button>
-                {selectedLeadIds.size > 0 && (
+            <div className="px-4 py-3 border-b border-slate-800 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-medium text-slate-300">Quick dial</h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {dialableTotal.toLocaleString()} lead
+                    {dialableTotal === 1 ? "" : "s"} with phone numbers
+                  </p>
+                </div>
+                {(countryFilter || validNowFilter) && (
                   <button
                     type="button"
-                    onClick={startBulkCall}
-                    disabled={callQueue.status !== "idle"}
-                    className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-600 disabled:opacity-50 border border-sky-600 text-white text-xs font-medium"
+                    onClick={() => {
+                      setCountryFilter("");
+                      setValidNowFilter("");
+                      setDialablePage(1);
+                      setSelectedLeadIds(new Set());
+                    }}
+                    className="shrink-0 text-xs text-sky-400 hover:text-sky-300"
                   >
-                    <span>📞</span>
-                    Bulk call ({selectedLeadIds.size})
-                    {selectedLeadIds.size > BATCH_SIZE && (
-                      <span className="text-sky-200/70">
-                        · {Math.ceil(selectedLeadIds.size / BATCH_SIZE)} batches
-                      </span>
-                    )}
+                    Clear filters
                   </button>
                 )}
               </div>
-            )}
-          </div>
-          <div className="max-h-[280px] overflow-y-auto divide-y divide-slate-800/80">
-            {filteredDialableLeads.length === 0 ? (
-              <p className="p-4 text-sm text-slate-500">
-                {dialableLeads.length === 0
-                  ? "No leads with phone numbers yet."
-                  : `No leads with phone numbers in ${countryFilter}.`}
-              </p>
-            ) : (
-              filteredDialableLeads.slice(0, 40).map((lead) => (
-                <div
-                  key={lead.id}
-                  className={`px-3 py-3 flex items-center gap-2 ${
-                    selectedLeadIds.has(lead.id) ? "bg-sky-950/30" : ""
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={selectedLeadIds.has(lead.id)}
-                    onChange={() => toggleLeadSelect(lead.id)}
-                    className="w-4 h-4 rounded border-slate-600 bg-slate-800 accent-sky-500 shrink-0 cursor-pointer"
-                    aria-label={`Select ${lead.company_name}`}
-                  />
+              <CountrySelect
+                value={countryFilter}
+                onChange={applyCountryFilter}
+                allowEmpty
+                emptyLabel={`All countries (${dialableCountries.length || "…"})`}
+              />
+              <div className="flex flex-wrap gap-1.5">
+                {(
+                  [
+                    ["", "All times"],
+                    ["yes", "Valid to call now"],
+                    ["no", "Outside hours"],
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    key={value || "all"}
+                    type="button"
+                    onClick={() => applyValidNowFilter(value)}
+                    className={`px-2.5 py-1 rounded-md text-xs border ${
+                      validNowFilter === value
+                        ? "bg-emerald-600 border-emerald-500 text-white"
+                        : "bg-slate-950 border-slate-700 text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {countriesValidNow.length > 0 && (
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  In calling window now ({countriesValidNow.length}):{" "}
+                  {countriesValidNow
+                    .slice(0, 8)
+                    .map((row) => `${row.country} (${row.local_time})`)
+                    .join(" · ")}
+                  {countriesValidNow.length > 8 ? " · …" : ""}
+                </p>
+              )}
+              {(countryFilter || validNowFilter) && (
+                <p className="text-xs text-slate-500">
+                  Showing {dialableTotal.toLocaleString()} match
+                  {dialableTotal === 1 ? "" : "es"}
+                  {countryFilter ? ` in ${countryFilter}` : ""}
+                  {validNowFilter === "yes" ? " · valid to call now" : ""}
+                  {validNowFilter === "no" ? " · outside calling hours" : ""}
+                  {countryFilter &&
+                    dialableCountries.length > 0 &&
+                    !dialableCountries.some(
+                      (c) => c.toLowerCase() === countryFilter.toLowerCase(),
+                    ) &&
+                    !validNowCountryNames.has(countryFilter) &&
+                    " (no leads with this country yet)"}
+                </p>
+              )}
+
+              {dialableLeads.length > 0 && (
+                <div className="flex items-center gap-2 pt-1">
                   <button
                     type="button"
-                    onClick={() => onSelectLead?.(lead.id)}
-                    className="text-left min-w-0 flex-1"
+                    onClick={selectedLeadIds.size > 0 ? clearSelection : selectAllVisible}
+                    className="text-xs text-sky-400 hover:text-sky-300"
                   >
-                    <p className="text-sm text-slate-200 truncate">{lead.company_name}</p>
-                    <p className="text-xs text-slate-500 truncate">
-                      {lead.contact_name ?? "Contact"} · {lead.contact_phone}
-                      {lead.country ? ` · ${lead.country}` : ""}
-                    </p>
-                    <div className="mt-1">
-                      <CallRecommendationBadge
-                        recommended={lead.call_recommended}
-                        localTime={lead.call_local_time}
-                        reason={lead.call_reason}
-                      />
-                    </div>
+                    {selectedLeadIds.size > 0
+                      ? `Clear (${selectedLeadIds.size})`
+                      : `Select page (${dialableLeads.length})`}
                   </button>
-                  <CallLeadButton
-                    leadId={lead.id}
-                    phone={lead.contact_phone}
-                    compact
-                    onError={onError}
-                    onSuccess={(result) => {
-                      setNotice(result.message ?? "Connected — speak through your browser.");
-                      void loadData({ silent: true });
-                    }}
-                  />
+                  {selectedLeadIds.size > 0 && (
+                    <button
+                      type="button"
+                      onClick={startBulkCall}
+                      disabled={callQueue.status !== "idle"}
+                      className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-600 disabled:opacity-50 border border-sky-600 text-white text-xs font-medium"
+                    >
+                      <span>📞</span>
+                      Bulk call ({selectedLeadIds.size})
+                      {selectedLeadIds.size > BATCH_SIZE && (
+                        <span className="text-sky-200/70">
+                          · {Math.ceil(selectedLeadIds.size / BATCH_SIZE)} batches
+                        </span>
+                      )}
+                    </button>
+                  )}
                 </div>
-              ))
+              )}
+            </div>
+            <div className="max-h-[320px] overflow-y-auto divide-y divide-slate-800/80">
+              {dialableLeads.length === 0 ? (
+                <p className="p-4 text-sm text-slate-500">
+                  {dialableTotal === 0 && !countryFilter && !validNowFilter
+                    ? "No leads with phone numbers yet."
+                    : "No dialable leads match these filters."}
+                </p>
+              ) : (
+                dialableLeads.map((lead) => (
+                  <div
+                    key={lead.id}
+                    className={`px-3 py-3 flex items-center gap-2 ${
+                      selectedLeadIds.has(lead.id) ? "bg-sky-950/30" : ""
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedLeadIds.has(lead.id)}
+                      onChange={() => toggleLeadSelect(lead.id)}
+                      className="w-4 h-4 rounded border-slate-600 bg-slate-800 accent-sky-500 shrink-0 cursor-pointer"
+                      aria-label={`Select ${lead.company_name}`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => onSelectLead?.(lead.id)}
+                      className="text-left min-w-0 flex-1"
+                    >
+                      <p className="text-sm text-slate-200 truncate">{lead.company_name}</p>
+                      <p className="text-xs text-slate-500 truncate">
+                        {lead.contact_name ?? "Contact"} · {lead.contact_phone}
+                        {lead.country ? ` · ${lead.country}` : ""}
+                      </p>
+                      <div className="mt-1">
+                        <CallRecommendationBadge
+                          recommended={lead.call_recommended}
+                          localTime={lead.call_local_time}
+                          reason={lead.call_reason}
+                        />
+                      </div>
+                    </button>
+                    <CallLeadButton
+                      leadId={lead.id}
+                      phone={lead.contact_phone}
+                      compact
+                      onError={onError}
+                      onSuccess={(result) => {
+                        setNotice(result.message ?? "Connected — speak through your browser.");
+                        void loadData({ silent: true });
+                      }}
+                    />
+                  </div>
+                ))
+              )}
+            </div>
+            {dialableTotal > 0 && (
+              <div className="px-3 pb-3 border-t border-slate-800">
+                <Pagination
+                  page={dialablePage}
+                  totalPages={dialableTotalPages}
+                  totalItems={dialableTotal}
+                  pageSize={QUICK_DIAL_PAGE_SIZE}
+                  disabled={loading}
+                  onPageChange={(nextPage) => {
+                    setDialablePage(nextPage);
+                  }}
+                />
+              </div>
             )}
-          </div>
           </div>
         </div>
 
@@ -502,7 +604,7 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
               disabled={loading}
               onPageChange={(nextPage) => {
                 setHistoryPage(nextPage);
-                void loadData({ page: nextPage });
+                void loadData({ historyPage: nextPage });
               }}
             />
           </div>

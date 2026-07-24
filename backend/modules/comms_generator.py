@@ -691,6 +691,7 @@ class CommsGenerator:
                     contact_id=draft.contact_id,
                     interaction_id=draft.id,
                     details={"send_mode": send_mode},
+                    mailbox_user=mailbox_user,
                 )
             raise ValueError("Contact has no email address — cannot send")
 
@@ -723,6 +724,7 @@ class CommsGenerator:
                 interaction_id=draft.id,
                 subject=draft.subject,
                 send_mode=mode,
+                mailbox_user=mailbox_user,
             )
         return send_result
 
@@ -987,6 +989,7 @@ class CommsGenerator:
                 title=f"Bulk send started ({len(buyer_ids)} leads)",
                 message="Sending personalized manual emails. Per-message updates are summarized when the batch finishes.",
                 details={"buyer_ids": buyer_ids, "mode": "manual"},
+                mailbox_user=mailbox_user,
             )
 
         for index, buyer_id in enumerate(buyer_ids):
@@ -1069,6 +1072,7 @@ class CommsGenerator:
                         message=reason,
                         buyer_id=buyer_id,
                         details={"reason": reason},
+                        mailbox_user=mailbox_user,
                     )
 
         if is_bulk_batch:
@@ -1109,6 +1113,7 @@ class CommsGenerator:
                         if not row.get("sent")
                     ][:20],
                 },
+                mailbox_user=mailbox_user,
             )
 
         return {
@@ -1154,6 +1159,7 @@ class CommsGenerator:
                 title=f"Bulk send started ({len(buyer_ids)} leads)",
                 message="Sending personalized emails from the selected template. Per-message updates are summarized when the batch finishes.",
                 details={"buyer_ids": buyer_ids, "template_id": template_id},
+                mailbox_user=mailbox_user,
             )
 
         for index, buyer_id in enumerate(buyer_ids):
@@ -1220,6 +1226,7 @@ class CommsGenerator:
                         message=reason,
                         buyer_id=buyer_id,
                         details={"reason": reason},
+                        mailbox_user=mailbox_user,
                     )
 
         if is_bulk_batch:
@@ -1260,6 +1267,7 @@ class CommsGenerator:
                         if not row.get("sent")
                     ][:20],
                 },
+                mailbox_user=mailbox_user,
             )
 
         return {
@@ -1305,6 +1313,7 @@ class CommsGenerator:
                 title=f"Bulk send started ({len(interaction_ids)} emails)",
                 message="Sending selected emails. Per-message updates are summarized when the batch finishes.",
                 details={"interaction_ids": interaction_ids},
+                mailbox_user=mailbox_user,
             )
 
         for index, interaction_id in enumerate(interaction_ids):
@@ -1370,6 +1379,7 @@ class CommsGenerator:
                     "failed_count": failed_count,
                     "selected_count": len(interaction_ids),
                 },
+                mailbox_user=mailbox_user,
             )
 
         return {
