@@ -2490,7 +2490,7 @@ export function LeadsTablePage({
                           <select
                             value={draft.company_grading ?? row.company_grading ?? row.latest_score ?? ""}
                             onChange={(e) =>
-                              updateDraft(row.id, "company_grading", e.target.value || null)
+                              updateDraft(row.id, "company_grading", e.target.value)
                             }
                             className={EDIT_INPUT}
                           >
