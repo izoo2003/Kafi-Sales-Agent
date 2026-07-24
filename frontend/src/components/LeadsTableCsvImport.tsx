@@ -195,10 +195,7 @@ export function LeadsTableCsvImport({
   const [jobStatus, setJobStatus] = useState<ImportJobStatus | null>(null);
   const [results, setResults] = useState<ImportRowResult[] | null>(null);
 
-  const importable = useMemo(
-    () => candidates.filter((candidate) => candidate.is_valid_business !== false),
-    [candidates],
-  );
+  const importable = useMemo(() => candidates, [candidates]);
   const previewCandidates = useMemo(
     () => candidates.slice(0, IMPORT_PREVIEW_ROWS),
     [candidates],
@@ -224,18 +221,9 @@ export function LeadsTableCsvImport({
         );
       }
 
-      const validIds = result.candidates
-        .filter((candidate) => candidate.is_valid_business !== false)
-        .map((candidate) => candidate.candidate_id);
-      setSelected(new Set(validIds.slice(0, MAX_CSV_IMPORT)));
-      const invalidCount = result.candidates.filter((c) => c.is_valid_business === false).length;
-      if (invalidCount > 0) {
-        setMessages((prev) => [
-          ...prev,
-          `${invalidCount} row(s) flagged as not a valid business and excluded from import.`,
-        ]);
-      }
-      if (validIds.length > MAX_CSV_IMPORT) {
+      const allIds = result.candidates.map((candidate) => candidate.candidate_id);
+      setSelected(new Set(allIds.slice(0, MAX_CSV_IMPORT)));
+      if (allIds.length > MAX_CSV_IMPORT) {
         setMessages((prev) => [
           ...prev,
           `Only the first ${MAX_CSV_IMPORT} rows can be imported per batch.`,
@@ -270,12 +258,9 @@ export function LeadsTableCsvImport({
   }
 
   async function handleImport() {
-    const toImport = candidates.filter(
-      (candidate) =>
-        selected.has(candidate.candidate_id) && candidate.is_valid_business !== false,
-    );
+    const toImport = candidates.filter((candidate) => selected.has(candidate.candidate_id));
     if (toImport.length === 0) {
-      onError("Select at least one valid business row to import");
+      onError("Select at least one row to import");
       return;
     }
     if (toImport.length > MAX_CSV_IMPORT) {
@@ -285,9 +270,9 @@ export function LeadsTableCsvImport({
 
     const confirmed = window.confirm(
       `Import ${toImport.length} lead${toImport.length === 1 ? "" : "s"} as-is?\n\n` +
-        `• Rows are saved with spreadsheet fields only (no website research or scoring).\n` +
-        `• Duplicates are skipped only if that company is already in your own table.\n` +
-        `• Use Research & score on the table later when you are ready.\n\n` +
+        `• Spreadsheet rows are copied exactly (including blank/sparse fields).\n` +
+        `• Only duplicates in your own table are skipped or replaced.\n` +
+        `• Use Research & score later to enrich missing details.\n\n` +
         `Continue?`,
     );
     if (!confirmed) return;
@@ -362,11 +347,10 @@ export function LeadsTableCsvImport({
         continue;
       }
       const reason = skippedByName.get(key) ?? "Skipped";
-      const isInvalid = reason.toLowerCase().includes("not a valid business");
       rowResults.push({
         candidate_id: candidate.candidate_id,
         company_name: candidate.company_name,
-        status: isInvalid ? "invalid" : "skipped",
+        status: "skipped",
         error: reason,
       });
     }
@@ -452,7 +436,6 @@ export function LeadsTableCsvImport({
             <div className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 space-y-2">
               <p className="text-sm text-slate-200">
                 Import complete — {results.filter((r) => r.status === "success").length} added,{" "}
-                {results.filter((r) => r.status === "invalid").length} not valid businesses,{" "}
                 {results.filter((r) => r.status === "failed").length} failed,{" "}
                 {results.filter((r) => r.status === "skipped").length} skipped
                 {jobStatus?.verified_source_total != null
@@ -553,14 +536,18 @@ export function LeadsTableCsvImport({
                           <input
                             type="checkbox"
                             checked={selected.has(candidate.candidate_id)}
-                            disabled={importing || candidate.is_valid_business === false}
+                            disabled={importing}
                             onChange={(e) => toggleOne(candidate.candidate_id, e.target.checked)}
                           />
                         </td>
                         <td className="py-2 pr-3 text-slate-400">
                           {candidate.legacy_serial_no ?? "—"}
                         </td>
-                        <td className="py-2 pr-3 text-slate-200">{candidate.company_name}</td>
+                        <td className="py-2 pr-3 text-slate-200">
+                          {(candidate.company_name || "").trim() || (
+                            <span className="text-slate-500 italic">Unnamed</span>
+                          )}
+                        </td>
                         <td className="py-2 pr-3 text-slate-400 max-w-[140px] truncate">
                           {displayOrDash(candidate.industry)}
                         </td>
@@ -605,14 +592,7 @@ export function LeadsTableCsvImport({
                           {displayOrDash(candidate.remarks)}
                         </td>
                         <td className="py-2 text-xs">
-                          {candidate.is_valid_business === false ? (
-                            <span
-                              className="text-amber-400/90"
-                              title={candidate.invalid_reason ?? undefined}
-                            >
-                              Not a valid business
-                            </span>
-                          ) : candidate.already_exists ? (
+                          {candidate.already_exists ? (
                             <span className="text-amber-400/90">Duplicate — replace if sparse</span>
                           ) : (
                             <span className="text-slate-500">Ready</span>

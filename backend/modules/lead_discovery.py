@@ -1936,21 +1936,15 @@ def _validate_spreadsheet_company_name(
     name: str,
     raw: dict[str, Any] | DiscoveryCandidate | None = None,
 ) -> tuple[bool, str]:
-    """Lenient name check for save-as-is table imports.
+    """Table spreadsheet imports: only require a non-empty company name.
 
-    Directory/list-page patterns only reject empty shells — rows that already
-    have phone/email/city/address are trusted as real companies from the sheet.
+    Sparse rows, directory-looking names, and thin contact data are still
+    imported — duplicates are handled separately (skip/replace).
     """
+    del raw  # retained for call-site compatibility
     cleaned = (name or "").strip()
     if not cleaned:
         return False, "missing company name"
-    if len(cleaned) > 120:
-        return False, "name is too long to be a company"
-    looks_like_list = bool(
-        _INVALID_BUSINESS_NAME_RE.search(cleaned) or _text_has_trade_data_signals(cleaned)
-    )
-    if looks_like_list and not (raw and _spreadsheet_row_has_signals(raw)):
-        return False, "name looks like a directory or list page, not a company"
     return True, ""
 
 
@@ -1998,14 +1992,15 @@ def _flag_invalid_candidates(
     *,
     for_spreadsheet: bool = False,
 ) -> int:
+    # Spreadsheet table imports accept every parsed row as-is (enrich later).
+    if for_spreadsheet:
+        for candidate in candidates:
+            candidate.is_valid_business = True
+            candidate.invalid_reason = None
+        return 0
     invalid_count = 0
     for candidate in candidates:
-        if for_spreadsheet:
-            valid, reason = _validate_spreadsheet_company_name(
-                candidate.company_name, candidate
-            )
-        else:
-            valid, reason = _validate_business_name_only(candidate.company_name)
+        valid, reason = _validate_business_name_only(candidate.company_name)
         if not valid:
             candidate.is_valid_business = False
             candidate.invalid_reason = f"Not a valid business — {reason}"
@@ -3046,7 +3041,12 @@ def _parse_optional_int(value: str) -> int | None:
         return None
 
 
-def parse_csv_candidates(content: str, default_country: str | None = None) -> list[DiscoveryCandidate]:
+def parse_csv_candidates(
+    content: str,
+    default_country: str | None = None,
+    *,
+    include_blank_names: bool = False,
+) -> list[DiscoveryCandidate]:
     """Parse CSV with flexible headers (matches leads table export + old-client Excel columns)."""
     if not content.strip():
         return []
@@ -3173,8 +3173,39 @@ def parse_csv_candidates(content: str, default_country: str | None = None) -> li
     candidates: list[DiscoveryCandidate] = []
     for row in reader:
         name = csv_value(row, name_col)
-        if not name:
+        if not name and not include_blank_names:
             continue
+        # Spreadsheet table imports keep blank/sparse rows as-is for later research.
+        if include_blank_names and not name:
+            # Skip only completely empty spreadsheet lines (no mapped field values).
+            has_any = any(
+                csv_value(row, column)
+                for column in (
+                    website_col,
+                    country_col,
+                    industry_col,
+                    contact_col,
+                    email_col,
+                    phone_col,
+                    linkedin_col,
+                    facebook_col,
+                    instagram_col,
+                    secondary_mobile_col,
+                    primary_phone_col,
+                    secondary_phone_col,
+                    secondary_email_col,
+                    product_col,
+                    city_col,
+                    address_col,
+                    remarks_col,
+                    grading_col,
+                    designation_col,
+                    serial_col,
+                )
+                if column
+            )
+            if not has_any and not any((v or "").strip() for v in row.values()):
+                continue
         website = csv_value(row, website_col)
         country = csv_value(row, country_col)
         industry = csv_value(row, industry_col)
@@ -3354,7 +3385,11 @@ def discover_from_csv(
 ) -> DiscoveryResult:
     result = DiscoveryResult(sources_used=["csv"])
     try:
-        candidates = parse_csv_candidates(content, default_country)
+        candidates = parse_csv_candidates(
+            content,
+            default_country,
+            include_blank_names=for_leads_table,
+        )
     except ValueError as exc:
         result.messages.append(str(exc))
         return result
@@ -3385,7 +3420,7 @@ def discover_from_csv(
     invalid_count = _flag_invalid_candidates(
         candidates, for_spreadsheet=for_leads_table
     )
-    if invalid_count:
+    if invalid_count and not for_leads_table:
         result.messages.append(
             f"{invalid_count} row(s) look like directories or list pages — they will not be imported."
         )
@@ -3558,50 +3593,62 @@ def import_candidates(
     try:
         for row_index, raw in enumerate(candidates):
             name = (raw.get("company_name") or "").strip()
-            _report_progress(row_index, name)
-            if not name:
-                skipped.append({"company_name": name or "(empty)", "reason": "Missing company name"})
-                _checkpoint_commit()
-                continue
+            _report_progress(row_index, name or "(unnamed)")
 
             candidate = _import_raw_to_candidate(raw)
             if not skip_enrichment and _needs_import_enrichment(raw):
                 _enrich_candidate_contact(candidate, keep_row=True)
 
-            if skip_enrichment:
-                valid, invalid_reason = _validate_spreadsheet_company_name(
-                    candidate.company_name, raw
-                )
-            else:
+            # Spreadsheet table imports (skip_enrichment): copy every row as-is,
+            # including blank/sparse company names — research & score later.
+            # Discover / research imports still filter "not a valid business".
+            if not skip_enrichment:
+                if not name:
+                    skipped.append(
+                        {"company_name": "(empty)", "reason": "Missing company name"}
+                    )
+                    _checkpoint_commit()
+                    continue
                 valid, invalid_reason = _validate_business_candidate(candidate)
-            if not valid:
-                skipped.append(
-                    {
-                        "company_name": name,
-                        "reason": f"Not a valid business — {invalid_reason}",
-                    }
-                )
-                _checkpoint_commit()
-                continue
+                if not valid:
+                    skipped.append(
+                        {
+                            "company_name": name,
+                            "reason": f"Not a valid business — {invalid_reason}",
+                        }
+                    )
+                    _checkpoint_commit()
+                    continue
 
             raw = _sync_candidate_to_raw(candidate, raw)
             name = (raw.get("company_name") or "").strip()
+            # DB requires company_name NOT NULL — store blank string when sheet had none.
+            if not name and skip_enrichment:
+                raw["company_name"] = ""
+                name = ""
 
-            name_key = _normalize_name(name)
+            name_key = _normalize_name(name) if name else ""
             domain = _dedupe_domain(raw.get("website_url"))
 
             # Block cross-section duplicates (e.g. discovery matching an old client).
-            if name_key in other_names or (domain and domain in other_domains):
+            # Blank names never match on name — only domain when present.
+            if (name_key and name_key in other_names) or (
+                domain and domain in other_domains
+            ):
                 reason = (
                     "Already an old client"
                     if (batch_source or "").strip().lower() != "old_clients"
                     else "Already in Discover / Leads table"
                 )
-                skipped.append({"company_name": name, "reason": reason})
+                skipped.append(
+                    {"company_name": name or "(unnamed)", "reason": reason}
+                )
                 _checkpoint_commit()
                 continue
 
-            existing = by_name.get(name_key) or (by_domain.get(domain) if domain else None)
+            existing = (by_name.get(name_key) if name_key else None) or (
+                by_domain.get(domain) if domain else None
+            )
             if existing is not None:
                 should_replace = False
                 if replace_duplicates:
@@ -3686,8 +3733,9 @@ def import_candidates(
                 if persist_each_row:
                     db.commit()
                     db.refresh(buyer)
-            existing_names.add(name_key)
-            by_name[name_key] = buyer
+            if name_key:
+                existing_names.add(name_key)
+                by_name[name_key] = buyer
             if domain:
                 existing_domains.add(domain)
                 by_domain[domain] = buyer
