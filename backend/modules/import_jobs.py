@@ -102,6 +102,7 @@ def start_import_job(
             "created": None,
             "skipped": None,
             "replaced": None,
+            "skip_reason_counts": None,
             "_started_mono": time.monotonic(),
             "_finished_mono": None,
         }
@@ -193,6 +194,7 @@ def _run_import(
             created=created_rows,
             skipped=skipped_rows,
             replaced=replaced_rows,
+            skip_reason_counts=result.get("skip_reason_counts") or {},
             _finished_mono=time.monotonic(),
         )
     except Exception as exc:  # noqa: BLE001 — job must always reach a terminal state

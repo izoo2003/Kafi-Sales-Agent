@@ -1,5 +1,5 @@
 ---
-description: Always push GitHub changes to izoo2003, never kafi-group
+description: Always push GitHub changes to izoo2003 only
 alwaysApply: true
 ---
 
@@ -8,6 +8,6 @@ alwaysApply: true
 When the user asks to push, commit-and-push, or sync anything to GitHub:
 
 - Push only to the **izoo2003** repo (`origin` → `https://github.com/izoo2003/Kafi-Sales-Agent.git`).
-- Do **not** push to `kafi-group` (`https://github.com/kafi-group/Kafi-Sales-Agent.git`) unless the user explicitly names that org/remote.
+- There is **no** Sales-Agent repo under `kafi-group` — never add that remote or push there.
 - Prefer `git push origin HEAD` (or the current branch’s upstream if it already tracks `origin`).
 - If unsure which remote is which, run `git remote -v` and confirm `origin` is `izoo2003` before pushing.

@@ -19,6 +19,8 @@ interface LeadsTableCsvImportProps {
   onError: (message: string) => void;
   /** Stored on buyer.source — use "old_clients" for the Old clients section. */
   importSource?: string;
+  /** UI label for the destination table (e.g. "Clients" for sales users). */
+  tableLabel?: string;
   title?: string;
   description?: string;
 }
@@ -92,7 +94,8 @@ function formatElapsed(seconds: number): string {
   return `${mins}m ${secs}s`;
 }
 
-function sourceDisplayName(source: string): string {
+function sourceDisplayName(source: string, tableLabel?: string): string {
+  if (tableLabel) return tableLabel;
   if (source === "old_clients") return "Old clients";
   return source.replace(/_/g, " ");
 }
@@ -100,9 +103,11 @@ function sourceDisplayName(source: string): string {
 function ImportProgressPanel({
   status,
   sourceLabel,
+  tableLabel,
 }: {
   status: ImportJobStatus;
   sourceLabel: string;
+  tableLabel?: string;
 }) {
   const done = status.status === "completed";
   const settling = status.status === "committing" || status.status === "verifying";
@@ -111,7 +116,7 @@ function ImportProgressPanel({
     : status.total > 0
       ? Math.min(99, Math.floor((status.processed / status.total) * 100))
       : 0;
-  const tableName = sourceDisplayName(status.import_source ?? sourceLabel);
+  const tableName = sourceDisplayName(status.import_source ?? sourceLabel, tableLabel);
 
   return (
     <div className="rounded-lg border border-slate-700 bg-slate-950 px-4 py-3 space-y-3">
@@ -178,6 +183,7 @@ export function LeadsTableCsvImport({
   onImported,
   onError,
   importSource = "old_clients",
+  tableLabel,
   title = "Import leads",
   description = "Upload CSV or Excel (.xlsx). Columns are mapped to the leads table. Import only saves rows as-is — research and score later from the table.",
 }: LeadsTableCsvImportProps) {
@@ -435,7 +441,11 @@ export function LeadsTableCsvImport({
           )}
 
           {jobStatus && (importing || jobStatus.status === "completed") && (
-            <ImportProgressPanel status={jobStatus} sourceLabel={importSource} />
+            <ImportProgressPanel
+              status={jobStatus}
+              sourceLabel={importSource}
+              tableLabel={tableLabel}
+            />
           )}
 
           {results && results.length > 0 && (
@@ -445,7 +455,23 @@ export function LeadsTableCsvImport({
                 {results.filter((r) => r.status === "invalid").length} not valid businesses,{" "}
                 {results.filter((r) => r.status === "failed").length} failed,{" "}
                 {results.filter((r) => r.status === "skipped").length} skipped
+                {jobStatus?.verified_source_total != null
+                  ? ` · table now holds ${jobStatus.verified_source_total} row(s) with this source`
+                  : ""}
               </p>
+              {jobStatus?.skip_reason_counts &&
+                Object.keys(jobStatus.skip_reason_counts).length > 0 && (
+                  <div className="text-xs text-amber-200/90 space-y-0.5 rounded border border-amber-500/20 bg-amber-500/5 px-2 py-1.5">
+                    <p className="font-medium text-amber-100">Skip reasons</p>
+                    {Object.entries(jobStatus.skip_reason_counts)
+                      .sort((a, b) => b[1] - a[1])
+                      .map(([reason, count]) => (
+                        <p key={reason}>
+                          {count}× {reason}
+                        </p>
+                      ))}
+                  </div>
+                )}
               <ul className="max-h-32 overflow-y-auto space-y-1 text-xs">
                 {results.map((result) => (
                   <li key={result.candidate_id} className="flex items-center gap-2 text-slate-400">

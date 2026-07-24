@@ -156,6 +156,7 @@ interface BulkOnboardRowResult {
   status: "success" | "failed";
   score?: string;
   reasoning?: string;
+  filled_fields?: string[];
   error?: string;
 }
 
@@ -163,9 +164,20 @@ function scoreLabel(score: string | null): string {
   return score ?? "Unscored";
 }
 
-function sectionTableScope(section: LeadsTableSection): { source?: string; exclude_source?: string } {
+function sectionTableScope(
+  section: LeadsTableSection,
+): {
+  source?: string;
+  exclude_source?: string;
+  assigned_to_user_id?: number;
+  master?: boolean;
+} {
+  if (section === "master") return { master: true };
   if (section === "old_clients") return { source: "old_clients" };
-  if (isAssignedLeadsSection(section)) return {};
+  if (isAssignedLeadsSection(section)) {
+    const userId = assignedUserIdFromSection(section);
+    return userId != null ? { assigned_to_user_id: userId } : {};
+  }
   return { exclude_source: "old_clients" };
 }
 
@@ -176,7 +188,9 @@ function sectionTableParams(
   exclude_source?: string;
   call_outcome?: string;
   assigned_to_user_id?: number;
+  master?: boolean;
 } {
+  if (section === "master") return { master: true };
   if (section === "old_clients") return { source: "old_clients" };
   if (section === "interested_clients") return { call_outcome: "interested" };
   if (section === "not_interested_clients") return { call_outcome: "not_interested" };
@@ -191,8 +205,10 @@ function sectionTableParams(
 function sectionTitle(
   section: LeadsTableSection,
   assigneeUsername?: string | null,
+  isAdmin = true,
 ): string {
-  if (section === "old_clients") return "Old clients";
+  if (section === "master") return "Master table";
+  if (section === "old_clients") return isAdmin ? "Old clients" : "Clients";
   if (section === "interested_clients") return "Follow up clients";
   if (section === "not_interested_clients") return "Not interested";
   if (section === "not_received_call_clients") return "Did not receive call";
@@ -205,9 +221,15 @@ function sectionTitle(
 function sectionDescription(
   section: LeadsTableSection,
   assigneeUsername?: string | null,
+  isAdmin = true,
 ): string {
+  if (section === "master") {
+    return "Admin-only overview of every lead in the system — including leads sent to Asim, Usman, Sadia, or any other user. Nothing is hidden by assignment.";
+  }
   if (section === "old_clients") {
-    return "Past clients from your spreadsheet only. Kept separate from Discover Leads / Leads table — companies here are never mixed into new discoveries.";
+    return isAdmin
+      ? "Past clients from your spreadsheet only. Kept separate from Discover Leads / Leads table — companies here are never mixed into new discoveries."
+      : "Your client list from imports and past relationships. Import a spreadsheet to add clients — only you can see rows assigned to you.";
   }
   if (section === "interested_clients") {
     return "Clients moved here after a call is labeled Interested. Use the calendar on each row to set when you want a follow-up reminder — you are only notified on that date.";
@@ -225,6 +247,9 @@ function sectionDescription(
 }
 
 function sectionEmptyMessage(section: LeadsTableSection): string | null {
+  if (section === "master") {
+    return "No leads in the system yet.";
+  }
   if (section === "interested_clients") {
     return "No follow up clients yet. After a call, label the client as Interested in post-call remarks, then set a follow-up date in this table.";
   }
@@ -464,8 +489,9 @@ export function LeadsTablePage({
     : null;
 
   const isOldClients = section === "old_clients";
+  const isMaster = section === "master";
   const canImportSpreadsheet = section === "all" || section === "old_clients";
-  const canBulkAssign = isAdmin && (section === "all" || section === "old_clients");
+  const canBulkAssign = isAdmin && (section === "all" || section === "old_clients" || isMaster);
   const importSource = isOldClients ? "old_clients" : "csv";
   const isCallOutcomeSection =
     section === "interested_clients" ||
@@ -960,7 +986,10 @@ export function LeadsTablePage({
     const estimateSec = ids.length * 6;
     const confirmed = window.confirm(
       `Research & score ${ids.length} lead${ids.length === 1 ? "" : "s"}?\n\n` +
-        `• Same pipeline as single-lead research — quality does not drop.\n` +
+        `• Looks up company details and fills empty table fields (not just the score).\n` +
+        (isOldClients
+          ? `• Clients table priority: city & address first, then phone/email/designation.\n`
+          : `• Leads table priority: website, email, phone, socials, country.\n`) +
         `• Runs one at a time (~${estimateSec}s estimated).\n` +
         (withoutWebsite.length > 0
           ? `• ${withoutWebsite.length} selected lead${withoutWebsite.length === 1 ? " has" : "s have"} no website — fit signals will be weaker.\n`
@@ -997,6 +1026,7 @@ export function LeadsTablePage({
           status: "success",
           score: result.score,
           reasoning: result.reasoning,
+          filled_fields: result.enrichment?.filled_fields ?? [],
         });
       } catch (e) {
         results.push({
@@ -1383,10 +1413,10 @@ export function LeadsTablePage({
       <div className="flex items-start justify-between gap-4 flex-wrap shrink-0">
         <div>
           <h2 className="text-lg font-medium text-slate-100">
-            {sectionTitle(section, assigneeUsername)}
+            {sectionTitle(section, assigneeUsername, isAdmin)}
           </h2>
           <p className="text-sm text-slate-500 mt-1">
-            {sectionDescription(section, assigneeUsername)}
+            {sectionDescription(section, assigneeUsername, isAdmin)}
           </p>
           <p className="text-sm text-slate-500 mt-1">
             {filteredCount} matching · {total} in section · {TABLE_PAGE_SIZE} per page
@@ -1697,6 +1727,16 @@ export function LeadsTablePage({
                   {result.company_name}
                 </button>
                 {result.error && <span className="text-red-400 truncate">{result.error}</span>}
+                {result.status === "success" &&
+                  result.filled_fields &&
+                  result.filled_fields.length > 0 && (
+                    <span className="text-emerald-400/80 truncate">
+                      filled {result.filled_fields.slice(0, 4).join(", ")}
+                      {result.filled_fields.length > 4
+                        ? ` +${result.filled_fields.length - 4}`
+                        : ""}
+                    </span>
+                  )}
               </li>
             ))}
           </ul>
@@ -1989,9 +2029,9 @@ export function LeadsTablePage({
               ? "No leads match these filters."
               : !isAdmin
                 ? isOldClients
-                  ? "No old clients yet. Import a CSV or Excel file to map past clients into this table."
+                  ? "No clients yet. Import a CSV or Excel file to add clients to this table."
                   : callOutcomeEmptyMessage ??
-                    "No clients in this section yet. After a call, clients move here from Old clients."
+                    "No clients in this section yet. After a call, clients move here from Clients."
                 : isOldClients
                   ? "No old clients yet. Import a CSV or Excel file to map past clients into this table."
                   : callOutcomeEmptyMessage ?? "No leads in this section yet. Import a CSV or Excel file to get started."}
@@ -2657,15 +2697,33 @@ export function LeadsTablePage({
         <LeadsTableCsvImport
           onClose={() => setShowCsvImport(false)}
           onImported={() => {
+            // Show newest imported rows on the section that was just targeted.
+            clearFilters();
+            setPage(1);
+            setSortBy("created_at");
+            setSortDir("desc");
             void loadTable();
             void loadSectionCounts();
+            setSaveNotice("Import finished — table refreshed to show the newest rows.");
+            window.setTimeout(() => setSaveNotice(null), 6000);
           }}
           onError={onError}
           importSource={importSource}
-          title={isOldClients ? "Import old clients" : "Import leads"}
+          tableLabel={
+            isOldClients ? (isAdmin ? "Old clients" : "Clients") : undefined
+          }
+          title={
+            isOldClients
+              ? isAdmin
+                ? "Import old clients"
+                : "Import clients"
+              : "Import leads"
+          }
           description={
             isOldClients
-              ? "Upload CSV or Excel (.xlsx). Columns are mapped to the Old clients table. Import only saves rows as-is — research and score later from the table."
+              ? isAdmin
+                ? "Upload CSV or Excel (.xlsx). Columns are mapped to the Old clients table. Import only saves rows as-is — research and score later from the table."
+                : "Upload CSV or Excel (.xlsx). Columns are mapped to your Clients table. Import only saves rows as-is — research and score later from the table."
               : "Upload CSV or Excel (.xlsx). Rows are saved into your leads table as-is — research and score them from the table when ready."
           }
         />

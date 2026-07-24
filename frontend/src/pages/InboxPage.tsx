@@ -9,6 +9,7 @@ import {
   type InboxThreadSummary,
 } from "../api/client";
 import type { MailSection } from "../components/AppSidebar";
+import { ComposeMailModal } from "../components/ComposeMailModal";
 import { alertNewInboxMessage, unlockNotificationAudio } from "../utils/notify";
 
 interface InboxPageProps {
@@ -196,6 +197,7 @@ export function InboxPage({
   const [notice, setNotice] = useState<string | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<InboxAnalyzeResponse | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
+  const [showCompose, setShowCompose] = useState(false);
 
   const pollTimerRef = useRef<number | null>(null);
   const conversationEndRef = useRef<HTMLDivElement | null>(null);
@@ -644,6 +646,13 @@ export function InboxPage({
           )}
         </div>
         <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setShowCompose(true)}
+            className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium"
+          >
+            Compose
+          </button>
           {section === "trash" && (
             <button
               type="button"
@@ -697,7 +706,7 @@ export function InboxPage({
         </div>
       </div>
 
-      {notice && !showReplyForm && (
+      {notice && !showReplyForm && !showCompose && (
         <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-200 text-sm">
           {notice}
         </div>
@@ -1274,6 +1283,19 @@ export function InboxPage({
           )}
         </div>
       </div>
+
+      {showCompose && (
+        <ComposeMailModal
+          fromEmail={status?.email || status?.emails?.[0] || "Your mailbox"}
+          onClose={() => setShowCompose(false)}
+          onSent={(message) => {
+            setNotice(message);
+            void loadList({ silent: true });
+            void refreshFolderCounts();
+          }}
+          onError={onError}
+        />
+      )}
     </section>
   );
 }

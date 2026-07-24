@@ -7,6 +7,8 @@ from api.deps import get_current_user, get_db
 from api.schemas import (
     InboxAnalyzeRequest,
     InboxAnalyzeResponse,
+    InboxComposeRequest,
+    InboxComposeResponse,
     InboxEmptyTrashResponse,
     InboxFoldersResponse,
     InboxMessageDetail,
@@ -99,6 +101,54 @@ def get_inbox_thread(thread_id: str, user: AppUser = Depends(get_current_user)):
     if not thread:
         raise HTTPException(404, "Conversation not found")
     return thread
+
+
+@router.post("/compose", response_model=InboxComposeResponse)
+def compose_inbox_mail(
+    payload: InboxComposeRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    """Compose and send a new email from the logged-in user's mailbox."""
+    from modules import activity as activity_module
+
+    _guard_configured(user)
+    try:
+        result = inbox_module.compose(
+            user,
+            to=payload.to,
+            subject=payload.subject,
+            body=payload.body,
+            cc=payload.cc,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"Could not send email: {exc}") from exc
+    if result.get("status") != "sent":
+        raise HTTPException(502, result.get("message", "Send failed"))
+
+    subject = result.get("subject") or payload.subject or "(no subject)"
+    to_addr = result.get("to") or payload.to
+    activity_module.log_activity(
+        db,
+        user_id=user.id,
+        activity_type=activity_module.INBOX_REPLIED,
+        title="Compose email sent",
+        summary=f"Sent “{subject}” → {to_addr}",
+        entity_type="inbox_compose",
+        entity_id=None,
+        details={
+            "subject": subject,
+            "to": to_addr,
+            "from": result.get("from"),
+        },
+    )
+    return {
+        "status": result.get("status", "sent"),
+        "message": result.get("message", "Sent"),
+        "to": to_addr,
+        "subject": subject,
+        "from_email": result.get("from"),
+    }
 
 
 @router.post("/threads/{thread_id}/reply", response_model=InboxReplyResponse)

@@ -93,7 +93,7 @@ def _gl_to_region(gl_code: str | None) -> str | None:
 
 
 def _serpapi_configured_keys() -> list[str]:
-    """Collect unique keys from SERPAPI_API_KEY + SERPAPI_API_KEYS."""
+    """Collect unique keys from SERPAPI_API_KEY + SERPAPI_API_KEY."""
     keys: list[str] = []
     seen: set[str] = set()
     for raw in (

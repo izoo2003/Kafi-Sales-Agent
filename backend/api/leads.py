@@ -67,11 +67,7 @@ def _is_admin(user: AppUser) -> bool:
 
 
 def _assignee_scope(user: AppUser) -> int | None:
-    """Non-admins only see leads assigned to them; admins see all.
-
-    Prefer `_table_assignment_filters` for leads-table queries — sales users
-    also see the shared unassigned pool there.
-    """
+    """Non-admins only see leads assigned to them; admins see all."""
     return None if _is_admin(user) else user.id
 
 
@@ -82,20 +78,29 @@ def _table_assignment_filters(
     call_outcome: str | None,
     source: str | None,
     exclude_source: str | None,
+    master: bool = False,
 ) -> tuple[int | None, bool, bool, int | None]:
     """Resolve assignee scope for leads-table list/count queries.
 
     Returns
     -------
     assigned_to_user_id
-        Exact assignee filter (admin "Leads Sent To {user}").
+        Exact assignee filter. Sales users always get themselves. Admins use
+        this for "Leads Sent To {user}".
     unassigned_only
         Admin pool sections — hide anything already sent to a sales user.
     include_placed_outcomes
         Whether call-outcome sections should include already-placed leads.
     pool_for_user_id
-        Sales-user pool: unassigned OR assigned to this user. None for admins.
+        Legacy shared-pool flag. Always None now — sales users no longer see
+        unassigned admin leads.
     """
+    if master:
+        if not _is_admin(user):
+            raise HTTPException(403, "Master table is admin-only")
+        # Every lead (assigned + unassigned, all sources).
+        return None, False, True, None
+
     if _is_admin(user):
         if assigned_to_user_id is not None:
             # Admin viewing "Leads Sent To {username}" — show every lead sent.
@@ -109,11 +114,10 @@ def _table_assignment_filters(
         unassigned_only = call_outcome is None
         return None, unassigned_only, False, None
 
-    # Sales users work the shared unassigned pool plus leads an admin sent them.
-    # Spreadsheet imports stay unassigned so they appear here — NOT in
-    # "Leads Sent To {username}" (that nav is admin-only).
+    # Sales users only see leads an admin (or themselves) assigned to them —
+    # never the shared admin/unassigned pool.
     include_placed = call_outcome is None and not source and not exclude_source
-    return None, False, include_placed, user.id
+    return user.id, False, include_placed, None
 
 
 def _require_buyer_access(db, user: AppUser, buyer_id: int) -> None:
@@ -136,8 +140,18 @@ def list_leads(page: int = 1, page_size: int = 20, db: Session = Depends(get_db)
 
 
 @router.post("", response_model=BuyerRead, status_code=201)
-def create_lead(payload: BuyerCreate, db: Session = Depends(get_db)):
+def create_lead(
+    payload: BuyerCreate,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
     buyer = buyers_module.create_buyer(db, payload.model_dump())
+    # Sales users own what they create; admin creates stay in the shared pool
+    # until explicitly sent via "Leads Sent To".
+    if not _is_admin(user):
+        leads_module.apply_buyer_assignee(db, buyer, user.id)
+        db.commit()
+        db.refresh(buyer)
     log_action(db, entity_type="buyer", entity_id=buyer.id, action="created")
     return buyer
 
@@ -359,6 +373,7 @@ def list_leads_table(
     page: int = 1,
     page_size: int = 20,
     assigned_to_user_id: int | None = None,
+    master: bool = False,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
@@ -368,6 +383,7 @@ def list_leads_table(
         call_outcome=call_outcome,
         source=source,
         exclude_source=exclude_source,
+        master=master,
     )
     result = leads_module.list_leads_table(
         db,
@@ -412,6 +428,7 @@ def list_leads_table_ids(
     sort_by: str = "created_at",
     sort_dir: str = "desc",
     assigned_to_user_id: int | None = None,
+    master: bool = False,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
@@ -421,6 +438,7 @@ def list_leads_table_ids(
         call_outcome=call_outcome,
         source=source,
         exclude_source=exclude_source,
+        master=master,
     )
     result = leads_module.list_leads_table_ids(
         db,
@@ -453,9 +471,11 @@ def get_leads_table_section_counts(
 ):
     counts = leads_module.count_leads_table_sections(
         db,
-        assigned_to_user_id=None,
-        pool_for_user_id=None if _is_admin(user) else user.id,
+        assigned_to_user_id=None if _is_admin(user) else user.id,
+        pool_for_user_id=None,
     )
+    if not _is_admin(user):
+        counts = {**counts, "by_assignee": {}}
     return LeadTableSectionCountsResponse(**counts)
 
 
@@ -513,9 +533,9 @@ def update_lead_table_row(
 def delete_lead_table_row(
     lead_id: int,
     db: Session = Depends(get_db),
-    user: AppUser = Depends(require_admin),
+    user: AppUser = Depends(get_current_user),
 ):
-    del user
+    _require_buyer_access(db, user, lead_id)
     if not leads_module.delete_lead_table_row(db, lead_id):
         raise HTTPException(404, "Lead not found")
 
@@ -524,10 +544,24 @@ def delete_lead_table_row(
 def bulk_delete_lead_table_rows(
     payload: LeadTableBulkDeleteRequest,
     db: Session = Depends(get_db),
-    user: AppUser = Depends(require_admin),
+    user: AppUser = Depends(get_current_user),
 ):
-    del user
-    result = leads_module.delete_lead_table_rows(db, payload.lead_ids)
+    lead_ids = list(dict.fromkeys(payload.lead_ids or []))
+    if not lead_ids:
+        raise HTTPException(400, "Select at least one lead to delete")
+    # Sales users may only delete leads assigned to them; admin can delete any.
+    if not _is_admin(user):
+        forbidden = [
+            lead_id
+            for lead_id in lead_ids
+            if not leads_module.user_can_access_buyer(db, user=user, buyer_id=lead_id)
+        ]
+        if forbidden:
+            raise HTTPException(
+                403,
+                "You can only delete leads assigned to your account",
+            )
+    result = leads_module.delete_lead_table_rows(db, lead_ids)
     return LeadTableBulkDeleteResponse(**result)
 
 
@@ -551,17 +585,48 @@ def bulk_assign_lead_table_rows(
     return LeadTableBulkAssignResponse(**result)
 
 
+def _maintenance_assignee_scope(
+    user: AppUser,
+    *,
+    assigned_to_user_id: int | None,
+    master: bool,
+) -> tuple[int | None, bool]:
+    """Assignee scope for dedupe / sparse cleanup.
+
+    Returns (assigned_to_user_id, unassigned_only).
+    """
+    if master:
+        if not _is_admin(user):
+            raise HTTPException(403, "Master table is admin-only")
+        return None, False
+    if not _is_admin(user):
+        return user.id, False
+    if assigned_to_user_id is not None:
+        return assigned_to_user_id, False
+    # Admin pool sections (Leads table / Old clients): only unassigned rows.
+    return None, True
+
+
 @router.post("/table/dedupe", response_model=LeadTableDedupeResponse)
 def dedupe_leads_table(
     source: str | None = None,
     exclude_source: str | None = None,
+    assigned_to_user_id: int | None = None,
+    master: bool = False,
     db: Session = Depends(get_db),
-    _: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user),
 ):
+    assignee_id, unassigned_only = _maintenance_assignee_scope(
+        user,
+        assigned_to_user_id=assigned_to_user_id,
+        master=master,
+    )
     result = leads_module.dedupe_leads_table(
         db,
         source=source,
         exclude_source=exclude_source,
+        assigned_to_user_id=assignee_id,
+        unassigned_only=unassigned_only,
     )
     return LeadTableDedupeResponse(**result)
 
@@ -592,13 +657,22 @@ def unassign_spreadsheet_imports(
 def cleanup_sparse_csv_leads(
     source: str | None = None,
     exclude_source: str | None = None,
+    assigned_to_user_id: int | None = None,
+    master: bool = False,
     db: Session = Depends(get_db),
-    _: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user),
 ):
+    assignee_id, unassigned_only = _maintenance_assignee_scope(
+        user,
+        assigned_to_user_id=assigned_to_user_id,
+        master=master,
+    )
     result = leads_module.cleanup_sparse_csv_leads(
         db,
         source=source,
         exclude_source=exclude_source,
+        assigned_to_user_id=assignee_id,
+        unassigned_only=unassigned_only,
     )
     return LeadTableCleanupResponse(**result)
 
@@ -705,16 +779,16 @@ def import_discovered_leads(
 ):
     from modules import activity as activity_module
 
-    # Spreadsheet imports always land in the shared Leads / Old clients pool
-    # (unassigned). Only an admin "Send to user" assignment should put a lead
-    # into "Leads Sent To {username}".
+    # Admin imports land in the shared pool (unassigned). Sales-user imports
+    # are auto-assigned to that user so they stay private to their account.
+    assignee = None if _is_admin(user) else user.id
     result = import_candidates(
         db,
         [c.model_dump() for c in payload.candidates],
         auto_onboard=payload.auto_onboard,
         replace_duplicates=payload.replace_duplicates,
         skip_enrichment=payload.skip_enrichment,
-        assigned_to_user_id=None,
+        assigned_to_user_id=assignee,
     )
     created_count = int(result.get("created_count") or 0)
     if created_count > 0:
@@ -757,14 +831,15 @@ def import_discovered_leads_async(
     """
     from modules import import_jobs
 
-    # Keep imports unassigned — "Leads Sent To {user}" is admin-assignment only.
+    # Admin imports stay unassigned; sales-user imports are assigned to them.
+    assignee = None if _is_admin(user) else user.id
     try:
         job_id = import_jobs.start_import_job(
             [c.model_dump() for c in payload.candidates],
             auto_onboard=payload.auto_onboard,
             replace_duplicates=payload.replace_duplicates,
             skip_enrichment=payload.skip_enrichment,
-            assigned_to_user_id=None,
+            assigned_to_user_id=assignee,
             user_id=user.id,
         )
     except ValueError as exc:

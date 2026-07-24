@@ -7,6 +7,8 @@ from api.schemas import (
     BulkApproveResponse,
     BulkEmailDraftRequest,
     BulkEmailDraftResponse,
+    BulkEmailOverlapCheckRequest,
+    BulkEmailOverlapCheckResponse,
     BulkEmailSettingsRead,
     BulkManualEmailDraftRequest,
     DraftListResponse,
@@ -20,11 +22,25 @@ from api.schemas import (
 )
 from config import settings
 from db.models import AppUser, InteractionStatus
+from modules import bulk_email_guard
 from modules.audit import log_action
 from modules.comms_generator import get_comms
 
 router = APIRouter(prefix="/interactions", tags=["interactions"])
 comms = get_comms()
+
+
+def _require_no_bulk_overlap(
+    user: AppUser,
+    buyer_ids: list[int],
+    *,
+    confirm_overlap: bool,
+) -> None:
+    if confirm_overlap:
+        return
+    overlap = bulk_email_guard.find_overlap(user.id, buyer_ids)
+    if overlap:
+        raise HTTPException(status_code=409, detail=overlap["message"])
 
 
 def _interaction_read(db: Session, interaction) -> InteractionRead:
@@ -137,6 +153,18 @@ def get_bulk_email_settings():
     )
 
 
+@router.post("/bulk-email-overlap-check", response_model=BulkEmailOverlapCheckResponse)
+def check_bulk_email_overlap(
+    payload: BulkEmailOverlapCheckRequest,
+    user: AppUser = Depends(get_current_user),
+):
+    """Warn if the same clients were already bulk-emailed within the last 30 minutes."""
+    overlap = bulk_email_guard.find_overlap(user.id, payload.buyer_ids)
+    if not overlap:
+        return BulkEmailOverlapCheckResponse(has_overlap=False)
+    return BulkEmailOverlapCheckResponse(**overlap)
+
+
 @router.post("/bulk-manual-email-drafts", response_model=BulkEmailDraftResponse, status_code=201)
 def create_bulk_manual_email_drafts(
     payload: BulkManualEmailDraftRequest,
@@ -145,19 +173,27 @@ def create_bulk_manual_email_drafts(
 ):
     from modules import activity as activity_module
 
+    _require_no_bulk_overlap(
+        user, payload.buyer_ids, confirm_overlap=payload.confirm_overlap
+    )
+    run_id = bulk_email_guard.begin_run(user.id, payload.buyer_ids)
     try:
-        result = comms.create_bulk_manual_drafts(
-            db,
-            buyer_ids=payload.buyer_ids,
-            subject=payload.subject,
-            body=payload.body,
-            attachments=[a.model_dump() for a in payload.attachments],
-            # Bulk compose always sends immediately — no approval queue.
-            send=True,
-            mailbox_user=user,
-        )
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        try:
+            result = comms.create_bulk_manual_drafts(
+                db,
+                buyer_ids=payload.buyer_ids,
+                subject=payload.subject,
+                body=payload.body,
+                attachments=[a.model_dump() for a in payload.attachments],
+                # Bulk compose always sends immediately — no approval queue.
+                send=True,
+                mailbox_user=user,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    finally:
+        bulk_email_guard.finish_run(run_id)
+
     log_action(
         db,
         entity_type="interaction",
@@ -197,15 +233,22 @@ def create_bulk_email_drafts(
 ):
     from modules import activity as activity_module
 
-    result = comms.create_bulk_drafts_from_template(
-        db,
-        buyer_ids=payload.buyer_ids,
-        template_id=payload.template_id,
-        extra_attachments=[a.model_dump() for a in payload.attachments],
-        # Bulk compose always sends immediately — no approval queue.
-        send=True,
-        mailbox_user=user,
+    _require_no_bulk_overlap(
+        user, payload.buyer_ids, confirm_overlap=payload.confirm_overlap
     )
+    run_id = bulk_email_guard.begin_run(user.id, payload.buyer_ids)
+    try:
+        result = comms.create_bulk_drafts_from_template(
+            db,
+            buyer_ids=payload.buyer_ids,
+            template_id=payload.template_id,
+            extra_attachments=[a.model_dump() for a in payload.attachments],
+            # Bulk compose always sends immediately — no approval queue.
+            send=True,
+            mailbox_user=user,
+        )
+    finally:
+        bulk_email_guard.finish_run(run_id)
     log_action(
         db,
         entity_type="interaction",

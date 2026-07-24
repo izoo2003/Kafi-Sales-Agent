@@ -232,6 +232,14 @@ export interface InboxReplyResponse {
   subject: string | null;
 }
 
+export interface InboxComposeResponse {
+  status: string;
+  message: string;
+  to?: string | null;
+  subject?: string | null;
+  from_email?: string | null;
+}
+
 export type MailFolderKey = "inbox" | "sent" | "trash" | "archive";
 
 export interface InboxFolderInfo {
@@ -581,6 +589,16 @@ export interface BulkEmailDraftResponse {
   }>;
 }
 
+export interface BulkEmailOverlapCheckResponse {
+  has_overlap: boolean;
+  overlapping_count?: number;
+  overlapping_buyer_ids?: number[];
+  run_in_progress?: boolean;
+  minutes_ago?: number;
+  minutes_remaining?: number;
+  message?: string | null;
+}
+
 export interface ManualEmailSendResult {
   interaction: DraftInteraction;
   sent: boolean;
@@ -878,6 +896,7 @@ export interface ImportJobStatus {
   created: Array<{ id: number; company_name: string }> | null;
   skipped: Array<{ company_name: string; reason: string }> | null;
   replaced: Array<{ company_name: string; replaced_id?: number; reason: string }> | null;
+  skip_reason_counts?: Record<string, number> | null;
   elapsed_seconds: number;
 }
 
@@ -915,6 +934,7 @@ export interface LeadTableSectionCountsResponse {
   interested_clients: number;
   not_interested_clients: number;
   not_received_call_clients: number;
+  master?: number;
   by_assignee?: Record<string, number>;
 }
 
@@ -1053,9 +1073,13 @@ export interface LeadTableQuery {
   page?: number;
   page_size?: number;
   assigned_to_user_id?: number;
+  master?: boolean;
 }
 
-export type LeadTableSectionScope = Pick<LeadTableQuery, "source" | "exclude_source">;
+export type LeadTableSectionScope = Pick<
+  LeadTableQuery,
+  "source" | "exclude_source" | "assigned_to_user_id" | "master"
+>;
 
 export interface WhatsAppConfig {
   configured: boolean;
@@ -1227,6 +1251,7 @@ export const client = {
     if (params.assigned_to_user_id != null) {
       search.set("assigned_to_user_id", String(params.assigned_to_user_id));
     }
+    if (params.master) search.set("master", "true");
     const query = search.toString();
     return request<LeadTableResponse>(`/leads/table${query ? `?${query}` : ""}`);
   },
@@ -1249,6 +1274,7 @@ export const client = {
     if (params.assigned_to_user_id != null) {
       search.set("assigned_to_user_id", String(params.assigned_to_user_id));
     }
+    if (params.master) search.set("master", "true");
     const query = search.toString();
     return request<LeadTableIdsResponse>(`/leads/table/ids${query ? `?${query}` : ""}`);
   },
@@ -1278,6 +1304,10 @@ export const client = {
     const search = new URLSearchParams();
     if (params.source) search.set("source", params.source);
     if (params.exclude_source) search.set("exclude_source", params.exclude_source);
+    if (params.assigned_to_user_id != null) {
+      search.set("assigned_to_user_id", String(params.assigned_to_user_id));
+    }
+    if (params.master) search.set("master", "true");
     const query = search.toString();
     return request<LeadTableDedupeResponse>(
       `/leads/table/dedupe${query ? `?${query}` : ""}`,
@@ -1292,6 +1322,10 @@ export const client = {
     const search = new URLSearchParams();
     if (params.source) search.set("source", params.source);
     if (params.exclude_source) search.set("exclude_source", params.exclude_source);
+    if (params.assigned_to_user_id != null) {
+      search.set("assigned_to_user_id", String(params.assigned_to_user_id));
+    }
+    if (params.master) search.set("master", "true");
     const query = search.toString();
     return request<LeadTableCleanupResponse>(
       `/leads/table/cleanup-sparse${query ? `?${query}` : ""}`,
@@ -1431,6 +1465,7 @@ export const client = {
     buyerIds: number[],
     attachments: EmailAttachment[] = [],
     send = true,
+    confirmOverlap = false,
   ) =>
     request<BulkEmailDraftResponse>("/interactions/bulk-email-drafts", {
       method: "POST",
@@ -1439,6 +1474,7 @@ export const client = {
         buyer_ids: buyerIds,
         attachments,
         send,
+        confirm_overlap: confirmOverlap,
       }),
     }),
   createBulkManualEmailDrafts: (
@@ -1447,6 +1483,7 @@ export const client = {
     body: string,
     attachments: EmailAttachment[] = [],
     send = true,
+    confirmOverlap = false,
   ) =>
     request<BulkEmailDraftResponse>("/interactions/bulk-manual-email-drafts", {
       method: "POST",
@@ -1456,7 +1493,13 @@ export const client = {
         body,
         attachments,
         send,
+        confirm_overlap: confirmOverlap,
       }),
+    }),
+  checkBulkEmailOverlap: (buyerIds: number[]) =>
+    request<BulkEmailOverlapCheckResponse>("/interactions/bulk-email-overlap-check", {
+      method: "POST",
+      body: JSON.stringify({ buyer_ids: buyerIds }),
     }),
   createManualEmailDraft: (data: {
     buyer_id: number;
@@ -1543,6 +1586,16 @@ export const client = {
 
   getInboxStatus: () => request<InboxStatus>("/inbox/status"),
   listInboxFolders: () => request<InboxFoldersResponse>("/inbox/folders"),
+  composeInboxMail: (payload: {
+    to: string;
+    subject?: string;
+    body: string;
+    cc?: string;
+  }) =>
+    request<InboxComposeResponse>("/inbox/compose", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   resetInboxCutoff: () =>
     request<{ showing_since: string }>("/inbox/reset-cutoff", { method: "POST" }),
   clearInboxCutoff: () =>

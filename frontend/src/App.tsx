@@ -18,7 +18,6 @@ import { WhatsAppTemplatesPage } from "./pages/WhatsAppTemplatesPage";
 import { WhatsAppInboxPage } from "./pages/WhatsAppInboxPage";
 import { BuyerProfile } from "./pages/BuyerProfile";
 import { CallsPage } from "./pages/CallsPage";
-import { ConsentPage } from "./pages/ConsentPage";
 import { InboxPage } from "./pages/InboxPage";
 import { LeadsPage } from "./pages/LeadsPage";
 import { LeadsTablePage } from "./pages/LeadsTablePage";
@@ -64,6 +63,7 @@ function DashboardApp() {
     interested_clients: 0,
     not_interested_clients: 0,
     not_received_call_clients: 0,
+    master: 0,
     by_assignee: {},
   });
   const [assigneeNavUsers, setAssigneeNavUsers] = useState<AppUser[]>([]);
@@ -81,7 +81,6 @@ function DashboardApp() {
   const [whatsappTemplateCount, setWhatsappTemplateCount] = useState(0);
   const [discoverLeadsCount, setDiscoverLeadsCount] = useState(0);
 
-  const [consentSummary, setConsentSummary] = useState<{ unknown: number } | null>(null);
   const [inboxUnread, setInboxUnread] = useState(0);
   const seenMessageUidsRef = useRef<Set<string> | null>(null);
   const lastInboxUnreadRef = useRef(0);
@@ -102,6 +101,10 @@ function DashboardApp() {
     }
     if (!isAdmin && tab === "users") {
       setTab("activity");
+    }
+    if (!isAdmin && tab === "master-table") {
+      setTab("activity");
+      setSelectedLeadId(null);
     }
   }, [isAdmin, tab]);
 
@@ -266,7 +269,6 @@ function DashboardApp() {
     void loadMailCounts();
     void loadEmailTemplateCount();
     void loadWhatsappTemplateCount();
-    client.getConsentSummary().then(setConsentSummary).catch(() => setConsentSummary(null));
     client
       .getEmailActivityUnreadCount()
       .then((r) => setEmailActivityUnread(r.unread_count))
@@ -285,7 +287,6 @@ function DashboardApp() {
   ]);
 
   useEffect(() => {
-    client.getConsentSummary().then(setConsentSummary).catch(() => setConsentSummary(null));
     void loadTableCounts();
     void loadAssigneeNavUsers();
     void loadMailCounts();
@@ -351,7 +352,7 @@ function DashboardApp() {
   }
 
   function handleSelectTableSection(section: LeadsTableSection) {
-    if (!isAdmin && (section === "all" || isAssignedLeadsSection(section))) {
+    if (!isAdmin && (section === "all" || section === "master" || isAssignedLeadsSection(section))) {
       setTableSection("old_clients");
     } else {
       setTableSection(section);
@@ -433,7 +434,11 @@ function DashboardApp() {
     : [];
 
   const clientSectionNavChildren = [
-    { id: "old_clients" as const, label: "Old clients", count: tableCounts.old_clients },
+    {
+      id: "old_clients" as const,
+      label: isAdmin ? "Old clients" : "Clients",
+      count: tableCounts.old_clients,
+    },
     {
       id: "interested_clients" as const,
       label: "Follow up clients",
@@ -467,6 +472,15 @@ function DashboardApp() {
     ...(isAdmin
       ? [{ id: "leads" as const, label: "Discover Leads", count: discoverLeadsCount }]
       : []),
+    ...(isAdmin
+      ? [
+          {
+            id: "master-table" as const,
+            label: "Master table",
+            count: tableCounts.master ?? 0,
+          },
+        ]
+      : []),
     {
       id: "table",
       label: isAdmin ? "Leads table" : "Clients table",
@@ -494,11 +508,6 @@ function DashboardApp() {
       label: "Quotation agent",
       count: 0,
       external: QUOTATION_AGENT_URL,
-    },
-    {
-      id: "compliance",
-      label: "Automated messages",
-      count: consentSummary?.unknown ?? 0,
     },
     { id: "chatbot", label: "Brand assistant", count: 0 },
     { id: "kpi", label: "KPI Generation", count: 0 },
@@ -603,6 +612,24 @@ function DashboardApp() {
                 onSectionCountsChange={setTableCounts}
               />
             )}
+            {tab === "master-table" && isAdmin && selectedLeadId !== null && (
+              <BuyerProfile
+                leadId={selectedLeadId}
+                onBack={handleBackFromProfile}
+                onError={setError}
+                onCallFollowUpSaved={handleCallFollowUpSaved}
+                canDiscover
+              />
+            )}
+            {tab === "master-table" && isAdmin && selectedLeadId === null && (
+              <LeadsTablePage
+                section="master"
+                refreshToken={leadsTableRefreshToken}
+                onError={setError}
+                onSelectLead={handleSelectLead}
+                onSectionCountsChange={setTableCounts}
+              />
+            )}
             {tab === "inbox" && (
               <InboxPage
                 section={mailSection}
@@ -626,18 +653,6 @@ function DashboardApp() {
                 onSelectLead={handleSelectLead}
                 onCallFollowUpSaved={handleCallFollowUpSaved}
               />
-            )}
-            {tab === "compliance" && selectedLeadId !== null && (
-              <BuyerProfile
-                leadId={selectedLeadId}
-                onBack={handleBackFromProfile}
-                onError={setError}
-                onCallFollowUpSaved={handleCallFollowUpSaved}
-                canDiscover={isAdmin}
-              />
-            )}
-            {tab === "compliance" && selectedLeadId === null && (
-              <ConsentPage onError={setError} onSelectLead={handleSelectLead} />
             )}
             {tab === "chatbot" && <ChatbotPage onError={setError} />}
             {tab === "kpi" && <KpiPage onError={setError} />}

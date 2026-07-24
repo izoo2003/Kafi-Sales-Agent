@@ -324,6 +324,7 @@ class BulkManualEmailDraftRequest(BaseModel):
     body: str
     attachments: list[EmailAttachmentRead] = Field(default_factory=list)
     send: bool = True
+    confirm_overlap: bool = False
 
 
 class BulkEmailDraftRequest(BaseModel):
@@ -331,6 +332,21 @@ class BulkEmailDraftRequest(BaseModel):
     buyer_ids: list[int] = Field(min_length=1)
     attachments: list[EmailAttachmentRead] = Field(default_factory=list)
     send: bool = True
+    confirm_overlap: bool = False
+
+
+class BulkEmailOverlapCheckRequest(BaseModel):
+    buyer_ids: list[int] = Field(min_length=1)
+
+
+class BulkEmailOverlapCheckResponse(BaseModel):
+    has_overlap: bool
+    overlapping_count: int = 0
+    overlapping_buyer_ids: list[int] = Field(default_factory=list)
+    run_in_progress: bool = False
+    minutes_ago: int = 0
+    minutes_remaining: int = 0
+    message: Optional[str] = None
 
 
 class BulkEmailDraftResultItem(BaseModel):
@@ -492,6 +508,7 @@ class LeadTableSectionCountsResponse(BaseModel):
     interested_clients: int
     not_interested_clients: int
     not_received_call_clients: int
+    master: int = 0
     by_assignee: dict[str, int] = Field(default_factory=dict)
 
 
@@ -969,6 +986,21 @@ class InboxReplyResponse(BaseModel):
     message: str
     to: Optional[str] = None
     subject: Optional[str] = None
+
+
+class InboxComposeRequest(BaseModel):
+    to: str = Field(min_length=3, description="Recipient email address")
+    subject: str = Field(default="", description="Email subject")
+    body: str = Field(min_length=1, description="Plain-text email body")
+    cc: Optional[str] = None
+
+
+class InboxComposeResponse(BaseModel):
+    status: str
+    message: str
+    to: Optional[str] = None
+    subject: Optional[str] = None
+    from_email: Optional[str] = None
 
 
 class InboxAnalyzeRequest(BaseModel):

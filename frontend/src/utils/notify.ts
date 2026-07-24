@@ -1,4 +1,4 @@
-/** Inbox alerts — sound, voice, desktop notification, and in-app popup. */
+/** Inbox alerts — sound, desktop notification, and in-app popup (no voice/speech). */
 
 export interface InboxPopupPayload {
   id: string;
@@ -95,7 +95,7 @@ function playTone(
   osc.stop(end + 0.02);
 }
 
-/** Loud repeating alarm — hard to miss. */
+/** Short alert chime — popup + sound only (no spoken dictation). */
 export function playNotificationChime() {
   const ctx = getAudioContext();
   if (!ctx) return;
@@ -115,15 +115,10 @@ export function playNotificationChime() {
   }
 }
 
-export function speakInboxAlert(text: string) {
+function stopAnySpeech() {
   if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
   try {
     window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.volume = 1;
-    utterance.rate = 0.95;
-    utterance.pitch = 1;
-    window.speechSynthesis.speak(utterance);
   } catch {
     /* ignore */
   }
@@ -150,6 +145,7 @@ export function showDesktopNotification(title: string, body: string) {
       body,
       tag: "kafi-inbox",
       requireInteraction: true,
+      silent: true, // we already play our own chime
     });
     notification.onclick = () => {
       window.focus();
@@ -165,20 +161,13 @@ export function alertNewInboxMessage(details: {
   subject?: string | null;
   count?: number;
 }) {
+  stopAnySpeech();
   unlockNotificationAudio();
   playNotificationChime();
 
   const sender = details.from?.trim() || "a contact";
   const subject = details.subject?.trim() || "New message";
   const count = details.count ?? 1;
-  const spoken =
-    count > 1
-      ? `Attention! You have ${count} new messages in your sales inbox.`
-      : subject
-        ? `Attention! New email from ${sender}. Subject: ${subject}`
-        : `Attention! New email received from ${sender}.`;
-
-  window.setTimeout(() => speakInboxAlert(spoken), 350);
 
   const body =
     count > 1
@@ -206,6 +195,7 @@ export function alertInterestedFollowUp(details: {
   daysSincePlacement?: number;
   tableSection?: "interested_clients" | "not_received_call_clients";
 }) {
+  stopAnySpeech();
   unlockNotificationAudio();
   playNotificationChime();
 
@@ -220,9 +210,6 @@ export function alertInterestedFollowUp(details: {
         month: "short",
         day: "numeric",
       });
-
-  const spoken = `Follow-up reminder. ${label} is due for follow-up on ${dueLabel}. Please take follow-up action.`;
-  window.setTimeout(() => speakInboxAlert(spoken), 350);
 
   showDesktopNotification(
     "Follow up client reminder",

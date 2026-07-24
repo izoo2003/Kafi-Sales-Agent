@@ -8,15 +8,16 @@ export type Tab =
   | "whatsapp-inbox"
   | "leads"
   | "table"
+  | "master-table"
   | "inbox"
   | "calls"
-  | "compliance"
   | "chatbot"
   | "kpi"
   | "users";
 
 export type LeadsTableSection =
   | "all"
+  | "master"
   | "old_clients"
   | "interested_clients"
   | "not_interested_clients"

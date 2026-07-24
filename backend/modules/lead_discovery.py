@@ -378,6 +378,30 @@ def _domain(url: str | None) -> str | None:
         return None
 
 
+def _is_junk_dedupe_domain(domain: str | None) -> bool:
+    """Social / directory / trade-data hosts must not collide distinct companies."""
+    if not domain:
+        return True
+    host = domain.lower().strip()
+    if host in {"example.com", "test.com", "localhost", "email.com", "mail.com"}:
+        return True
+    if _domain_matches_blocklist(host, _SKIP_DOMAINS):
+        return True
+    if _domain_matches_blocklist(host, _DIRECTORY_PROFILE_DOMAINS):
+        return True
+    if _is_trade_data_platform(host):
+        return True
+    return False
+
+
+def _dedupe_domain(url: str | None) -> str | None:
+    """Domain used for import duplicate detection — ignores junk hosts."""
+    domain = _domain(url)
+    if not domain or _is_junk_dedupe_domain(domain):
+        return None
+    return domain
+
+
 def _homepage_url(url: str | None) -> str | None:
     if not url:
         return None
@@ -410,6 +434,9 @@ def _import_scope_for_source(import_source: str | None) -> dict[str, str | None]
     normalized = (import_source or "").strip().lower()
     if normalized == "old_clients":
         return {"source": "old_clients", "exclude_source": None}
+    if normalized == "csv":
+        # Leads-table spreadsheet imports only collide with other leads-table rows.
+        return {"source": "csv", "exclude_source": None}
     return {"source": None, "exclude_source": "old_clients"}
 
 
@@ -448,7 +475,7 @@ def _existing_buyer_keys(
 
     for company_name, website_url in query.all():
         names.add(_normalize_name(company_name))
-        domain = _domain(website_url)
+        domain = _dedupe_domain(website_url)
         if domain:
             domains.add(domain)
     return names, domains
@@ -461,7 +488,7 @@ def _mark_existing(
 ) -> None:
     for candidate in candidates:
         name_key = _normalize_name(candidate.company_name)
-        domain = _domain(candidate.website_url)
+        domain = _dedupe_domain(candidate.website_url)
         if name_key in existing_names or (domain and domain in existing_domains):
             candidate.already_exists = True
 
@@ -710,6 +737,148 @@ def _best_phone(phones: set[str]) -> str | None:
     if not valid:
         return None
     return max(valid, key=_phone_score)
+
+
+def _ranked_phones(phones: set[str]) -> list[str]:
+    """Unique valid phones, best-first (for primary / secondary slots)."""
+    seen: set[str] = set()
+    ranked: list[str] = []
+    for phone in phones:
+        normalized = _normalize_phone_raw(phone)
+        if not _is_valid_phone_candidate(normalized):
+            continue
+        digits = re.sub(r"\D", "", normalized)
+        if digits in seen:
+            continue
+        seen.add(digits)
+        ranked.append(normalized)
+    ranked.sort(key=_phone_score, reverse=True)
+    return ranked
+
+
+def _looks_like_mobile(phone: str) -> bool:
+    """Heuristic: mobiles are usually longer intl numbers; landlines often shorter local."""
+    digits = re.sub(r"\D", "", phone or "")
+    if digits.startswith("00"):
+        digits = digits[2:]
+    # Common mobile lengths with country code (e.g. +92 3xx…, +971 5x…).
+    if 11 <= len(digits) <= 13:
+        return True
+    if phone.strip().startswith("+") and len(digits) >= 10:
+        return True
+    return False
+
+
+def _assign_phone_slots(phones: set[str]) -> dict[str, str | None]:
+    """Map scraped phones onto clients-table columns.
+
+    Primary Mobile ← best mobile (else best overall)
+    Secondary Mobile ← next mobile
+    Primary Phone ← best landline-like
+    Secondary Phone ← next landline / leftover
+    """
+    ranked = _ranked_phones(phones)
+    if not ranked:
+        return {
+            "phone": None,
+            "secondary_mobile": None,
+            "primary_phone": None,
+            "secondary_phone": None,
+        }
+    mobiles = [p for p in ranked if _looks_like_mobile(p)]
+    landlines = [p for p in ranked if not _looks_like_mobile(p)]
+    primary_mobile = mobiles[0] if mobiles else ranked[0]
+    secondary_mobile = mobiles[1] if len(mobiles) > 1 else None
+    primary_phone = landlines[0] if landlines else None
+    leftover = [
+        p
+        for p in ranked
+        if p not in {primary_mobile, secondary_mobile, primary_phone}
+    ]
+    secondary_phone = leftover[0] if leftover else (landlines[1] if len(landlines) > 1 else None)
+    return {
+        "phone": primary_mobile,
+        "secondary_mobile": secondary_mobile,
+        "primary_phone": primary_phone,
+        "secondary_phone": secondary_phone,
+    }
+
+
+def _ranked_emails(emails: set[str], company_domain: str | None) -> list[str]:
+    """Best company email first, then other plausible addresses (for secondary_email)."""
+    primary = _best_email(emails, company_domain)
+    ordered: list[str] = []
+    if primary:
+        ordered.append(primary)
+    blocked_prefixes = ("noreply@", "no-reply@", "donotreply@", "example@", "test@")
+    for email in sorted(e.lower() for e in emails if _EMAIL_ATTR_RE.match(e)):
+        if email in ordered:
+            continue
+        if email.startswith(blocked_prefixes):
+            continue
+        ordered.append(email)
+        if len(ordered) >= 4:
+            break
+    return ordered
+
+
+_DESIGNATION_RE = re.compile(
+    r"(?i)\b("
+    r"chief executive officer|managing director|general manager|"
+    r"sales (?:director|manager)|purchase (?:director|manager)|"
+    r"procurement (?:director|manager)|operations (?:director|manager)|"
+    r"co-?founder|founder|proprietor|partner|owner|"
+    r"vice president|president|director|manager|ceo|cfo|coo|cto|md\b"
+    r")"
+)
+
+
+def _extract_designation_from_pages(
+    soups: list[BeautifulSoup],
+    page_texts: list[str],
+) -> str | None:
+    """Pull a job title from schema.org microdata or labeled contact text."""
+    for soup in soups:
+        for element in soup.find_all(attrs={"itemprop": re.compile(r"jobTitle", re.I)}):
+            value = (element.get("content") or element.get_text(" ", strip=True) or "").strip()
+            if 2 <= len(value) <= 80 and _DESIGNATION_RE.search(value):
+                return value[:120]
+        for element in soup.find_all(class_=re.compile(r"job-?title|designation|position|role", re.I)):
+            value = element.get_text(" ", strip=True)
+            if 2 <= len(value) <= 80 and _DESIGNATION_RE.search(value):
+                return value[:120]
+
+    for text in page_texts:
+        # "Name — Managing Director" / "Contact: Owner"
+        for match in re.finditer(
+            r"(?i)(?:designation|title|position|role)\s*[:\-–]\s*([A-Za-z][A-Za-z .,&/'-]{2,60})",
+            text[:12000],
+        ):
+            value = match.group(1).strip(" .")
+            if _DESIGNATION_RE.search(value):
+                return value[:120]
+        match = _DESIGNATION_RE.search(text[:8000])
+        if match:
+            # Prefer the full matched title phrase, title-cased lightly.
+            raw = match.group(1).strip()
+            if len(raw) <= 40:
+                return raw.title() if raw.islower() or raw.isupper() else raw
+    return None
+
+
+def _extract_person_name_from_pages(soups: list[BeautifulSoup]) -> str | None:
+    """Best-effort contact person from schema.org Person name on contact pages."""
+    for soup in soups:
+        for person in soup.find_all(attrs={"itemtype": re.compile(r"schema\.org/Person", re.I)}):
+            name_el = person.find(attrs={"itemprop": re.compile(r"^name$", re.I)})
+            if not name_el:
+                continue
+            name = (name_el.get("content") or name_el.get_text(" ", strip=True) or "").strip()
+            if 2 <= len(name.split()) <= 5 and len(name) <= 80:
+                lower = name.lower()
+                if lower not in {"contact", "admin", "support", "info", "sales"}:
+                    return name
+    return None
 
 
 def _extract_phones(soup: BeautifulSoup) -> set[str]:
@@ -1406,6 +1575,7 @@ def _company_lookup(
     industry: str | None = None,
     *,
     allow_soft_website_match: bool = False,
+    require_location: bool = False,
 ) -> dict[str, str | None]:
     """Look a named company up via web search and return verified, associated details.
 
@@ -1417,6 +1587,9 @@ def _company_lookup(
 
     When ``allow_soft_website_match`` is True (old-client Research & Score), strong
     title matches are accepted even when the domain does not echo the company name.
+
+    When ``require_location`` is True (clients table), keep searching until city /
+    address are found even if a phone is already available.
     """
     result: dict[str, str | None] = {
         "website": None,
@@ -1581,10 +1754,16 @@ def _company_lookup(
     for query in queries:
         found = web_search.search_combined(query, num=10, gl_code=gl)
         _consume_search(found)
-        if result["website"] and result["phone"] and result["address"]:
-            break
-        if best_score >= 60 and result["address"]:
-            break
+        has_location = bool(result["address"] and result["city"])
+        if require_location:
+            # Clients table: city/address outrank phone — don't stop early on contact alone.
+            if has_location and (result["website"] or best_score >= 60):
+                break
+        else:
+            if result["website"] and result["phone"] and result["address"]:
+                break
+            if best_score >= 60 and result["address"]:
+                break
 
     if not result["address"] or not result["city"]:
         address_query = f'"{company_name}" address OR headquarters OR bezoekadres'
@@ -1594,6 +1773,16 @@ def _company_lookup(
                 f'(address OR headquarters OR bezoekadres OR Panjiva OR Europages)'
             )
         found = web_search.search_combined(address_query, num=8, gl_code=gl)
+        _consume_search(found)
+
+    # Clients table: one more location-focused pass when still missing city/address.
+    if require_location and (not result["address"] or not result["city"]):
+        city_query = f'"{company_name}"'
+        if country:
+            city_query = f'"{company_name}" {country} city OR location OR office'
+        else:
+            city_query = f'"{company_name}" city OR location OR office OR headquarters'
+        found = web_search.search_combined(city_query, num=8, gl_code=gl)
         _consume_search(found)
 
     if not result["website"] and best_url and best_score >= 40:
@@ -1701,6 +1890,67 @@ def _validate_business_name_only(name: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _spreadsheet_row_has_signals(raw: dict[str, Any] | DiscoveryCandidate) -> bool:
+    """True when a spreadsheet row already carries usable contact/location fields."""
+    if isinstance(raw, DiscoveryCandidate):
+        values = (
+            raw.email,
+            raw.phone,
+            raw.city,
+            raw.address,
+            raw.country,
+            raw.contact_name,
+            raw.primary_phone,
+            raw.secondary_mobile,
+            raw.designation,
+        )
+    else:
+        values = (
+            raw.get("email"),
+            raw.get("phone"),
+            raw.get("city"),
+            raw.get("address"),
+            raw.get("country"),
+            raw.get("contact_name"),
+            raw.get("primary_phone"),
+            raw.get("secondary_mobile"),
+            raw.get("designation"),
+        )
+    for value in values:
+        text = (value or "").strip()
+        if text and text.lower() not in {_NOT_FOUND.lower(), "n/a", "na", "-", "none"}:
+            if isinstance(raw, DiscoveryCandidate) and value == raw.contact_name:
+                if text.lower() in {"general contact", "contact"}:
+                    continue
+            elif not isinstance(raw, DiscoveryCandidate) and value == raw.get("contact_name"):
+                if text.lower() in {"general contact", "contact"}:
+                    continue
+            return True
+    return False
+
+
+def _validate_spreadsheet_company_name(
+    name: str,
+    raw: dict[str, Any] | DiscoveryCandidate | None = None,
+) -> tuple[bool, str]:
+    """Lenient name check for save-as-is table imports.
+
+    Directory/list-page patterns only reject empty shells — rows that already
+    have phone/email/city/address are trusted as real companies from the sheet.
+    """
+    cleaned = (name or "").strip()
+    if not cleaned:
+        return False, "missing company name"
+    if len(cleaned) > 120:
+        return False, "name is too long to be a company"
+    looks_like_list = bool(
+        _INVALID_BUSINESS_NAME_RE.search(cleaned) or _text_has_trade_data_signals(cleaned)
+    )
+    if looks_like_list and not (raw and _spreadsheet_row_has_signals(raw)):
+        return False, "name looks like a directory or list page, not a company"
+    return True, ""
+
+
 def _validate_business_candidate(candidate: DiscoveryCandidate) -> tuple[bool, str]:
     """Return whether this row is a verifiable importer/distributor/company."""
     name = (candidate.company_name or "").strip()
@@ -1740,10 +1990,19 @@ def _validate_business_candidate(candidate: DiscoveryCandidate) -> tuple[bool, s
     return True, ""
 
 
-def _flag_invalid_candidates(candidates: list[DiscoveryCandidate]) -> int:
+def _flag_invalid_candidates(
+    candidates: list[DiscoveryCandidate],
+    *,
+    for_spreadsheet: bool = False,
+) -> int:
     invalid_count = 0
     for candidate in candidates:
-        valid, reason = _validate_business_name_only(candidate.company_name)
+        if for_spreadsheet:
+            valid, reason = _validate_spreadsheet_company_name(
+                candidate.company_name, candidate
+            )
+        else:
+            valid, reason = _validate_business_name_only(candidate.company_name)
         if not valid:
             candidate.is_valid_business = False
             candidate.invalid_reason = f"Not a valid business — {reason}"
@@ -1751,7 +2010,12 @@ def _flag_invalid_candidates(candidates: list[DiscoveryCandidate]) -> int:
     return invalid_count
 
 
-def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool = False) -> bool:
+def _enrich_candidate_contact(
+    candidate: DiscoveryCandidate,
+    *,
+    keep_row: bool = False,
+    prioritize_location: bool = False,
+) -> bool:
     homepage = _homepage_url(candidate.website_url)
     # Drop firmographic junk that was soft-matched as a "website" on earlier runs.
     if homepage and (
@@ -1764,7 +2028,11 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
 
     directory_url: str | None = None
     soft_match = keep_row or candidate.source in {"csv", "old_clients", "manual"}
-    needs_location = not (candidate.address and candidate.city)
+    needs_location = not (
+        _clean_city_value(candidate.city) and (candidate.address or "").strip()
+    )
+    # Clients table: always chase location even when a phone already exists.
+    force_location = prioritize_location and needs_location
 
     if not homepage:
         # Search via SerpAPI + DuckDuckGo + Google CSE + Wikidata and pull only
@@ -1774,6 +2042,7 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
             candidate.country,
             candidate.industry,
             allow_soft_website_match=soft_match,
+            require_location=force_location or prioritize_location,
         )
         directory_url = lookup.get("directory_url")
 
@@ -1815,13 +2084,14 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
         except Exception:
             pass
 
-        if needs_location and candidate.company_name:
+        if (needs_location or force_location) and candidate.company_name:
             try:
                 lookup = _company_lookup(
                     candidate.company_name,
                     candidate.country,
                     candidate.industry,
                     allow_soft_website_match=soft_match,
+                    require_location=True,
                 )
                 directory_url = lookup.get("directory_url") or directory_url
                 if candidate.phone == _NOT_FOUND and lookup.get("phone"):
@@ -1841,7 +2111,7 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
         # No own website, but a directory profile or knowledge-panel phone may still
         # give us a verified contact for this exact company.
         if directory_url and (
-            candidate.phone == _NOT_FOUND or not candidate.address
+            candidate.phone == _NOT_FOUND or not candidate.address or force_location
         ):
             profile = _scrape_directory_profile(directory_url)
             if candidate.phone == _NOT_FOUND and profile.get("phone"):
@@ -1867,6 +2137,7 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
     phones: set[str] = set()
     socials: dict[str, str] = {}
     page_texts: list[str] = []
+    page_soups: list[BeautifulSoup] = []
     address_countries: list[str] = []
     scraped_addresses: list[dict[str, str | None]] = []
     company_domain = _domain(homepage)
@@ -1904,6 +2175,7 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
     for page_url, text in fetched:
         page_texts.append(text)
         soup = BeautifulSoup(text, "html.parser")
+        page_soups.append(soup)
         emails.update(_extract_emails(soup, text))
         phones.update(_extract_phones(soup))
 
@@ -1927,10 +2199,35 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
             if key and key not in socials:
                 socials[key] = _clean_social_url(full_url)
 
-    if candidate.email == _NOT_FOUND:
-        candidate.email = _clean_found(_best_email(emails, company_domain))
-    if candidate.phone == _NOT_FOUND:
-        candidate.phone = _clean_found(_best_phone(phones))
+    phone_slots = _assign_phone_slots(phones)
+    if candidate.phone == _NOT_FOUND and phone_slots.get("phone"):
+        candidate.phone = _clean_found(phone_slots["phone"])
+    if not candidate.secondary_mobile and phone_slots.get("secondary_mobile"):
+        candidate.secondary_mobile = phone_slots["secondary_mobile"]
+    if not candidate.primary_phone and phone_slots.get("primary_phone"):
+        candidate.primary_phone = phone_slots["primary_phone"]
+    if not candidate.secondary_phone and phone_slots.get("secondary_phone"):
+        candidate.secondary_phone = phone_slots["secondary_phone"]
+
+    email_list = _ranked_emails(emails, company_domain)
+    if candidate.email == _NOT_FOUND and email_list:
+        candidate.email = _clean_found(email_list[0])
+    if not candidate.secondary_email and len(email_list) > 1:
+        candidate.secondary_email = email_list[1]
+
+    if not candidate.designation:
+        candidate.designation = _extract_designation_from_pages(page_soups, page_texts)
+    if not candidate.contact_name or candidate.contact_name.strip().lower() in {
+        "general contact",
+        "contact",
+        "n/a",
+        "na",
+        "-",
+    }:
+        person = _extract_person_name_from_pages(page_soups)
+        if person:
+            candidate.contact_name = person
+
     # Only attach social links when the scraped site itself is tied to this company.
     # On a site that only loosely matches, its Facebook/Instagram/LinkedIn could
     # belong to someone else — better to leave those cells blank. A user-supplied
@@ -1945,7 +2242,9 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
             candidate.instagram_url = _clean_found(socials.get("instagram_url"))
         if candidate.linkedin_url == _NOT_FOUND:
             candidate.linkedin_url = _clean_found(socials.get("linkedin_url"))
-    if directory_url and (candidate.phone == _NOT_FOUND or not candidate.address):
+    if directory_url and (
+        candidate.phone == _NOT_FOUND or not candidate.address or force_location
+    ):
         profile = _scrape_directory_profile(directory_url)
         if candidate.phone == _NOT_FOUND and profile.get("phone"):
             candidate.phone = _clean_found(profile["phone"])
@@ -1963,13 +2262,17 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
         )
 
     # Prefer schema.org / <address> blocks from the company site for location.
-    if scraped_addresses and (not candidate.address or not candidate.city):
+    # Clients table: always prefer a stronger site address over a weak search snippet.
+    if scraped_addresses and (not candidate.address or not candidate.city or prioritize_location):
         best = next(
             (row for row in scraped_addresses if row.get("address") and row.get("city")),
             scraped_addresses[0],
         )
-        if not candidate.address and best.get("address"):
-            candidate.address = best["address"]
+        if (not candidate.address or prioritize_location) and best.get("address"):
+            if not candidate.address or (
+                prioritize_location and len(str(best["address"])) > len(candidate.address or "")
+            ):
+                candidate.address = best["address"]
         if not candidate.city and best.get("city"):
             candidate.city = best["city"]
         elif not candidate.city and candidate.address:
@@ -1988,6 +2291,8 @@ def _enrich_candidate_contact(candidate: DiscoveryCandidate, *, keep_row: bool =
             candidate.city = _parse_city_from_address(candidate.address, candidate.country)
     elif candidate.address and not candidate.city:
         candidate.city = _parse_city_from_address(candidate.address, candidate.country)
+
+    candidate.city = _clean_city_value(candidate.city)
 
     # CompanyLens domain enrichment for remaining contact/social gaps.
     try:
@@ -2387,8 +2692,14 @@ def enrich_discovery_candidate(candidate: DiscoveryCandidate) -> DiscoveryCandid
 def enrich_existing_buyer(db: Session, buyer_id: int) -> dict[str, Any]:
     """Fill incomplete buyer/contact fields via search + scrape + CompanyLens.
 
-    Used by Research & Score so old-client CSV rows get websites/socials/contacts
-    before research_buyer scrapes the profile.
+    Used by Research & Score so CSV / old-client rows get table columns filled
+    (website, city, address, phones, emails, designation) before research_buyer
+    scores the profile.
+
+    Clients table (``source=old_clients``): city + address are highest priority;
+    secondary phones/emails/owners are filled only when already discovered and
+    still empty — never at the expense of location lookup.
+    Leads table: prioritize website, email, phone, socials, country.
     """
     buyer = buyers_module.get_buyer(db, buyer_id)
     if not buyer:
@@ -2396,6 +2707,7 @@ def enrich_existing_buyer(db: Session, buyer_id: int) -> dict[str, Any]:
 
     contacts = buyers_module.list_contacts_for_buyer(db, buyer_id)
     contact = next((c for c in contacts if c.email or c.phone), contacts[0] if contacts else None)
+    is_clients_table = (buyer.source or "").strip().lower() == "old_clients"
 
     def _is_junk_website(url: str | None) -> bool:
         if not (url or "").strip():
@@ -2417,22 +2729,40 @@ def enrich_existing_buyer(db: Session, buyer_id: int) -> dict[str, Any]:
     has_location = bool(
         _clean_city_value(buyer.city) and (buyer.address or "").strip()
     )
-    # Still enrich when city/address are missing — old clients often already have
-    # website + contact + country but no street/city from the CSV import.
-    if has_website and has_social and has_contact and has_location:
+
+    # Clients: never skip while city/address are missing — location outranks socials.
+    # Leads: skip when outreach fields are already complete.
+    if is_clients_table:
+        if has_location and has_website and has_contact:
+            return {
+                "buyer_id": buyer_id,
+                "filled_fields": [],
+                "website_url": buyer.website_url,
+                "source_detail": (
+                    "Skipped enrichment — city, address, website, and primary contact already present"
+                ),
+                "skipped": True,
+                "mode": "clients",
+            }
+    elif has_website and has_social and has_contact and has_location:
         return {
             "buyer_id": buyer_id,
             "filled_fields": [],
             "website_url": buyer.website_url,
             "source_detail": "Skipped enrichment — website, contact, socials, and location already present",
             "skipped": True,
+            "mode": "leads",
         }
+
+    placeholder_names = {"general contact", "contact", "n/a", "na", "-", ""}
+    existing_name = (contact.full_name if contact else None) or None
+    seed_name = existing_name if existing_name and existing_name.strip().lower() not in placeholder_names else None
 
     candidate = DiscoveryCandidate(
         candidate_id=f"buyer-{buyer_id}",
         company_name=buyer.company_name,
         website_url=None if _is_junk_website(buyer.website_url) else buyer.website_url,
-        contact_name=(contact.full_name if contact else None),
+        contact_name=seed_name,
         email=(contact.email if contact and contact.email else _NOT_FOUND),
         phone=(contact.phone if contact and contact.phone else _NOT_FOUND),
         facebook_url=buyer.facebook_company_url or _NOT_FOUND,
@@ -2440,6 +2770,11 @@ def enrich_existing_buyer(db: Session, buyer_id: int) -> dict[str, Any]:
         linkedin_url=buyer.linkedin_company_url or _NOT_FOUND,
         country=buyer.country,
         industry=buyer.industry,
+        designation=(contact.designation if contact else None),
+        secondary_mobile=(contact.secondary_mobile if contact else None),
+        primary_phone=(contact.primary_phone if contact else None),
+        secondary_phone=(contact.secondary_phone if contact else None),
+        secondary_email=(contact.secondary_email if contact else None),
         city=_clean_city_value(buyer.city),
         address=buyer.address,
         source=(buyer.source or "old_clients"),
@@ -2457,9 +2792,19 @@ def enrich_existing_buyer(db: Session, buyer_id: int) -> dict[str, Any]:
         "address": buyer.address,
         "email": contact.email if contact else None,
         "phone": contact.phone if contact else None,
+        "designation": contact.designation if contact else None,
+        "secondary_mobile": contact.secondary_mobile if contact else None,
+        "primary_phone": contact.primary_phone if contact else None,
+        "secondary_phone": contact.secondary_phone if contact else None,
+        "secondary_email": contact.secondary_email if contact else None,
+        "contact_name": contact.full_name if contact else None,
     }
 
-    _enrich_candidate_contact(candidate, keep_row=True)
+    _enrich_candidate_contact(
+        candidate,
+        keep_row=True,
+        prioritize_location=is_clients_table,
+    )
 
     buyer_updates: dict[str, Any] = {}
     existing_site_junk = _is_junk_website(buyer.website_url)
@@ -2478,11 +2823,20 @@ def enrich_existing_buyer(db: Session, buyer_id: int) -> dict[str, Any]:
         buyer_updates["country"] = candidate.country
     if not buyer.industry and candidate.industry:
         buyer_updates["industry"] = candidate.industry
-    if not buyer.city and candidate.city:
-        buyer_updates["city"] = candidate.city
-    elif buyer.city and not _is_plausible_city(buyer.city) and candidate.city:
-        buyer_updates["city"] = candidate.city
-    if not buyer.address and candidate.address:
+
+    # Location — highest priority write-back for clients table.
+    cleaned_city = _clean_city_value(candidate.city)
+    if cleaned_city and (not buyer.city or not _is_plausible_city(buyer.city)):
+        buyer_updates["city"] = cleaned_city
+    if candidate.address and not (buyer.address or "").strip():
+        buyer_updates["address"] = candidate.address
+    elif (
+        is_clients_table
+        and candidate.address
+        and buyer.address
+        and len(candidate.address.strip()) > len(buyer.address.strip()) + 8
+    ):
+        # Prefer a richer street address when the CSV only had a stub.
         buyer_updates["address"] = candidate.address
 
     if buyer_updates:
@@ -2492,16 +2846,36 @@ def enrich_existing_buyer(db: Session, buyer_id: int) -> dict[str, Any]:
     phone = _value_or_none(candidate.phone)
     linkedin = _value_or_none(candidate.linkedin_url)
     contact_updates: dict[str, Any] = {}
+
+    def _set_if_empty(field: str, value: str | None) -> None:
+        if not value:
+            return
+        current = getattr(contact, field, None) if contact else None
+        if contact and (current or "").strip():
+            return
+        contact_updates[field] = value
+
     if contact:
-        if not contact.email and email:
-            contact_updates["email"] = email
-        if not contact.phone and phone:
-            contact_updates["phone"] = phone
+        _set_if_empty("email", email)
+        _set_if_empty("phone", phone)
         if not contact.linkedin_profile_url and linkedin:
             contact_updates["linkedin_profile_url"] = linkedin
+        # Clients columns — fill empty cells only (secondary is lowest priority).
+        _set_if_empty("designation", (candidate.designation or "").strip() or None)
+        _set_if_empty("secondary_mobile", (candidate.secondary_mobile or "").strip() or None)
+        _set_if_empty("primary_phone", (candidate.primary_phone or "").strip() or None)
+        _set_if_empty("secondary_phone", (candidate.secondary_phone or "").strip() or None)
+        _set_if_empty("secondary_email", (candidate.secondary_email or "").strip() or None)
+        new_name = (candidate.contact_name or "").strip()
+        if (
+            new_name
+            and new_name.lower() not in placeholder_names
+            and (contact.full_name or "").strip().lower() in placeholder_names
+        ):
+            contact_updates["full_name"] = new_name
         if contact_updates:
             buyers_module.update_contact(db, contact.id, contact_updates)
-    elif email or phone or candidate.contact_name:
+    elif email or phone or candidate.contact_name or candidate.designation:
         buyers_module.create_contact(
             db,
             {
@@ -2509,18 +2883,25 @@ def enrich_existing_buyer(db: Session, buyer_id: int) -> dict[str, Any]:
                 "full_name": (candidate.contact_name or "").strip() or "General contact",
                 "email": email,
                 "phone": phone,
+                "designation": (candidate.designation or "").strip() or None,
+                "secondary_mobile": (candidate.secondary_mobile or "").strip() or None,
+                "primary_phone": (candidate.primary_phone or "").strip() or None,
+                "secondary_phone": (candidate.secondary_phone or "").strip() or None,
+                "secondary_email": (candidate.secondary_email or "").strip() or None,
                 "linkedin_profile_url": linkedin,
                 "data_source": "enrichment",
                 "consent_status": "unknown",
             },
         )
+        contact_updates = {"created": True}
 
     db.refresh(buyer)
     filled = [key for key, value in buyer_updates.items() if value]
     if contact_updates:
-        filled.extend(f"contact.{key}" for key in contact_updates)
-    elif not contact and (email or phone):
-        filled.append("contact.created")
+        if contact_updates.get("created"):
+            filled.append("contact.created")
+        else:
+            filled.extend(f"contact.{key}" for key in contact_updates)
 
     return {
         "buyer_id": buyer_id,
@@ -2528,6 +2909,7 @@ def enrich_existing_buyer(db: Session, buyer_id: int) -> dict[str, Any]:
         "website_url": buyer.website_url,
         "source_detail": candidate.source_detail,
         "before": before,
+        "mode": "clients" if is_clients_table else "leads",
     }
 
 
@@ -2987,7 +3369,9 @@ def discover_from_csv(
     else:
         # Discover / leads-table CSV: flag matches against old clients too.
         existing_names, existing_domains = _discovery_existing_keys(db)
-    invalid_count = _flag_invalid_candidates(candidates)
+    invalid_count = _flag_invalid_candidates(
+        candidates, for_spreadsheet=for_leads_table
+    )
     if invalid_count:
         result.messages.append(
             f"{invalid_count} row(s) look like directories or list pages — they will not be imported."
@@ -3036,19 +3420,22 @@ def import_candidates(
         db,
         **scope,
     )
+    # Junk/social hosts must not make unrelated companies look like duplicates.
+    by_domain = {
+        domain: buyer
+        for domain, buyer in by_domain.items()
+        if not _is_junk_dedupe_domain(domain)
+    }
     existing_names = set(by_name.keys())
     existing_domains = set(by_domain.keys())
 
-    # Cross-section blocklist: never create a leads-table row that matches an
-    # old client (and never delete/replace an old client from a leads import).
+    # Cross-section block: leads-table imports must not recreate Old clients.
+    # Clients/old_clients imports always land in that table — do not skip just
+    # because Discover / Leads already has a similar company name.
     other_names: set[str] = set()
     other_domains: set[str] = set()
     if (batch_source or "").strip().lower() != "old_clients":
         other_names, other_domains = _existing_buyer_keys(db, source="old_clients")
-    else:
-        other_names, other_domains = _existing_buyer_keys(
-            db, exclude_source="old_clients"
-        )
 
     def _import_data_score(raw: dict[str, Any]) -> int:
         points = 0
@@ -3161,7 +3548,9 @@ def import_candidates(
                 _enrich_candidate_contact(candidate, keep_row=True)
 
             if skip_enrichment:
-                valid, invalid_reason = _validate_business_name_only(candidate.company_name)
+                valid, invalid_reason = _validate_spreadsheet_company_name(
+                    candidate.company_name, raw
+                )
             else:
                 valid, invalid_reason = _validate_business_candidate(candidate)
             if not valid:
@@ -3178,7 +3567,7 @@ def import_candidates(
             name = (raw.get("company_name") or "").strip()
 
             name_key = _normalize_name(name)
-            domain = _domain(raw.get("website_url"))
+            domain = _dedupe_domain(raw.get("website_url"))
 
             # Block cross-section duplicates (e.g. discovery matching an old client).
             if name_key in other_names or (domain and domain in other_domains):
@@ -3220,7 +3609,7 @@ def import_candidates(
                     )
                     existing_names.discard(_normalize_name(existing.company_name))
                     by_name.pop(_normalize_name(existing.company_name), None)
-                    existing_domain = _domain(existing.website_url)
+                    existing_domain = _dedupe_domain(existing.website_url)
                     if existing_domain:
                         existing_domains.discard(existing_domain)
                         by_domain.pop(existing_domain, None)
@@ -3233,7 +3622,12 @@ def import_candidates(
                         }
                     )
                 else:
-                    skipped.append({"company_name": name, "reason": "Already in leads"})
+                    reason = (
+                        "Already in clients table"
+                        if (batch_source or "").strip().lower() == "old_clients"
+                        else "Already in leads"
+                    )
+                    skipped.append({"company_name": name, "reason": reason})
                     _checkpoint_commit()
                     continue
 
@@ -3420,6 +3814,11 @@ def import_candidates(
         invalidate_lead_table_filters_cache()
         invalidate_section_counts_cache()
 
+    skip_reason_counts: dict[str, int] = {}
+    for item in skipped:
+        reason = (item.get("reason") or "Skipped").strip() or "Skipped"
+        skip_reason_counts[reason] = skip_reason_counts.get(reason, 0) + 1
+
     return {
         "created_count": len(created),
         "skipped_count": len(skipped),
@@ -3428,4 +3827,5 @@ def import_candidates(
         "skipped": skipped,
         "replaced": replaced,
         "onboard_results": onboard_results,
+        "skip_reason_counts": skip_reason_counts,
     }

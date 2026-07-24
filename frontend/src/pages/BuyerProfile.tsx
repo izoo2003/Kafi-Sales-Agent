@@ -89,10 +89,12 @@ export function BuyerProfile({
   async function handleScore() {
     setScoring(true);
     try {
-      const scoreData = await client.scoreLead(leadId);
-      const [profileData, leadData, crossSellData] = await Promise.all([
+      // Same path as table "Research & Score": enrich contacts/location → research → score
+      await client.onboardLead(leadId);
+      const [profileData, leadData, scoreData, crossSellData] = await Promise.all([
         client.getLeadProfile(leadId),
         client.getLead(leadId),
+        client.getLatestScore(leadId),
         client.getCrossSell(leadId).catch(() => [] as CrossSellRecommendation[]),
       ]);
       setProfile(profileData);

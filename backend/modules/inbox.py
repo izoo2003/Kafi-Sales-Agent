@@ -503,3 +503,44 @@ def reply_to_thread(
         cc=cc,
         include_quote=True,
     )
+
+
+def compose(
+    user: AppUser,
+    *,
+    to: str,
+    subject: str,
+    body: str,
+    cc: str | None = None,
+) -> dict[str, Any]:
+    """Send a new outbound email from the logged-in user's mailbox (SMTP/OAuth)."""
+    account = resolve_user_mailbox(user)
+    if not account:
+        return {
+            "status": "not_configured",
+            "message": "No mailbox configured for your account. Ask an admin to set your company email.",
+        }
+
+    recipient = (to or "").strip()
+    if not recipient or "@" not in recipient:
+        return {"status": "error", "message": "Enter a valid recipient email address"}
+    subject_clean = (subject or "").strip() or "(no subject)"
+    body_clean = (body or "").rstrip()
+    if not body_clean:
+        return {"status": "error", "message": "Email body cannot be empty"}
+
+    with use_mailbox(account, user_id=user.id):
+        result = outlook_client.send_reply(
+            to=recipient,
+            subject=subject_clean,
+            body=body_clean,
+            cc=(cc or "").strip() or None,
+        )
+        if result.get("status") == "sent":
+            result = {
+                **result,
+                "to": recipient,
+                "subject": subject_clean,
+                "from": account.email,
+            }
+        return result

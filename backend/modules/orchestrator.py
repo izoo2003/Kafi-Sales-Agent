@@ -28,8 +28,8 @@ class Orchestrator:
         self.scheduler = SchedulerModule()
 
     def handle_new_buyer(self, db: Session, buyer_id: int) -> dict:
-        # Old-client / incomplete leads: discover website, socials, and contacts
-        # via SerpAPI + DuckDuckGo + Google CSE + Wikidata (+ CompanyLens) before research.
+        # Old-client / incomplete leads: discover website, city/address, phones,
+        # emails, designation, and socials before research + score.
         enrichment: dict | None = None
         try:
             from modules.lead_discovery import enrich_existing_buyer

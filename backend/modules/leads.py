@@ -72,8 +72,8 @@ def user_can_access_buyer(db: Session, *, user: AppUser, buyer_id: int) -> bool:
     buyer = buyers_module.get_buyer(db, buyer_id)
     if not buyer:
         return False
-    # Sales users can work the shared unassigned pool and leads an admin sent them.
-    return buyer.assigned_to_user_id in (None, user.id)
+    # Sales users only see leads assigned to them — not the admin/unassigned pool.
+    return buyer.assigned_to_user_id == user.id
 
 
 def clear_assignments_for_user(db: Session, user_id: int) -> None:
@@ -450,7 +450,7 @@ def _apply_lead_table_scope(
     if assigned_to_user_id is not None:
         buyer_query = buyer_query.filter(Buyer.assigned_to_user_id == assigned_to_user_id)
     elif pool_for_user_id is not None:
-        # Sales user: shared unassigned pool + leads an admin sent them.
+        # Legacy: shared unassigned pool + leads assigned to this user.
         buyer_query = buyer_query.filter(
             or_(
                 Buyer.assigned_to_user_id.is_(None),
@@ -1054,9 +1054,8 @@ def count_leads_table_sections(
     exclude assigned leads. by_assignee maps user_id string → total leads sent
     to that user.
 
-    Sales user (pool_for_user_id=user.id): all / old_clients include the shared
-    unassigned pool plus leads an admin sent them. by_assignee is empty — that
-    nav is admin-only.
+    Sales user (assigned_to_user_id=user.id): only leads assigned to them.
+    by_assignee is empty — that nav is admin-only.
 
     Results are TTL-cached for 20 s per user scope and invalidated on writes.
     """
@@ -1086,7 +1085,7 @@ def _compute_section_counts(
     if pool_for_user_id is not None:
         from sqlalchemy import or_
 
-        # Sales user: unassigned pool + own assignments.
+        # Legacy shared-pool mode (kept for callers); prefer exact assignee.
         buyer_query = buyer_query.filter(
             or_(
                 Buyer.assigned_to_user_id.is_(None),
@@ -1145,6 +1144,8 @@ def _compute_section_counts(
         "interested_clients": len(interested_ids),
         "not_interested_clients": len(not_interested_ids),
         "not_received_call_clients": len(not_received_ids),
+        # Admin master table: every lead (assigned + unassigned, all sources).
+        "master": len(all_ids) if pool_for_user_id is None and assigned_to_user_id is None else 0,
         "by_assignee": by_assignee if pool_for_user_id is None else {},
     }
 
@@ -1288,8 +1289,10 @@ def _section_buyers_query(
     *,
     source: str | None = None,
     exclude_source: str | None = None,
+    assigned_to_user_id: int | None = None,
+    unassigned_only: bool = False,
 ):
-    """Buyer query scoped by source at the SQL level (avoids pulling the whole table)."""
+    """Buyer query scoped by source / assignee at the SQL level."""
     query = db.query(Buyer)
     if source:
         query = query.filter(sa_func.lower(Buyer.source) == source.strip().lower())
@@ -1302,6 +1305,10 @@ def _section_buyers_query(
         query = query.filter(
             ~sa_func.lower(sa_func.coalesce(Buyer.source, "")).in_(excluded)
         )
+    if assigned_to_user_id is not None:
+        query = query.filter(Buyer.assigned_to_user_id == assigned_to_user_id)
+    elif unassigned_only:
+        query = query.filter(Buyer.assigned_to_user_id.is_(None))
     return query
 
 
@@ -1415,6 +1422,8 @@ def dedupe_leads_table(
     *,
     source: str | None = None,
     exclude_source: str | None = None,
+    assigned_to_user_id: int | None = None,
+    unassigned_only: bool = False,
 ) -> dict[str, object]:
     """Remove duplicate leads within a section, keeping the richest record in each cluster."""
     from collections import defaultdict
@@ -1422,7 +1431,13 @@ def dedupe_leads_table(
     from modules.audit import log_action
     from modules.lead_discovery import _domain, _normalize_name
 
-    buyers = _section_buyers_query(db, source=source, exclude_source=exclude_source).all()
+    buyers = _section_buyers_query(
+        db,
+        source=source,
+        exclude_source=exclude_source,
+        assigned_to_user_id=assigned_to_user_id,
+        unassigned_only=unassigned_only,
+    ).all()
     if len(buyers) < 2:
         return {"removed_count": 0, "kept_count": len(buyers), "groups": []}
 
@@ -1546,6 +1561,8 @@ def cleanup_sparse_csv_leads(
     *,
     source: str | None = None,
     exclude_source: str | None = None,
+    assigned_to_user_id: int | None = None,
+    unassigned_only: bool = False,
 ) -> dict[str, object]:
     """Remove sparse CSV/old-client imports that have almost no scraped details."""
     from modules.audit import log_action
@@ -1556,10 +1573,20 @@ def cleanup_sparse_csv_leads(
         for part in (exclude_source or "").split(",")
         if part.strip()
     }
-    if source:
-        candidates = _section_buyers_query(db, source=source).all()
-    elif excluded:
-        candidates = _section_buyers_query(db, exclude_source=exclude_source).all()
+    if source or excluded or assigned_to_user_id is not None or unassigned_only:
+        candidates = _section_buyers_query(
+            db,
+            source=source,
+            exclude_source=exclude_source,
+            assigned_to_user_id=assigned_to_user_id,
+            unassigned_only=unassigned_only,
+        ).all()
+        if not source and not excluded:
+            candidates = [
+                buyer
+                for buyer in candidates
+                if (buyer.source or "").lower() in _SPARSE_IMPORT_SOURCES
+            ]
     else:
         candidates = [
             buyer

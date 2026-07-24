@@ -129,6 +129,19 @@ export function BulkEmailModal({
       onError("Subject and message are required");
       return;
     }
+    let confirmOverlap = false;
+    try {
+      const overlap = await client.checkBulkEmailOverlap(buyerIds);
+      if (overlap.has_overlap) {
+        const ok = window.confirm(
+          `${overlap.message || "A bulk email for some of these same clients already started recently."}\n\nClick OK to send anyway, or Cancel to stop.`,
+        );
+        if (!ok) return;
+        confirmOverlap = true;
+      }
+    } catch {
+      /* check unavailable — backend still guards */
+    }
     setSending(true);
     try {
       const result = await client.createBulkManualEmailDrafts(
@@ -136,6 +149,8 @@ export function BulkEmailModal({
         manualSubject,
         manualBody,
         manualAttachments,
+        true,
+        confirmOverlap,
       );
       onCreated(result);
       onClose();
@@ -151,12 +166,27 @@ export function BulkEmailModal({
       onError("Select a template first");
       return;
     }
+    let confirmOverlap = false;
+    try {
+      const overlap = await client.checkBulkEmailOverlap(buyerIds);
+      if (overlap.has_overlap) {
+        const ok = window.confirm(
+          `${overlap.message || "A bulk email for some of these same clients already started recently."}\n\nClick OK to send anyway, or Cancel to stop.`,
+        );
+        if (!ok) return;
+        confirmOverlap = true;
+      }
+    } catch {
+      /* check unavailable — backend still guards */
+    }
     setSending(true);
     try {
       const result = await client.createBulkEmailDrafts(
         Number(templateId),
         buyerIds,
         extraAttachments,
+        true,
+        confirmOverlap,
       );
       onCreated(result);
       onClose();
