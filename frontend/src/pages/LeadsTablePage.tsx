@@ -1943,9 +1943,15 @@ export function LeadsTablePage({
                   {(filters?.market_roles ?? ["consumer", "producer", "hybrid", "unknown"]).map(
                     (option) => (
                       <option key={option} value={option}>
-                        {option === "unknown"
-                          ? "Unclassified"
-                          : option.charAt(0).toUpperCase() + option.slice(1)}
+                        {option === "consumer"
+                          ? "Importer"
+                          : option === "producer"
+                            ? "Exporter"
+                            : option === "hybrid"
+                              ? "Hybrid"
+                              : option === "unknown"
+                                ? "Unclassified"
+                                : option.charAt(0).toUpperCase() + option.slice(1)}
                       </option>
                     ),
                   )}

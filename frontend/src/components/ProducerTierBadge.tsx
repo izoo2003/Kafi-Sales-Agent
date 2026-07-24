@@ -10,8 +10,8 @@ const tierColors: Record<string, string> = {
 };
 
 const tierLabels: Record<string, string> = {
-  strong: "Strong producer",
-  weak: "Weak producer",
+  strong: "Strong exporter",
+  weak: "Weak exporter",
 };
 
 export function ProducerTierBadge({ tier, conversionPct, compact }: ProducerTierBadgeProps) {
@@ -29,7 +29,7 @@ export function ProducerTierBadge({ tier, conversionPct, compact }: ProducerTier
       {key === "weak" && conversionPct != null && (
         <span
           className="text-xs font-medium text-emerald-400 whitespace-nowrap"
-          title="Estimated chance to convert this producer into a Kafi sourcing/resell client"
+          title="Estimated chance to convert this exporter into a Kafi sourcing/resell client"
         >
           {Math.round(conversionPct)}% convert
         </span>

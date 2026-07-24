@@ -1,3 +1,5 @@
+import { formatMarketRoleLabel } from "../utils/marketRoleLabels";
+
 interface MarketRoleBadgeProps {
   role: string;
 }
@@ -9,21 +11,15 @@ const colors: Record<string, string> = {
   unknown: "bg-slate-700/30 text-slate-400 border-slate-600/40",
 };
 
-const labels: Record<string, string> = {
-  consumer: "Consumer",
-  producer: "Producer",
-  hybrid: "Hybrid",
-  unknown: "Unclassified",
-};
-
 export function MarketRoleBadge({ role }: MarketRoleBadgeProps) {
   const key = role.toLowerCase();
+  const label = formatMarketRoleLabel(role);
   return (
     <span
       className={`px-2 py-0.5 rounded border text-xs font-medium whitespace-nowrap ${colors[key] ?? colors.unknown}`}
-      title={labels[key] ?? role}
+      title={label}
     >
-      {labels[key] ?? role}
+      {label}
     </span>
   );
 }

@@ -412,15 +412,21 @@ def _profile_from_record(buyer: Buyer, record: BuyerResearchProfile) -> BuyerPro
 
 
 def _market_role_signals(result: MarketRoleResult) -> list[str]:
-    label = result.role.replace("_", " ").title()
+    role_labels = {
+        "consumer": "Importer",
+        "producer": "Exporter",
+        "hybrid": "Hybrid",
+        "unknown": "Unclassified",
+    }
+    label = role_labels.get(result.role, result.role.replace("_", " ").title())
     signals = [f"Market role: {label}"]
     if result.producer_tier:
-        tier_label = "Strong producer" if result.producer_tier == "strong" else "Weak producer"
-        signals.append(f"Producer tier: {tier_label}")
+        tier_label = "Strong exporter" if result.producer_tier == "strong" else "Weak exporter"
+        signals.append(f"Exporter tier: {tier_label}")
         if result.producer_conversion_pct is not None:
-            signals.append(f"Producer conversion potential: {result.producer_conversion_pct:.0f}%")
+            signals.append(f"Exporter conversion potential: {result.producer_conversion_pct:.0f}%")
     if result.producer_signals:
-        signals.append(f"Producer signals: {', '.join(result.producer_signals[:3])}")
+        signals.append(f"Exporter signals: {', '.join(result.producer_signals[:3])}")
     if result.consumer_signals:
-        signals.append(f"Buyer signals: {', '.join(result.consumer_signals[:3])}")
+        signals.append(f"Importer signals: {', '.join(result.consumer_signals[:3])}")
     return signals

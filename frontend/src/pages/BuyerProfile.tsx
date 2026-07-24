@@ -255,7 +255,7 @@ export function BuyerProfile({
                 <div className="mb-3 max-w-md">
                   <ConversionBar pct={profile.producer_conversion_pct} />
                   <p className="text-xs text-slate-500 mt-2">
-                    Chance this narrow producer will source additional Kafi ranges (pickles, rice,
+                    Chance this narrow exporter will source additional Kafi ranges (pickles, rice,
                     sauces, salt, etc.) for resale under their brand or distribution.
                   </p>
                 </div>
@@ -267,7 +267,7 @@ export function BuyerProfile({
                 <p className="text-sm text-slate-400">{profile.market_role_reasoning}</p>
               )}
               <p className="text-xs text-slate-500 mt-2">
-                Strong producers have a catalog close to Kafi&apos;s — competitors. Weak producers
+                Strong exporters have a catalog close to Kafi&apos;s — competitors. Weak exporters
                 specialize in few lines and may buy other ranges from you.
               </p>
             </section>

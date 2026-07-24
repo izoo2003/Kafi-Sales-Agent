@@ -4,7 +4,7 @@ const COLUMNS = [
   { key: "company", header: "Company", width: 320 },
   { key: "score", header: "Score", width: 72 },
   { key: "marketRole", header: "Market role", width: 180 },
-  { key: "producerTier", header: "Producer tier", width: 220 },
+  { key: "producerTier", header: "Exporter tier", width: 220 },
   { key: "conversion", header: "Conversion %", width: 96 },
   { key: "country", header: "Country", width: 160 },
   { key: "callRecommended", header: "Call now?", width: 160 },
@@ -44,17 +44,17 @@ function formatDate(iso: string | null | undefined): string {
 
 function formatMarketRole(role: string | null | undefined): string {
   const labels: Record<string, string> = {
-    consumer: "Consumer (buyer)",
-    producer: "Producer (rival)",
-    hybrid: "Hybrid (buyer + producer)",
+    consumer: "Importer",
+    producer: "Exporter",
+    hybrid: "Hybrid (importer + exporter)",
     unknown: "Unknown",
   };
   return labels[role ?? "unknown"] ?? role ?? "";
 }
 
 function formatProducerTier(tier: string | null | undefined): string {
-  if (tier === "strong") return "Strong — direct competitor";
-  if (tier === "weak") return "Weak — conversion potential";
+  if (tier === "strong") return "Strong exporter — direct competitor";
+  if (tier === "weak") return "Weak exporter — conversion potential";
   return "";
 }
 

@@ -1,4 +1,4 @@
-"""Classify leads as producers (sell/manufacture like Kafi) vs consumers (buyers/importers)."""
+"""Classify leads as exporters (sell/manufacture like Kafi) vs importers (buyers)."""
 
 from dataclasses import dataclass, field
 import re
@@ -6,7 +6,7 @@ import re
 
 @dataclass
 class MarketRoleResult:
-    role: str  # consumer | producer | hybrid | unknown
+    role: str  # consumer (importer) | producer (exporter) | hybrid | unknown
     confidence: float
     reasoning: str
     producer_signals: list[str] = field(default_factory=list)
@@ -204,7 +204,7 @@ def classify_producer_tier(
     )
     gap = _KAFI_CATEGORY_COUNT - category_count
     reasoning = (
-        f"Narrow producer catalog ({category_count} overlapping categor{'y' if category_count == 1 else 'ies'}, "
+        f"Narrow exporter catalog ({category_count} overlapping categor{'y' if category_count == 1 else 'ies'}, "
         f"{product_count} product types). {gap} Kafi categories not on their site — cross-sell / white-label opportunity."
     )
     if narrow_hits:
@@ -315,7 +315,7 @@ def classify_market_role(
         return MarketRoleResult(
             role="unknown",
             confidence=0.0,
-            reasoning="No clear producer or buyer signals on website or profile.",
+            reasoning="No clear exporter or importer signals on website or profile.",
             producer_signals=producer_hits,
             consumer_signals=consumer_hits,
         )
@@ -332,18 +332,18 @@ def classify_market_role(
     elif producer_pts > consumer_pts and producer_pts >= 3:
         role = "producer"
         reasoning = (
-            "Likely a producer or brand owner selling their own products "
+            "Likely an exporter or brand owner selling their own products "
             f"({'; '.join(producer_hits[:4])})."
         )
     elif consumer_pts > producer_pts and consumer_pts >= 3:
         role = "consumer"
         reasoning = (
-            "Likely a buyer/importer/distributor "
+            "Likely an importer/distributor "
             f"({'; '.join(consumer_hits[:4])})."
         )
     elif producer_pts == consumer_pts and producer_pts >= 3:
         role = "hybrid"
-        reasoning = "Balanced producer and buyer signals — treat as mixed role."
+        reasoning = "Balanced exporter and importer signals — treat as mixed role."
     else:
         role = "unknown"
         confidence = max(0.2, confidence * 0.5)
@@ -364,7 +364,7 @@ def classify_market_role(
         )
         tier_label = "Strong" if producer_tier == "strong" else "Weak"
         reasoning += (
-            f" {tier_label} producer"
+            f" {tier_label} exporter"
             + (
                 f" (~{producer_conversion_pct:.0f}% conversion potential)."
                 if producer_tier == "weak" and producer_conversion_pct is not None
