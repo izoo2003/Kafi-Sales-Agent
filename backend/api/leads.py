@@ -733,7 +733,7 @@ async def discover_leads_from_csv(
     for_leads_table: bool = False,
     import_source: str | None = None,
     db: Session = Depends(get_db),
-    _: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user),
 ):
     raw = await file.read()
     if not raw:
@@ -747,12 +747,15 @@ async def discover_leads_from_csv(
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
+    # Sales preview: only mark already_exists against that user's own table.
+    assignee = None if _is_admin(user) else user.id
     result = discover_from_csv(
         db,
         content,
         default_country=default_country,
         for_leads_table=for_leads_table,
         import_source=import_source,
+        assigned_to_user_id=assignee,
     )
     result.messages = convert_messages + result.messages
     if not result.candidates:

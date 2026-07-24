@@ -450,6 +450,7 @@ def _existing_buyer_keys(
     *,
     source: str | None = None,
     exclude_source: str | None = None,
+    assigned_to_user_id: int | None = None,
 ) -> tuple[set[str], set[str]]:
     from sqlalchemy import func as sa_func
 
@@ -472,6 +473,8 @@ def _existing_buyer_keys(
         query = query.filter(
             ~sa_func.lower(sa_func.coalesce(Buyer.source, "")).in_(excluded)
         )
+    if assigned_to_user_id is not None:
+        query = query.filter(Buyer.assigned_to_user_id == assigned_to_user_id)
 
     for company_name, website_url in query.all():
         names.add(_normalize_name(company_name))
@@ -3347,6 +3350,7 @@ def discover_from_csv(
     *,
     for_leads_table: bool = False,
     import_source: str | None = None,
+    assigned_to_user_id: int | None = None,
 ) -> DiscoveryResult:
     result = DiscoveryResult(sources_used=["csv"])
     try:
@@ -3360,14 +3364,23 @@ def discover_from_csv(
         return result
 
     scope_source = import_source if import_source else None
-    if (scope_source or "").strip().lower() == "old_clients":
-        # Old-clients spreadsheet: only flag duplicates within that section.
+    if for_leads_table:
+        # Table spreadsheet preview: only flag dupes in this user's own rows
+        # (sales) or the whole section (admin / assigned_to_user_id=None).
+        existing_names, existing_domains = _existing_buyer_keys(
+            db,
+            **_import_scope_for_source(scope_source or "csv"),
+            assigned_to_user_id=assigned_to_user_id,
+        )
+    elif (scope_source or "").strip().lower() == "old_clients":
         existing_names, existing_domains = _existing_buyer_keys(
             db,
             **_import_scope_for_source("old_clients"),
+            assigned_to_user_id=assigned_to_user_id,
         )
     else:
-        # Discover / leads-table CSV: flag matches against old clients too.
+        # Discover panel: still flag against all buyers so we don't rediscover
+        # companies that already exist anywhere in the CRM.
         existing_names, existing_domains = _discovery_existing_keys(db)
     invalid_count = _flag_invalid_candidates(
         candidates, for_spreadsheet=for_leads_table
@@ -3416,9 +3429,12 @@ def import_candidates(
         "",
     )
     scope = _import_scope_for_source(batch_source)
+    # Sales imports: only collide with that user's own assigned rows.
+    # Admin imports (assigned_to_user_id=None): section-wide dedupe as before.
     by_name, by_domain, existing_scores = buyers_module.build_buyer_lookup_index(
         db,
         **scope,
+        assigned_to_user_id=assigned_to_user_id,
     )
     # Junk/social hosts must not make unrelated companies look like duplicates.
     by_domain = {
@@ -3432,10 +3448,15 @@ def import_candidates(
     # Cross-section block: leads-table imports must not recreate Old clients.
     # Clients/old_clients imports always land in that table — do not skip just
     # because Discover / Leads already has a similar company name.
+    # Sales users only check against their own clients, not admin/other users.
     other_names: set[str] = set()
     other_domains: set[str] = set()
     if (batch_source or "").strip().lower() != "old_clients":
-        other_names, other_domains = _existing_buyer_keys(db, source="old_clients")
+        other_names, other_domains = _existing_buyer_keys(
+            db,
+            source="old_clients",
+            assigned_to_user_id=assigned_to_user_id,
+        )
 
     def _import_data_score(raw: dict[str, Any]) -> int:
         points = 0
@@ -3622,11 +3643,19 @@ def import_candidates(
                         }
                     )
                 else:
-                    reason = (
-                        "Already in clients table"
-                        if (batch_source or "").strip().lower() == "old_clients"
-                        else "Already in leads"
-                    )
+                    is_clients = (batch_source or "").strip().lower() == "old_clients"
+                    if assigned_to_user_id is not None:
+                        reason = (
+                            "Already in your clients table"
+                            if is_clients
+                            else "Already in your leads"
+                        )
+                    else:
+                        reason = (
+                            "Already in clients table"
+                            if is_clients
+                            else "Already in leads"
+                        )
                     skipped.append({"company_name": name, "reason": reason})
                     _checkpoint_commit()
                     continue

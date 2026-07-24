@@ -286,7 +286,7 @@ export function LeadsTableCsvImport({
     const confirmed = window.confirm(
       `Import ${toImport.length} lead${toImport.length === 1 ? "" : "s"} as-is?\n\n` +
         `• Rows are saved with spreadsheet fields only (no website research or scoring).\n` +
-        `• Duplicate company names are skipped unless the existing record is sparse.\n` +
+        `• Duplicates are skipped only if that company is already in your own table.\n` +
         `• Use Research & score on the table later when you are ready.\n\n` +
         `Continue?`,
     );

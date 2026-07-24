@@ -174,8 +174,14 @@ def build_buyer_lookup_index(
     *,
     source: str | None = None,
     exclude_source: str | None = None,
+    assigned_to_user_id: int | None = None,
 ) -> tuple[dict[str, Buyer], dict[str, Buyer], dict[int, int]]:
-    """One scoped load for import dedupe: name→buyer, domain→buyer, id→data score."""
+    """One scoped load for import dedupe: name→buyer, domain→buyer, id→data score.
+
+    When ``assigned_to_user_id`` is set (sales-user import), only that user's
+    assigned rows count as duplicates — admin/other users' clients are ignored.
+    When None (admin import), dedupe is section-wide as before.
+    """
     from sqlalchemy import func as sa_func
 
     excluded = {
@@ -190,6 +196,8 @@ def build_buyer_lookup_index(
         query = query.filter(
             ~sa_func.lower(sa_func.coalesce(Buyer.source, "")).in_(excluded)
         )
+    if assigned_to_user_id is not None:
+        query = query.filter(Buyer.assigned_to_user_id == assigned_to_user_id)
 
     buyers = query.all()
     by_name: dict[str, Buyer] = {}
@@ -213,9 +221,13 @@ def find_buyer_by_name_or_domain(
     website_url: str | None = None,
     source: str | None = None,
     exclude_source: str | None = None,
+    assigned_to_user_id: int | None = None,
 ) -> Buyer | None:
     by_name, by_domain, _ = build_buyer_lookup_index(
-        db, source=source, exclude_source=exclude_source
+        db,
+        source=source,
+        exclude_source=exclude_source,
+        assigned_to_user_id=assigned_to_user_id,
     )
     name_key = normalize_buyer_key(company_name)
     domain = buyer_website_domain(website_url)
