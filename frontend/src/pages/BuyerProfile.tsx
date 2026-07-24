@@ -216,8 +216,9 @@ export function BuyerProfile({
           <p className="text-slate-400 text-sm">
             No research on file yet. Run <strong className="text-slate-300">Research</strong> to
             analyze this buyer&apos;s website and product fit, or{" "}
-            <strong className="text-slate-300">Research &amp; Score</strong> to classify HOT /
-            WARM / COLD.
+            <strong className="text-slate-300">Research &amp; Score</strong> to set company grade
+            AAA / AA / A (product range, market, and importer scale). Sales can edit the grade
+            manually after calling.
           </p>
         </section>
       )}

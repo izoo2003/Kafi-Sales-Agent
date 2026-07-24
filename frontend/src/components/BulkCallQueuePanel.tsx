@@ -1,5 +1,7 @@
+import { useEffect, useState } from "react";
 import { type CallQueueState, BATCH_SIZE, GAP_SECONDS } from "../hooks/useCallQueue";
 import { CALL_OUTCOMES } from "../utils/callOutcomes";
+import { CallingCard } from "./CallingCard";
 
 interface BulkCallQueuePanelProps {
   queue: CallQueueState;
@@ -72,6 +74,14 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
     queue: entries,
   } = queue;
 
+  const currentEntry = entries[currentIndex] ?? null;
+  const [dismissedLeadId, setDismissedLeadId] = useState<number | null>(null);
+
+  // Reset dismiss when the active company changes (skip / next).
+  useEffect(() => {
+    setDismissedLeadId(null);
+  }, [currentEntry?.leadId]);
+
   if (status === "idle") return null;
 
   const totalCalls = entries.length;
@@ -80,8 +90,11 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
   ).length;
   const progressPct = totalCalls > 0 ? Math.round((completedCount / totalCalls) * 100) : 0;
 
-  const currentEntry = entries[currentIndex] ?? null;
   const currentResult = results[currentIndex] ?? null;
+  const showCallingCard =
+    Boolean(currentEntry) &&
+    (status === "running" || status === "between" || status === "paused") &&
+    dismissedLeadId !== currentEntry?.leadId;
 
   // Batch slice for the list
   const batchStart = (batchNumber - 1) * BATCH_SIZE;
@@ -89,6 +102,21 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
   const batchEntries = entries.slice(batchStart, batchEnd);
 
   return (
+    <>
+    {showCallingCard && currentEntry && (
+      <div className="fixed bottom-4 right-4 z-[60] w-[min(100vw-2rem,22rem)] pointer-events-auto">
+        <CallingCard
+          leadId={currentEntry.leadId}
+          fallback={{
+            companyName: currentEntry.companyName,
+            contactName: currentEntry.contactName,
+            country: currentEntry.country,
+            phone: currentEntry.phone,
+          }}
+          onDismiss={() => setDismissedLeadId(currentEntry.leadId)}
+        />
+      </div>
+    )}
     <div className="rounded-xl border border-sky-800/50 bg-slate-900 overflow-hidden shadow-xl">
       {/* Header */}
       <div className="px-4 py-3 bg-sky-950/60 border-b border-sky-800/40 flex items-center justify-between gap-3">
@@ -345,5 +373,6 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
         </div>
       </div>
     </div>
+    </>
   );
 }

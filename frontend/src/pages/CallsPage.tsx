@@ -249,6 +249,8 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
         companyName: l.company_name ?? String(l.id),
         contactName: l.contact_name ?? null,
         phone: l.contact_phone ?? "",
+        country: l.country ?? null,
+        contactId: l.contact_id ?? undefined,
       }));
     if (!leads.length) return;
     clearSelection();

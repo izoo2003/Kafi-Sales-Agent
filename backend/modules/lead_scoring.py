@@ -1,13 +1,84 @@
+"""Company-grade scoring (AAA / AA / A) — replaces HOT / WARM / COLD.
+
+Grade reflects importer quality: product-range fit, market/country strength,
+and business scale — not post-call “how warm they felt.” Sales can override
+``buyers.company_grading`` manually after calling.
+"""
+
+from __future__ import annotations
+
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
-from db.models import Contact, ExportHistory, Interaction, LeadScore, LeadScoreLabel
+from db.models import Buyer, Contact, ExportHistory, Interaction, LeadScore, LeadScoreLabel
 from modules.research import BuyerProfile
+
+# Strong Kafi export markets — importers here score higher when other signals match.
+_PRIORITY_MARKETS = {
+    "united arab emirates",
+    "uae",
+    "saudi arabia",
+    "qatar",
+    "kuwait",
+    "bahrain",
+    "oman",
+    "united kingdom",
+    "germany",
+    "netherlands",
+    "france",
+    "belgium",
+    "united states",
+    "canada",
+    "australia",
+    "singapore",
+    "malaysia",
+    "south africa",
+}
+
+
+def _country_is_priority(country: str | None) -> bool:
+    if not country:
+        return False
+    from modules.countries import resolve_country_name
+
+    resolved = (resolve_country_name(country) or country).strip().lower()
+    return resolved in _PRIORITY_MARKETS or any(
+        key in resolved for key in ("emirates", "saudi", "kingdom")
+    )
+
+
+def _scale_signals(profile: BuyerProfile) -> list[str]:
+    blob = " ".join(
+        [
+            profile.website_summary or "",
+            profile.relationship_context or "",
+            " ".join(profile.signals or []),
+            " ".join(profile.matched_categories or []),
+        ]
+    ).lower()
+    hits: list[str] = []
+    checks = [
+        ("distributor", "distributor / wholesale language"),
+        ("import", "import language"),
+        ("export", "export / international language"),
+        ("warehouse", "warehouse / logistics language"),
+        ("supermarket", "retail / supermarket language"),
+        ("horeca", "HORECA / foodservice language"),
+        ("chain", "multi-outlet / chain language"),
+        ("bulk", "bulk / wholesale volume language"),
+        ("fcl", "container / FCL scale language"),
+        ("multi-country", "multi-country footprint"),
+        ("worldwide", "worldwide / global footprint"),
+    ]
+    for needle, label in checks:
+        if needle in blob:
+            hits.append(label)
+    return hits
 
 
 class LeadScoringModule:
-    """Rule-based lead scoring with optional LLM-enhanced reasoning."""
+    """Rule-based company grading (AAA / AA / A) with optional LLM reasoning."""
 
     def score(self, db: Session, profile: BuyerProfile) -> LeadScore:
         factors: list[dict[str, str | int | float]] = []
@@ -19,15 +90,137 @@ class LeadScoringModule:
             .all()
         )
         if exports:
-            points += 40
-            factors.append({"factor": "export_history", "weight": 40, "note": f"{len(exports)} orders"})
+            points += 35
+            factors.append(
+                {
+                    "factor": "export_history",
+                    "weight": 35,
+                    "note": f"{len(exports)} past orders with Kafi — proven importer",
+                }
+            )
             total_value = sum(
                 float(e.quantity or 0) * float(e.unit_price or 0) for e in exports
             )
             if total_value > 100_000:
-                points += 15
-                factors.append({"factor": "order_value", "weight": 15, "note": "High lifetime value"})
+                points += 20
+                factors.append(
+                    {
+                        "factor": "order_value",
+                        "weight": 20,
+                        "note": "High lifetime value — large-scale account",
+                    }
+                )
+            elif total_value > 25_000:
+                points += 10
+                factors.append(
+                    {
+                        "factor": "order_value",
+                        "weight": 10,
+                        "note": "Solid lifetime value",
+                    }
+                )
 
+        if profile.raw.get("product_fit_score"):
+            fit_pts = min(int(profile.raw["product_fit_score"]), 30)
+            if fit_pts:
+                points += fit_pts
+                factors.append(
+                    {
+                        "factor": "product_range_fit",
+                        "weight": fit_pts,
+                        "note": (
+                            "Product-range match: "
+                            + (", ".join(profile.matched_categories[:5]) or "catalog keywords")
+                        ),
+                    }
+                )
+
+        for signal in profile.signals:
+            if signal.startswith("Product fit:"):
+                points += 6
+                factors.append({"factor": "product_fit", "weight": 6, "note": signal})
+            if "International/export" in signal:
+                points += 5
+                factors.append({"factor": "signal", "weight": 5, "note": signal})
+
+        scale_hits = _scale_signals(profile)
+        if scale_hits:
+            scale_pts = min(8 + len(scale_hits) * 4, 28)
+            points += scale_pts
+            factors.append(
+                {
+                    "factor": "company_scale",
+                    "weight": scale_pts,
+                    "note": "Scale signals: " + "; ".join(scale_hits[:5]),
+                }
+            )
+
+        if _country_is_priority(profile.country):
+            points += 12
+            factors.append(
+                {
+                    "factor": "market_quality",
+                    "weight": 12,
+                    "note": f"Priority / strong export market ({profile.country})",
+                }
+            )
+        elif profile.country:
+            points += 3
+            factors.append(
+                {
+                    "factor": "market_quality",
+                    "weight": 3,
+                    "note": f"Market on file ({profile.country})",
+                }
+            )
+
+        role = profile.market_role or profile.raw.get("market_role") or "unknown"
+        producer_tier = profile.producer_tier or profile.raw.get("producer_tier")
+        conversion_pct = profile.producer_conversion_pct or profile.raw.get(
+            "producer_conversion_pct"
+        )
+
+        if role == "consumer":
+            points += 15
+            factors.append(
+                {
+                    "factor": "market_role",
+                    "weight": 15,
+                    "note": "Importer / buyer role (consumer)",
+                }
+            )
+        elif role == "producer":
+            if producer_tier == "weak" and conversion_pct is not None and conversion_pct >= 45:
+                points -= 8
+                factors.append(
+                    {
+                        "factor": "weak_producer",
+                        "weight": -8,
+                        "note": (
+                            f"Narrow producer with {conversion_pct:.0f}% white-label potential"
+                        ),
+                    }
+                )
+            else:
+                points -= 30
+                factors.append(
+                    {
+                        "factor": "market_role",
+                        "weight": -30,
+                        "note": "Strong producer/competitor — weak importer grade",
+                    }
+                )
+        elif role == "hybrid":
+            points -= 8
+            factors.append(
+                {
+                    "factor": "market_role",
+                    "weight": -8,
+                    "note": "Mixed producer/buyer — verify scale before treating as AAA",
+                }
+            )
+
+        # Light engagement bonus (does not dominate grade — grade is company quality)
         cutoff = datetime.now(timezone.utc) - timedelta(days=90)
         recent_interactions = (
             db.query(Interaction)
@@ -37,157 +230,50 @@ class LeadScoringModule:
             .count()
         )
         if recent_interactions:
-            points += min(recent_interactions * 10, 30)
+            eng = min(recent_interactions * 4, 12)
+            points += eng
             factors.append(
                 {
                     "factor": "recent_engagement",
-                    "weight": min(recent_interactions * 10, 30),
+                    "weight": eng,
                     "note": f"{recent_interactions} interactions in 90 days",
                 }
             )
 
-        for signal in profile.signals:
-            if "Recent engagement" in signal:
-                points += 10
-                factors.append({"factor": "signal", "weight": 10, "note": signal})
-            if "International/export" in signal:
-                points += 5
-                factors.append({"factor": "signal", "weight": 5, "note": signal})
-            if signal.startswith("Product fit:"):
-                points += 8
-                factors.append({"factor": "product_fit", "weight": 8, "note": signal})
-
-        if profile.raw.get("product_fit_score"):
-            fit_pts = min(int(profile.raw["product_fit_score"]), 25)
-            if fit_pts:
-                points += fit_pts
-                factors.append(
-                    {
-                        "factor": "kafi_catalog_match",
-                        "weight": fit_pts,
-                        "note": f"Matched Kafi categories: {', '.join(profile.matched_categories[:5]) or 'none'}",
-                    }
-                )
-
-        role = profile.market_role or profile.raw.get("market_role") or "unknown"
-        producer_tier = profile.producer_tier or profile.raw.get("producer_tier")
-        conversion_pct = profile.producer_conversion_pct or profile.raw.get("producer_conversion_pct")
-
-        if role == "consumer":
-            points += 15
-            factors.append(
-                {
-                    "factor": "market_role",
-                    "weight": 15,
-                    "note": "Classified as buyer/importer (consumer)",
-                }
-            )
-        elif role == "producer":
-            if producer_tier == "weak" and conversion_pct is not None:
-                if conversion_pct >= 55:
-                    points -= 5
-                    factors.append(
-                        {
-                            "factor": "weak_producer_conversion",
-                            "weight": -5,
-                            "note": f"Weak producer with {conversion_pct:.0f}% white-label conversion potential",
-                        }
-                    )
-                elif conversion_pct >= 40:
-                    points -= 15
-                    factors.append(
-                        {
-                            "factor": "weak_producer_conversion",
-                            "weight": -15,
-                            "note": f"Weak producer — moderate conversion potential ({conversion_pct:.0f}%)",
-                        }
-                    )
-                else:
-                    points -= 25
-                    factors.append(
-                        {
-                            "factor": "weak_producer_conversion",
-                            "weight": -25,
-                            "note": f"Weak producer — low conversion potential ({conversion_pct:.0f}%)",
-                        }
-                    )
-            else:
-                points -= 35
-                factors.append(
-                    {
-                        "factor": "market_role",
-                        "weight": -35,
-                        "note": "Strong producer/competitor — poor outreach target",
-                    }
-                )
-        elif role == "hybrid":
-            if producer_tier == "weak" and conversion_pct is not None and conversion_pct >= 50:
-                points -= 5
-                factors.append(
-                    {
-                        "factor": "hybrid_weak_producer",
-                        "weight": -5,
-                        "note": f"Hybrid with weak-producer profile ({conversion_pct:.0f}% conversion potential)",
-                    }
-                )
-            else:
-                points -= 10
-                factors.append(
-                    {
-                        "factor": "market_role",
-                        "weight": -10,
-                        "note": "Mixed producer and buyer signals",
-                    }
-                )
-
         points = max(points, 0)
 
-        role_note = ""
-        if role == "producer":
-            if producer_tier == "weak" and conversion_pct is not None:
-                role_note = (
-                    f" Weak producer — {conversion_pct:.0f}% chance to source additional Kafi ranges "
-                    "(white-label / resale)."
+        if points >= 55:
+            label = LeadScoreLabel.AAA
+            reasoning = (
+                "AAA company grade: strong product-range fit and/or large-scale importer "
+                f"signals in a solid market"
+                + (
+                    f" ({', '.join(profile.matched_categories[:3])})"
+                    if profile.matched_categories
+                    else ""
                 )
-            else:
-                role_note = " Strong producer/competitor — not an ideal buyer."
-        elif role == "hybrid":
-            role_note = " Mixed producer/buyer role — verify before outreach."
-
-        if points >= 50:
-            label = LeadScoreLabel.HOT
-            if profile.matched_categories:
-                reasoning = (
-                    f"Strong fit: engagement/history plus Kafi product match "
-                    f"({', '.join(profile.matched_categories[:3])}).{role_note}"
-                )
-            else:
-                reasoning = f"Strong fit: recent engagement and/or meaningful order history.{role_note}"
-        elif points >= 20:
-            label = LeadScoreLabel.WARM
-            if profile.matched_categories:
-                reasoning = (
-                    f"Some fit for Kafi products ({', '.join(profile.matched_categories[:3])}); "
-                    f"nurture recommended.{role_note}"
-                )
-            else:
-                reasoning = f"Some engagement or fit signals; nurture recommended.{role_note}"
+                + "."
+            )
+        elif points >= 25:
+            label = LeadScoreLabel.AA
+            reasoning = (
+                "AA company grade: moderate product-range or market fit — solid mid-tier "
+                "account; sales can upgrade to AAA after calls if scale proves out."
+            )
         else:
-            label = LeadScoreLabel.COLD
-            if role == "producer":
-                if producer_tier == "weak" and conversion_pct is not None and conversion_pct >= 45:
-                    reasoning = (
-                        f"Narrow producer — cross-sell opportunity ({conversion_pct:.0f}% estimated "
-                        "conversion to source additional Kafi product lines)."
-                    )
-                else:
-                    reasoning = (
-                        "Classified as strong producer/competitor — weak buyer fit for Kafi export sales."
-                    )
+            label = LeadScoreLabel.A
+            if role == "producer" and not (
+                producer_tier == "weak" and conversion_pct is not None and conversion_pct >= 45
+            ):
+                reasoning = (
+                    "A company grade: strong producer/competitor profile — poor importer fit."
+                )
             else:
-                reasoning = f"Limited engagement and weak Kafi product fit.{role_note}"
+                reasoning = (
+                    "A company grade: limited product-range fit, weak scale signals, or "
+                    "low-priority market. Sales can revise after calling."
+                )
 
-        # Enhance reasoning with LLM if available
         reasoning = self._maybe_llm_reasoning(
             db=db,
             profile=profile,
@@ -196,24 +282,33 @@ class LeadScoringModule:
             score_factors=factors,
         )
         if isinstance(reasoning, dict):
-            label = LeadScoreLabel(reasoning["score"])
-            factors = reasoning.get("key_factors", factors)
-            reasoning = reasoning["reasoning"]
+            raw_score = str(reasoning.get("score") or label.value).upper().replace(" ", "")
+            # Accept legacy LLM slips
+            legacy = {"HOT": "AAA", "WARM": "AA", "COLD": "A"}
+            raw_score = legacy.get(raw_score, raw_score)
+            try:
+                label = LeadScoreLabel(raw_score)
+            except ValueError:
+                pass
+            factors = reasoning.get("key_factors", factors) or factors
+            reasoning = reasoning.get("reasoning") or reasoning
 
         record = LeadScore(
             buyer_id=profile.buyer_id,
             score=label,
-            reasoning=reasoning,
+            reasoning=str(reasoning),
             score_factors={"points": points, "factors": factors},
         )
         db.add(record)
+
+        # Canonical editable grade on the buyer row (sales can override after calls)
+        buyer = db.get(Buyer, profile.buyer_id)
+        if buyer is not None:
+            buyer.company_grading = label.value
+
         db.commit()
         db.refresh(record)
         return record
-
-    # ------------------------------------------------------------------
-    # LLM enrichment (optional)
-    # ------------------------------------------------------------------
 
     def _maybe_llm_reasoning(
         self,
@@ -224,12 +319,11 @@ class LeadScoringModule:
         fallback_reasoning: str,
         score_factors: list,
     ) -> dict | str:
-        """Return LLM-enriched {score, reasoning, key_factors} or the fallback string."""
         from modules.llm_client import llm_client
+
         if not llm_client.enabled:
             return fallback_reasoning
 
-        # Build compact interaction + export summaries for the prompt
         cutoff = datetime.now(timezone.utc) - timedelta(days=90)
         interactions_rows = (
             db.query(Interaction)
@@ -255,7 +349,7 @@ class LeadScoringModule:
             f"Website summary: {profile.website_summary or 'n/a'}\n"
             f"Matched categories: {', '.join(profile.matched_categories) or 'none'}\n"
             f"Product fit score: {profile.product_fit_score}\n"
-            f"Rule-based label: {fallback_label} — {fallback_reasoning}\n"
+            f"Rule-based grade: {fallback_label} — {fallback_reasoning}\n"
             f"Score factors: {score_factors}"
         )
         interactions_str = "\n".join(

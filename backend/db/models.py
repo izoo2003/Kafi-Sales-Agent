@@ -49,9 +49,16 @@ class InteractionStatus(str, enum.Enum):
 
 
 class LeadScoreLabel(str, enum.Enum):
-    HOT = "HOT"
-    WARM = "WARM"
-    COLD = "COLD"
+    """Company grade from scoring (replaces HOT/WARM/COLD).
+
+    AAA = elite / large-scale importer (was HOT)
+    AA  = solid mid-tier fit (was WARM)
+    A   = weak fit / low priority (was COLD)
+    """
+
+    AAA = "AAA"
+    AA = "AA"
+    A = "A"
 
 
 class QuotationStatus(str, enum.Enum):

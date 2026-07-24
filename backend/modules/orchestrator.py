@@ -48,10 +48,10 @@ class Orchestrator:
             "enrichment": enrichment,
             "next_actions": [],
         }
-        if score.score == LeadScoreLabel.HOT:
+        if score.score == LeadScoreLabel.AAA:
             result["next_actions"].append("notify_sales_rep")
             result["next_actions"].append("suggest_quotation")
-        elif score.score == LeadScoreLabel.WARM:
+        elif score.score == LeadScoreLabel.AA:
             result["next_actions"].append("queue_nurture_sequence")
             result["next_actions"].append("suggest_quotation")
         else:

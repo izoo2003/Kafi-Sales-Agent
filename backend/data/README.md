@@ -35,5 +35,5 @@ python scripts/import_essence_catalog.py "path/to/ESSENCE ORDER SHEET.xlsx"
 
 - `modules/product_catalog.py` — keyword matching for lead research
 - `modules/research.py` — product fit on website analysis
-- `modules/lead_scoring.py` — HOT/WARM/COLD boost from catalog match
+- `modules/lead_scoring.py` — AAA/AA/A company grade from catalog match + market/scale
 - `modules/commerce.py` — cross-sell recommendations

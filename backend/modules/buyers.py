@@ -107,9 +107,9 @@ def buyer_data_score_from_parts(
         points += 5
     if latest_score:
         points += 5
-        if latest_score.score == LeadScoreLabel.HOT:
+        if latest_score.score == LeadScoreLabel.AAA:
             points += 10
-        elif latest_score.score == LeadScoreLabel.WARM:
+        elif latest_score.score == LeadScoreLabel.AA:
             points += 5
     return points
 

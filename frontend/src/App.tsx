@@ -27,6 +27,7 @@ import { LoginPage } from "./pages/LoginPage";
 import { UsersPage } from "./pages/UsersPage";
 import { TwilioVoiceProvider, useTwilioVoiceOptional } from "./hooks/useTwilioVoice";
 import { PostCallRemarksModal } from "./components/PostCallRemarksModal";
+import { CallingCardOverlay } from "./components/CallingCardOverlay";
 import {
   alertInterestedFollowUp,
   alertNewInboxMessage,
@@ -522,6 +523,7 @@ function DashboardApp() {
           handleCallFollowUpSaved(outcome);
         }}
       />
+      <CallingCardOverlay />
       <div className="min-h-screen flex">
         <InboxAlertToasts
           onOpenInbox={() => {

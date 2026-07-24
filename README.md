@@ -25,7 +25,7 @@ An AI-powered B2B sales co-pilot built for Kafi Commodities (Pvt) Ltd. This plat
 
 * **Smart Parsing:** Ingests raw buyer data and extracts key business signals.
 * **Catalog Matching:** Cross-references prospect needs with Kafi’s product categories.
-* **Transparent Scoring:** Classifies leads as HOT, WARM, or COLD with detailed, AI-generated reasoning to guide sales prioritization.
+* **Company grading:** Research & Score assigns AAA / AA / A from product-range fit, market quality, and importer scale. Sales can edit grades manually after calls.
 
 ### 2. Unified Mailbox with AI Assistant
 

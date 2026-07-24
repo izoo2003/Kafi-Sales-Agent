@@ -616,7 +616,7 @@ class CommerceModule:
 
     ) -> list[Quotation]:
 
-        """Create one draft quotation with multiple product lines for HOT/WARM leads."""
+        """Create one draft quotation with multiple product lines for AAA/AA graded companies."""
 
         from modules.leads import get_latest_score
 
@@ -628,9 +628,9 @@ class CommerceModule:
 
             raise ValueError("Lead must be scored before creating quotations")
 
-        if score_record.score not in (LeadScoreLabel.HOT, LeadScoreLabel.WARM):
+        if score_record.score not in (LeadScoreLabel.AAA, LeadScoreLabel.AA):
 
-            raise ValueError("Quotations are only auto-created for HOT or WARM leads")
+            raise ValueError("Quotations are only auto-created for AAA or AA graded companies")
 
 
 

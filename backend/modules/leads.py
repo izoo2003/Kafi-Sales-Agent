@@ -21,7 +21,7 @@ from modules.research import BuyerProfile, ResearchModule
 _orchestrator = Orchestrator()
 _research = ResearchModule()
 
-_SCORE_ORDER = {"HOT": 0, "WARM": 1, "COLD": 2}
+_SCORE_ORDER = {"AAA": 0, "AA": 1, "A": 2}
 _SORT_FIELDS = {
     "company_name",
     "country",
@@ -151,7 +151,7 @@ def list_buyers_with_scores(
     page_size: int = 20,
     exclude_source: str | None = "old_clients",
 ) -> dict[str, object]:
-    """Return buyers enriched with latest HOT/WARM/COLD score (paginated).
+    """Return buyers enriched with latest AAA/AA/A company grade (paginated).
 
     Discover Leads excludes old_clients by default — those belong only in the
     Old clients table, not in new-discovery surfaces.
@@ -292,7 +292,7 @@ def get_latest_score(db: Session, buyer_id: int) -> LeadScore | None:
 
 
 def list_quotation_eligible_leads(db: Session) -> list[dict]:
-    """HOT/WARM buyers with a real contact email (required for outreach)."""
+    """AAA/AA graded companies with a real contact email (required for outreach)."""
     from db.models import LeadScoreLabel, MarketRole, ProducerTier
     from modules import buyers as buyers_module
 
@@ -304,7 +304,7 @@ def list_quotation_eligible_leads(db: Session) -> list[dict]:
             if buyer.producer_conversion_pct is None or float(buyer.producer_conversion_pct) < 40:
                 continue
         score = get_latest_score(db, buyer.id)
-        if not score or score.score not in (LeadScoreLabel.HOT, LeadScoreLabel.WARM):
+        if not score or score.score not in (LeadScoreLabel.AAA, LeadScoreLabel.AA):
             continue
 
         contact = buyers_module.primary_contact_with_email(db, buyer.id)
@@ -398,7 +398,7 @@ def _compute_lead_table_filters(
         "countries": [country["name"] for country in list_countries()],
         "industries": _distinct_labels(Buyer.industry, scoped=True),
         "sources": _distinct_labels(Buyer.source, scoped=False),
-        "scores": ["HOT", "WARM", "COLD", "Unscored"],
+        "scores": ["AAA", "AA", "A", "Unscored"],
         "market_roles": ["consumer", "producer", "hybrid", "unknown"],
         "company_gradings": _distinct_labels(Buyer.company_grading, scoped=True),
         "products": _product_category_labels(),
@@ -645,7 +645,7 @@ def _filtered_lead_table_rows(
     Returns (rows_or_id_dicts, section_total, filtered_count).
     When page/page_size are set, only that page is hydrated (unless ids_only).
     """
-    from sqlalchemy import or_
+    from sqlalchemy import and_, or_
 
     buyer_query = _apply_lead_table_scope(
         db.query(Buyer),
@@ -739,6 +739,9 @@ def _filtered_lead_table_rows(
         )
 
     if score:
+        grade = score.strip().upper()
+        legacy = {"HOT": "AAA", "WARM": "AA", "COLD": "A"}
+        grade = legacy.get(grade, grade)
         ranked_score_ids = (
             db.query(
                 LeadScore.buyer_id.label("buyer_id"),
@@ -754,19 +757,36 @@ def _filtered_lead_table_rows(
             .filter(ranked_score_ids.c.rn == 1)
             .subquery()
         )
-        if score == "Unscored":
+        if grade == "UNSCORED":
             buyer_query = buyer_query.outerjoin(
                 latest_scores, Buyer.id == latest_scores.c.buyer_id
-            ).filter(latest_scores.c.buyer_id.is_(None))
+            ).filter(
+                sa_func.nullif(sa_func.btrim(sa_func.coalesce(Buyer.company_grading, "")), "").is_(
+                    None
+                ),
+                latest_scores.c.buyer_id.is_(None),
+            )
         else:
             try:
-                score_label = LeadScoreLabel(score)
+                score_label = LeadScoreLabel(grade)
             except ValueError:
                 score_label = None
             if score_label is not None:
-                buyer_query = buyer_query.join(
+                # Prefer editable company_grading; fall back to latest scored grade
+                buyer_query = buyer_query.outerjoin(
                     latest_scores, Buyer.id == latest_scores.c.buyer_id
-                ).filter(latest_scores.c.score == score_label)
+                ).filter(
+                    or_(
+                        sa_func.upper(sa_func.btrim(sa_func.coalesce(Buyer.company_grading, "")))
+                        == score_label.value,
+                        and_(
+                            sa_func.nullif(
+                                sa_func.btrim(sa_func.coalesce(Buyer.company_grading, "")), ""
+                            ).is_(None),
+                            latest_scores.c.score == score_label,
+                        ),
+                    )
+                )
 
     sort_field = sort_by if sort_by in _SORT_FIELDS else "created_at"
     reverse = sort_dir.lower() != "asc"

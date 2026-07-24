@@ -1689,14 +1689,14 @@ export function LeadsTablePage({
               {bulkResults.filter((r) => r.status === "success").length} succeeded,{" "}
               {bulkResults.filter((r) => r.status === "failed").length} failed
               {(() => {
-                const hot = bulkResults.filter((r) => r.score === "HOT").length;
-                const warm = bulkResults.filter((r) => r.score === "WARM").length;
-                const cold = bulkResults.filter((r) => r.score === "COLD").length;
-                if (hot + warm + cold === 0) return null;
+                const aaa = bulkResults.filter((r) => r.score === "AAA" || r.score === "HOT").length;
+                const aa = bulkResults.filter((r) => r.score === "AA" || r.score === "WARM").length;
+                const a = bulkResults.filter((r) => r.score === "A" || r.score === "COLD").length;
+                if (aaa + aa + a === 0) return null;
                 return (
                   <span className="text-slate-400">
                     {" "}
-                    · {hot} HOT, {warm} WARM, {cold} COLD
+                    · {aaa} AAA, {aa} AA, {a} A
                   </span>
                 );
               })()}
@@ -1762,7 +1762,7 @@ export function LeadsTablePage({
                   <option value="oldest">Oldest first</option>
                   <option value="company_name">Company name</option>
                   <option value="country">Country</option>
-                  <option value="latest_score">Score</option>
+                  <option value="latest_score">Grade</option>
                 </select>
               </label>
 
@@ -1911,20 +1911,20 @@ export function LeadsTablePage({
                   <option value="oldest">Oldest first</option>
                   <option value="company_name">Company name</option>
                   <option value="country">Country</option>
-                  <option value="latest_score">Score</option>
+                  <option value="latest_score">Grade</option>
                   <option value="market_role">Market role</option>
                 </select>
               </label>
 
               <label className="block text-xs text-slate-400">
-                Score
+                Grade
                 <select
                   value={score}
                   onChange={(e) => setScore(e.target.value)}
                   className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
                 >
-                  <option value="">All scores</option>
-                  {(filters?.scores ?? ["HOT", "WARM", "COLD", "Unscored"]).map((option) => (
+                  <option value="">All grades</option>
+                  {(filters?.scores ?? ["AAA", "AA", "A", "Unscored"]).map((option) => (
                     <option key={option} value={option}>
                       {option}
                     </option>
@@ -2112,7 +2112,7 @@ export function LeadsTablePage({
                   <th className={`${TH} min-w-[200px]`}>Address</th>
                   <th className={`${TH} min-w-[180px]`}>Remarks</th>
                   <th className={`${TH} min-w-[150px]`}>Assigned To</th>
-                  <th className={`${TH} min-w-[90px]`}>Score</th>
+                  <th className={`${TH} min-w-[90px]`}>Grade</th>
                   <th className={`${TH} min-w-[160px]`}>Website</th>
                   <th className={`${TH} min-w-[120px]`}>Socials</th>
                   {editMode && <th className={`${TH} min-w-[120px]`}>Edit</th>}
@@ -2286,7 +2286,7 @@ export function LeadsTablePage({
                         {renderAssignedToCell(row, draft)}
                       </td>
                       <td className={TD}>
-                        <ScoreBadge score={scoreLabel(row.latest_score)} />
+                        <ScoreBadge score={scoreLabel(row.company_grading || row.latest_score)} />
                       </td>
                       <td className={TD_MUTED}>
                         {editMode ? (
@@ -2410,7 +2410,7 @@ export function LeadsTablePage({
                 </th>
                 <th className={`${TH} min-w-[88px]`}>
                   <button type="button" onClick={() => toggleSort("latest_score")} className="hover:text-slate-300">
-                    Score{sortIndicator("latest_score")}
+                    Grade{sortIndicator("latest_score")}
                   </button>
                 </th>
                 <th className={`${TH} min-w-[140px]`}>
@@ -2485,7 +2485,26 @@ export function LeadsTablePage({
                       {formatAddedAt(row.created_at)}
                     </td>
                     <td className={TD}>
-                      <ScoreBadge score={scoreLabel(row.latest_score)} />
+                      {editMode ? (
+                        <div onClick={(e) => e.stopPropagation()}>
+                          <select
+                            value={draft.company_grading ?? row.company_grading ?? row.latest_score ?? ""}
+                            onChange={(e) =>
+                              updateDraft(row.id, "company_grading", e.target.value || null)
+                            }
+                            className={EDIT_INPUT}
+                          >
+                            <option value="">Ungraded</option>
+                            <option value="AAA">AAA</option>
+                            <option value="AA">AA</option>
+                            <option value="A">A</option>
+                          </select>
+                        </div>
+                      ) : (
+                        <ScoreBadge
+                          score={scoreLabel(row.company_grading || row.latest_score)}
+                        />
+                      )}
                     </td>
                     <td className={TD}>
                       <div className="flex flex-col gap-1">

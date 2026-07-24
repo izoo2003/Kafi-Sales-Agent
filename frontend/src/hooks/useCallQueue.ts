@@ -13,6 +13,7 @@ export interface QueueEntry {
   companyName: string;
   contactName?: string | null;
   phone: string;
+  country?: string | null;
 }
 
 export interface QueueResult {

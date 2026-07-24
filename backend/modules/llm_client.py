@@ -357,8 +357,10 @@ class LLMClient:
         )
         try:
             result = self.generate_json(prompt)
-            score = str(result.get("score", fallback_label)).upper()
-            if score not in ("HOT", "WARM", "COLD"):
+            score = str(result.get("score", fallback_label)).upper().replace(" ", "")
+            legacy = {"HOT": "AAA", "WARM": "AA", "COLD": "A"}
+            score = legacy.get(score, score)
+            if score not in ("AAA", "AA", "A"):
                 score = fallback_label
             return {
                 "score": score,
