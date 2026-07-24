@@ -305,7 +305,16 @@ class LeadScore(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     buyer_id: Mapped[int] = mapped_column(ForeignKey("buyers.id"), nullable=False, index=True)
-    score: Mapped[LeadScoreLabel] = mapped_column(Enum(LeadScoreLabel), nullable=False)
+    score: Mapped[LeadScoreLabel] = mapped_column(
+        Enum(
+            LeadScoreLabel,
+            name="leadscorelabel",
+            native_enum=False,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+            validate_strings=True,
+        ),
+        nullable=False,
+    )
     reasoning: Mapped[str] = mapped_column(Text, nullable=False)
     score_factors: Mapped[Optional[dict]] = mapped_column(JSONB)
     scored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
