@@ -129,7 +129,22 @@ export function BuyerProfile({
           </button>
           <div className="flex items-center gap-3 flex-wrap">
             <h2 className="text-xl font-semibold">{lead.company_name}</h2>
-            {score && <ScoreBadge score={score.score} />}
+            {lead.company_grading && (
+              <span
+                className="inline-flex items-center rounded-full border border-slate-600 bg-slate-900 px-2.5 py-0.5 text-xs text-slate-300"
+                title="Grade from Excel / spreadsheet import"
+              >
+                Excel: {lead.company_grading}
+              </span>
+            )}
+            {score && (
+              <span className="inline-flex items-center gap-1.5">
+                <ScoreBadge score={score.score} />
+                <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                  AI grading
+                </span>
+              </span>
+            )}
             <MarketRoleBadge role={profile?.market_role ?? lead.market_role ?? "unknown"} />
             {(profile?.producer_tier ?? lead.producer_tier) && (
               <ProducerTierBadge
@@ -203,10 +218,10 @@ export function BuyerProfile({
 
       {score && (
         <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-          <h3 className="text-sm font-medium text-slate-300 mb-2">Lead score</h3>
+          <h3 className="text-sm font-medium text-slate-300 mb-2">AI company grading</h3>
           <p className="text-sm text-slate-400">{score.reasoning}</p>
           <p className="text-xs text-slate-500 mt-2">
-            Scored {new Date(score.scored_at).toLocaleString()}
+            Scored {new Date(score.scored_at).toLocaleString()} · Independent of Excel grading
           </p>
         </section>
       )}
@@ -216,9 +231,8 @@ export function BuyerProfile({
           <p className="text-slate-400 text-sm">
             No research on file yet. Run <strong className="text-slate-300">Research</strong> to
             analyze this buyer&apos;s website and product fit, or{" "}
-            <strong className="text-slate-300">Research &amp; Score</strong> to set company grade
-            AAA / AA / A (product range, market, and importer scale). Sales can edit the grade
-            manually after calling.
+            <strong className="text-slate-300">Research &amp; Score</strong> for an independent AI
+            company grade (AAA / AA / A). It will not copy the Excel grading.
           </p>
         </section>
       )}

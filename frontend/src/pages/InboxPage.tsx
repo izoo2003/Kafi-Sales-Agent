@@ -7,8 +7,15 @@ import {
   type InboxStatus,
   type InboxThreadDetail,
   type InboxThreadSummary,
+  type MailComposeDraft,
+  type MailLabel,
+  type MailLabelMessageKey,
 } from "../api/client";
-import type { MailSection } from "../components/AppSidebar";
+import {
+  isMailLabelSection,
+  mailLabelIdFromSection,
+  type MailSection,
+} from "../components/AppSidebar";
 import { ComposeMailModal } from "../components/ComposeMailModal";
 import { alertNewInboxMessage, unlockNotificationAudio } from "../utils/notify";
 
@@ -22,6 +29,7 @@ interface InboxPageProps {
     trash: number;
     archive: number;
   }) => void;
+  onMailExtrasChange?: () => void;
 }
 
 function formatDate(value: string | null | undefined): string {
@@ -74,10 +82,15 @@ function buildQuotedReply(message: InboxMessageDetail): string {
   return `\n\nOn ${when}, ${who} wrote:\n${quoted}`;
 }
 
-function sectionTitle(section: MailSection): string {
+function sectionTitle(section: MailSection, labels: MailLabel[] = []): string {
   if (section === "sent") return "Sent";
   if (section === "trash") return "Trash";
   if (section === "archive") return "Archive";
+  if (section === "drafts") return "Drafts";
+  if (isMailLabelSection(section)) {
+    const id = mailLabelIdFromSection(section);
+    return labels.find((l) => l.id === id)?.name || "Label";
+  }
   return "Inbox";
 }
 
@@ -86,6 +99,8 @@ function sectionDescription(section: MailSection, email?: string | null): string
   if (section === "sent") return `${mailbox} · Messages you sent`;
   if (section === "trash") return `${mailbox} · Deleted messages`;
   if (section === "archive") return `${mailbox} · Archived messages`;
+  if (section === "drafts") return `${mailbox} · Unsent compose drafts`;
+  if (isMailLabelSection(section)) return `${mailbox} · Labeled messages`;
   return mailbox;
 }
 
@@ -93,7 +108,88 @@ function emptyListMessage(section: MailSection): string {
   if (section === "sent") return "No sent messages.";
   if (section === "trash") return "Trash is empty.";
   if (section === "archive") return "No archived messages.";
+  if (section === "drafts") return "No drafts.";
+  if (isMailLabelSection(section)) return "No messages in this label.";
   return "No conversations.";
+}
+
+function normSubject(subject: string | null | undefined): string {
+  if (!subject) return "";
+  return subject
+    .replace(/^(re|fw|fwd)\s*:\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function messageMatchesLabelKeys(
+  message: InboxMessageSummary,
+  keys: MailLabelMessageKey[],
+): boolean {
+  const uid = String(message.uid);
+  const folder = (message.folder || "inbox").toLowerCase();
+  const subjectKey = normSubject(message.subject);
+  const from = (message.from_email || "").trim().toLowerCase();
+  for (const key of keys) {
+    if (String(key.message_uid) === uid && key.folder.toLowerCase() === folder) {
+      return true;
+    }
+    if (key.subject_key && subjectKey && key.subject_key === subjectKey) return true;
+    if (key.from_email && from && key.from_email.toLowerCase() === from) return true;
+  }
+  return false;
+}
+
+function normalizeMatchQuery(raw: string | null | undefined): string {
+  if (!raw) return "";
+  let text = raw.trim().toLowerCase();
+  if (!text) return "";
+  text = text.replace(/^https?:\/\//i, "");
+  text = text.replace(/^www\./i, "");
+  text = text.split("/")[0]?.split("?")[0] || text;
+  return text.trim();
+}
+
+function emailMatchesQuery(email: string | null | undefined, query: string): boolean {
+  if (!query || !email) return false;
+  const value = email.trim().toLowerCase();
+  const domain = value.includes("@") ? value.split("@").pop() || "" : value;
+  if (!domain) return false;
+  if (domain === query) return true;
+  if (domain.endsWith(`.${query}`)) return true;
+  if (domain.includes(query)) return true;
+  if (value.includes(query)) return true;
+  return false;
+}
+
+function textMatchesQuery(text: string | null | undefined, query: string): boolean {
+  if (!query || !text) return false;
+  return text.toLowerCase().includes(query);
+}
+
+function messageMatchesDomainLabel(
+  message: Pick<InboxMessageSummary, "from_email" | "to" | "subject" | "preview">,
+  label: MailLabel,
+): boolean {
+  const query = normalizeMatchQuery(label.match_query);
+  if (!query) return false;
+  if (emailMatchesQuery(message.from_email, query)) return true;
+  if ((message.to || []).some((addr) => emailMatchesQuery(addr, query))) return true;
+  if (textMatchesQuery(message.subject, query)) return true;
+  if (textMatchesQuery(message.preview, query)) return true;
+  return false;
+}
+
+function threadMatchesAnyDomainLabel(thread: InboxThreadSummary, labels: MailLabel[]): boolean {
+  return labels.some((label) => {
+    const query = normalizeMatchQuery(label.match_query);
+    if (!query) return false;
+    if (emailMatchesQuery(thread.latest_from_email, query)) return true;
+    if ((thread.participants || []).some((p) => emailMatchesQuery(p, query))) return true;
+    if (textMatchesQuery(thread.subject, query)) return true;
+    if (textMatchesQuery(thread.latest_preview, query)) return true;
+    return false;
+  });
 }
 
 function messageListLabel(message: InboxMessageSummary, section: MailSection): string {
@@ -174,6 +270,7 @@ export function InboxPage({
   onError,
   onUnreadChange,
   onFolderCountsChange,
+  onMailExtrasChange,
 }: InboxPageProps) {
   const [status, setStatus] = useState<InboxStatus | null>(null);
   const [threads, setThreads] = useState<InboxThreadSummary[]>([]);
@@ -198,18 +295,38 @@ export function InboxPage({
   const [aiAnalysis, setAiAnalysis] = useState<InboxAnalyzeResponse | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [showCompose, setShowCompose] = useState(false);
+  const [composeDraft, setComposeDraft] = useState<MailComposeDraft | null>(null);
+  const [drafts, setDrafts] = useState<MailComposeDraft[]>([]);
+  const [labels, setLabels] = useState<MailLabel[]>([]);
+  const [messageLabels, setMessageLabels] = useState<MailLabel[]>([]);
+  const [newLabelName, setNewLabelName] = useState("");
+  const [newLabelDomain, setNewLabelDomain] = useState("");
+  const [creatingLabel, setCreatingLabel] = useState(false);
+  const [labelMenuOpen, setLabelMenuOpen] = useState(false);
+  const [assigningLabel, setAssigningLabel] = useState(false);
 
   const pollTimerRef = useRef<number | null>(null);
   const conversationEndRef = useRef<HTMLDivElement | null>(null);
   const onErrorRef = useRef(onError);
   const onUnreadChangeRef = useRef(onUnreadChange);
   const onFolderCountsChangeRef = useRef(onFolderCountsChange);
+  const onMailExtrasChangeRef = useRef(onMailExtrasChange);
   onErrorRef.current = onError;
   onUnreadChangeRef.current = onUnreadChange;
   onFolderCountsChangeRef.current = onFolderCountsChange;
+  onMailExtrasChangeRef.current = onMailExtrasChange;
   const loadGenerationRef = useRef(0);
   const analyzeGenerationRef = useRef(0);
-  const isThreadView = section === "inbox";
+  const labelId = mailLabelIdFromSection(section);
+  const isLabelView = labelId != null;
+  const isDraftsView = section === "drafts";
+  const isFolderMail =
+    section === "inbox" ||
+    section === "sent" ||
+    section === "trash" ||
+    section === "archive" ||
+    isLabelView;
+  const isThreadView = section === "inbox" && !isLabelView;
 
   const refreshFolderCounts = useCallback(async () => {
     if (!onFolderCountsChangeRef.current) return;
@@ -241,6 +358,8 @@ export function InboxPage({
     setReplyBody("");
     setAiAnalysis(null);
     setAiLoading(false);
+    setMessageLabels([]);
+    setLabelMenuOpen(false);
     analyzeGenerationRef.current += 1;
   }, []);
 
@@ -295,21 +414,66 @@ export function InboxPage({
       const generation = ++loadGenerationRef.current;
       if (!options?.silent) setLoading(true);
       try {
-        const s = await client.getInboxStatus();
+        const [s, labelRows] = await Promise.all([
+          client.getInboxStatus(),
+          client.listMailLabels().catch(() => [] as MailLabel[]),
+        ]);
         if (generation !== loadGenerationRef.current) return;
         setStatus(s);
+        setLabels(labelRows);
         onUnreadChangeRef.current?.(s.unread_count);
+
+        if (section === "drafts") {
+          const rows = await client.listMailDrafts();
+          if (generation !== loadGenerationRef.current) return;
+          setDrafts(rows);
+          setThreads([]);
+          setMessages([]);
+          onMailExtrasChangeRef.current?.();
+          return;
+        }
+
         if (!s.configured) {
           setThreads([]);
           setMessages([]);
+          setDrafts([]);
           return;
         }
+
         if (section === "inbox") {
-          const rows = await client.listInboxThreads({ limit: 40, unread_only: unreadOnly });
+          const rows = await client.listInboxThreads({ limit: 80, unread_only: unreadOnly });
           if (generation !== loadGenerationRef.current) return;
-          setThreads(rows);
+          // Domain/URL labels route matching mail out of Inbox into that label only.
+          const visible = rows.filter((thread) => !threadMatchesAnyDomainLabel(thread, labelRows));
+          setThreads(visible);
           setMessages([]);
-        } else {
+          setDrafts([]);
+        } else if (isMailLabelSection(section)) {
+          const id = mailLabelIdFromSection(section);
+          if (id == null) {
+            setMessages([]);
+            setThreads([]);
+            return;
+          }
+          const activeLabel = labelRows.find((l) => l.id === id) || null;
+          const [keys, inboxRows, sentRows] = await Promise.all([
+            client.listMailLabelMessages(id),
+            client.listInboxMessages({ limit: 100, folder: "inbox" }),
+            client.listInboxMessages({ limit: 40, folder: "sent" }),
+          ]);
+          if (generation !== loadGenerationRef.current) return;
+          const combined = [...inboxRows, ...sentRows].filter((m) => {
+            if (activeLabel && messageMatchesDomainLabel(m, activeLabel)) return true;
+            return messageMatchesLabelKeys(m, keys);
+          });
+          setMessages(combined);
+          setThreads([]);
+          setDrafts([]);
+        } else if (
+          section === "sent" ||
+          section === "trash" ||
+          section === "archive"
+        ) {
           const rows = await client.listInboxMessages({
             limit: 40,
             unread_only: unreadOnly && section !== "sent",
@@ -318,9 +482,14 @@ export function InboxPage({
           if (generation !== loadGenerationRef.current) return;
           setMessages(rows);
           setThreads([]);
+          setDrafts([]);
+        } else {
+          setThreads([]);
+          setMessages([]);
+          setDrafts([]);
         }
-        // Counts are secondary — never block the message list on them.
         void refreshFolderCounts();
+        onMailExtrasChangeRef.current?.();
       } catch (e) {
         if (!options?.silent && generation === loadGenerationRef.current) {
           onErrorRef.current(e instanceof Error ? e.message : "Failed to load mail");
@@ -395,6 +564,21 @@ export function InboxPage({
             /* ignore */
           });
         void runThreadAnalyze(threadId);
+        const latestForLabels =
+          latestInbound || detail.messages[detail.messages.length - 1];
+        if (latestForLabels) {
+          void client
+            .mapMailLabelsByUids(
+              (latestForLabels.folder || "inbox").toLowerCase(),
+              [String(latestForLabels.uid)],
+            )
+            .then((mapped) => {
+              setMessageLabels(mapped[String(latestForLabels.uid)] || []);
+            })
+            .catch(() => setMessageLabels([]));
+        } else {
+          setMessageLabels([]);
+        }
       } catch (e) {
         onErrorRef.current(e instanceof Error ? e.message : "Failed to open conversation");
       } finally {
@@ -441,6 +625,10 @@ export function InboxPage({
           }
         }
         void runMessageAnalyze(message.uid, folder);
+        void client
+          .mapMailLabelsByUids(folder.toLowerCase(), [String(detail.uid)])
+          .then((mapped) => setMessageLabels(mapped[String(detail.uid)] || []))
+          .catch(() => setMessageLabels([]));
       } catch (e) {
         onErrorRef.current(e instanceof Error ? e.message : "Failed to open message");
       } finally {
@@ -606,7 +794,11 @@ export function InboxPage({
     return date.toLocaleString();
   }
 
-  if (!loading && status && !status.configured) {
+  if (section === "activity" || section === "email-templates") {
+    return null;
+  }
+
+  if (!loading && status && !status.configured && !isDraftsView) {
     return (
       <section className="space-y-4">
         <h2 className="text-lg font-medium text-slate-100">Mail</h2>
@@ -623,15 +815,101 @@ export function InboxPage({
     );
   }
 
+  async function createLabel() {
+    const name = newLabelName.trim();
+    if (!name) return;
+    setCreatingLabel(true);
+    try {
+      await client.createMailLabel({
+        name,
+        match_query: newLabelDomain.trim() || null,
+      });
+      setNewLabelName("");
+      setNewLabelDomain("");
+      setNotice(
+        newLabelDomain.trim()
+          ? `Label “${name}” created — mail matching “${newLabelDomain.trim()}” goes there instead of Inbox.`
+          : `Label “${name}” created.`,
+      );
+      onMailExtrasChangeRef.current?.();
+      await loadList({ silent: true });
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to create label");
+    } finally {
+      setCreatingLabel(false);
+    }
+  }
+
+  async function discardDraftById(draftId: number) {
+    try {
+      await client.deleteMailDraft(draftId);
+      setNotice("Draft discarded.");
+      if (composeDraft?.id === draftId) {
+        setShowCompose(false);
+        setComposeDraft(null);
+      }
+      onMailExtrasChangeRef.current?.();
+      await loadList({ silent: true });
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to discard draft");
+    }
+  }
+
+  async function assignLabelToCurrent(label: MailLabel, applySimilar: boolean) {
+    const detail = messageDetail;
+    const threadMsg = thread?.messages?.[thread.messages.length - 1];
+    const target = detail || threadMsg;
+    if (!target) {
+      onError("Open a message first to apply a label");
+      return;
+    }
+    setAssigningLabel(true);
+    try {
+      await client.assignMailLabel({
+        label_id: label.id,
+        folder: (target.folder || section || "inbox").toLowerCase(),
+        message_uid: String(target.uid),
+        message_id: target.message_id ?? null,
+        thread_id: thread?.thread_id ?? null,
+        from_email: target.from_email,
+        subject: target.subject,
+        apply_similar: applySimilar,
+      });
+      setNotice(
+        applySimilar
+          ? `Labeled “${label.name}” (including similar messages).`
+          : `Labeled “${label.name}”.`,
+      );
+      setLabelMenuOpen(false);
+      const mapped = await client.mapMailLabelsByUids(
+        (target.folder || "inbox").toLowerCase(),
+        [String(target.uid)],
+      );
+      setMessageLabels(mapped[String(target.uid)] || []);
+      onMailExtrasChangeRef.current?.();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to assign label");
+    } finally {
+      setAssigningLabel(false);
+    }
+  }
+
   return (
     <section className="space-y-4">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h2 className="text-lg font-medium text-slate-100">{sectionTitle(section)}</h2>
+          <h2 className="text-lg font-medium text-slate-100">
+            {sectionTitle(section, labels)}
+          </h2>
           <p className="text-sm text-slate-500 mt-1">
             {sectionDescription(section, status?.email)}
             {section === "inbox" && status ? ` · ${status.unread_count} unread` : ""}
           </p>
+          {isLabelView && labels.find((l) => l.id === labelId)?.match_query ? (
+            <p className="text-xs text-emerald-400/90 mt-1">
+              Auto-routing: {labels.find((l) => l.id === labelId)?.match_query}
+            </p>
+          ) : null}
           {section === "inbox" && status?.showing_since && (
             <p className="text-xs text-slate-500 mt-1">
               Temporary filter: mail from {formatSince(status.showing_since)} onward.{" "}
@@ -648,11 +926,44 @@ export function InboxPage({
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
-            onClick={() => setShowCompose(true)}
+            onClick={() => {
+              setComposeDraft(null);
+              setShowCompose(true);
+            }}
             className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium"
           >
             Compose
           </button>
+          <form
+            className="flex flex-wrap items-center gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void createLabel();
+            }}
+          >
+            <input
+              type="text"
+              value={newLabelName}
+              onChange={(e) => setNewLabelName(e.target.value)}
+              placeholder="Label name"
+              className="w-32 rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-2 text-sm text-slate-100 placeholder:text-slate-600"
+            />
+            <input
+              type="text"
+              value={newLabelDomain}
+              onChange={(e) => setNewLabelDomain(e.target.value)}
+              placeholder="Domain / URL (optional)"
+              title="e.g. amazon.com or https://amazon.com — matching mail leaves Inbox"
+              className="w-44 sm:w-52 rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-2 text-sm text-slate-100 placeholder:text-slate-600"
+            />
+            <button
+              type="submit"
+              disabled={creatingLabel || !newLabelName.trim()}
+              className="px-3 py-2 rounded-lg border border-slate-700 text-slate-300 text-sm hover:bg-slate-800 disabled:opacity-50"
+            >
+              {creatingLabel ? "…" : "Create label"}
+            </button>
+          </form>
           {section === "trash" && (
             <button
               type="button"
@@ -673,7 +984,7 @@ export function InboxPage({
               New mail only
             </button>
           )}
-          {section !== "sent" && (
+          {isFolderMail && section !== "sent" && !isDraftsView && (
             <label className="flex items-center gap-2 text-sm text-slate-400">
               <input
                 type="checkbox"
@@ -712,17 +1023,66 @@ export function InboxPage({
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(280px,380px)_1fr] gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(320px,440px)_1fr] gap-4 xl:gap-6">
         <div
           className={`rounded-xl border border-slate-800 overflow-hidden bg-slate-950/40 ${
-            selectedThreadId || selectedMessageKey ? "hidden lg:block" : ""
+            selectedThreadId || selectedMessageKey || (isDraftsView && composeDraft)
+              ? "hidden lg:block"
+              : ""
           }`}
         >
           <div className="max-h-[75vh] overflow-y-auto divide-y divide-slate-800/80">
             {loading ? (
               <p className="py-10 text-center text-slate-500 text-sm">
-                {isThreadView ? "Loading conversations…" : "Loading messages…"}
+                {isDraftsView
+                  ? "Loading drafts…"
+                  : isThreadView
+                    ? "Loading conversations…"
+                    : "Loading messages…"}
               </p>
+            ) : isDraftsView ? (
+              drafts.length === 0 ? (
+                <p className="py-10 text-center text-slate-500 text-sm">{emptyListMessage(section)}</p>
+              ) : (
+                drafts.map((draft) => (
+                  <div
+                    key={draft.id}
+                    className="flex items-stretch gap-1 hover:bg-slate-900/60 transition"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setComposeDraft(draft);
+                        setShowCompose(true);
+                      }}
+                      className="min-w-0 flex-1 text-left px-4 py-3.5"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium text-slate-100">
+                          {draft.to_addrs || "(no recipient)"}
+                        </span>
+                        <span className="ml-auto shrink-0 text-[11px] text-slate-500">
+                          {formatDate(draft.updated_at)}
+                        </span>
+                      </div>
+                      <div className="truncate text-sm text-slate-300 mt-0.5">
+                        {draft.subject || "(no subject)"}
+                      </div>
+                      <div className="truncate text-xs text-slate-500 mt-1">
+                        {(draft.body || "").replace(/\s+/g, " ").slice(0, 120)}
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      title="Discard draft"
+                      onClick={() => void discardDraftById(draft.id)}
+                      className="shrink-0 self-center mr-3 px-2.5 py-1.5 rounded-lg border border-red-800/40 text-red-300 text-xs hover:bg-red-950/40"
+                    >
+                      Discard
+                    </button>
+                  </div>
+                ))
+              )
             ) : isThreadView ? (
               threads.length === 0 ? (
                 <p className="py-10 text-center text-slate-500 text-sm">{emptyListMessage(section)}</p>
@@ -873,7 +1233,52 @@ export function InboxPage({
                         </span>
                       </p>
                     </div>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap gap-2 items-center">
+                      {messageLabels.map((label) => (
+                        <span
+                          key={label.id}
+                          className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium border"
+                          style={{
+                            color: label.color,
+                            borderColor: `${label.color}66`,
+                            backgroundColor: `${label.color}22`,
+                          }}
+                        >
+                          {label.name}
+                        </span>
+                      ))}
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={() => setLabelMenuOpen((open) => !open)}
+                          disabled={assigningLabel || labels.length === 0}
+                          className="shrink-0 px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 text-sm hover:bg-slate-900 disabled:opacity-50"
+                        >
+                          Labels
+                        </button>
+                        {labelMenuOpen && (
+                          <div className="absolute right-0 z-20 mt-1 w-56 rounded-lg border border-slate-700 bg-slate-900 shadow-xl py-1">
+                            {labels.map((label) => (
+                              <div key={label.id} className="px-2 py-1">
+                                <button
+                                  type="button"
+                                  onClick={() => void assignLabelToCurrent(label, false)}
+                                  className="w-full text-left px-2 py-1.5 rounded text-sm text-slate-200 hover:bg-slate-800"
+                                >
+                                  {label.name}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void assignLabelToCurrent(label, true)}
+                                  className="w-full text-left px-2 py-1 text-[11px] text-slate-500 hover:text-emerald-300"
+                                >
+                                  + similar messages
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                       <button
                         type="button"
                         onClick={() => void moveThread("archive")}
@@ -963,7 +1368,7 @@ export function InboxPage({
                         className={`flex ${outbound ? "justify-end" : "justify-start"}`}
                       >
                         <div
-                          className={`max-w-[92%] rounded-2xl border px-4 py-3 ${
+                          className={`max-w-[98%] xl:max-w-5xl w-full rounded-2xl border px-5 py-4 ${
                             outbound
                               ? "bg-emerald-600/15 border-emerald-500/30"
                               : "bg-slate-900/80 border-slate-700"
@@ -1074,7 +1479,9 @@ export function InboxPage({
             )
           ) : !selectedMessageKey ? (
             <div className="flex-1 flex items-center justify-center text-slate-500 text-sm">
-              Select a message to read it.
+              {isDraftsView
+                ? "Select a draft to continue editing."
+                : "Select a message to read it."}
             </div>
           ) : detailLoading ? (
             <div className="flex-1 flex items-center justify-center text-slate-500 text-sm">
@@ -1101,7 +1508,52 @@ export function InboxPage({
                       </span>
                     </p>
                   </div>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap gap-2 items-center">
+                    {messageLabels.map((label) => (
+                      <span
+                        key={label.id}
+                        className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium border"
+                        style={{
+                          color: label.color,
+                          borderColor: `${label.color}66`,
+                          backgroundColor: `${label.color}22`,
+                        }}
+                      >
+                        {label.name}
+                      </span>
+                    ))}
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => setLabelMenuOpen((open) => !open)}
+                        disabled={assigningLabel || labels.length === 0}
+                        className="shrink-0 px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 text-sm hover:bg-slate-900 disabled:opacity-50"
+                      >
+                        Labels
+                      </button>
+                      {labelMenuOpen && (
+                        <div className="absolute right-0 z-20 mt-1 w-56 rounded-lg border border-slate-700 bg-slate-900 shadow-xl py-1">
+                          {labels.map((label) => (
+                            <div key={label.id} className="px-2 py-1">
+                              <button
+                                type="button"
+                                onClick={() => void assignLabelToCurrent(label, false)}
+                                className="w-full text-left px-2 py-1.5 rounded text-sm text-slate-200 hover:bg-slate-800"
+                              >
+                                {label.name}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void assignLabelToCurrent(label, true)}
+                                className="w-full text-left px-2 py-1 text-[11px] text-slate-500 hover:text-emerald-300"
+                              >
+                                + similar messages
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                     {(section === "trash" || section === "archive") && (
                       <button
                         type="button"
@@ -1212,7 +1664,7 @@ export function InboxPage({
               )}
 
               <div className="flex-1 overflow-y-auto min-h-0 px-4 py-4">
-                <div className="rounded-2xl border border-slate-700 bg-slate-900/80 px-4 py-3">
+                <div className="rounded-2xl border border-slate-700 bg-slate-900/80 px-5 py-4 max-w-5xl">
                   <MessageBody message={messageDetail} />
                   {messageDetail.attachments?.length > 0 && (
                     <div className="mt-3 flex flex-wrap gap-1.5">
@@ -1307,11 +1759,27 @@ export function InboxPage({
       {showCompose && (
         <ComposeMailModal
           fromEmail={status?.email || status?.emails?.[0] || "Your mailbox"}
-          onClose={() => setShowCompose(false)}
+          initialDraft={composeDraft}
+          onClose={() => {
+            setShowCompose(false);
+            setComposeDraft(null);
+            if (isDraftsView) void loadList({ silent: true });
+          }}
+          onDraftSaved={() => {
+            onMailExtrasChangeRef.current?.();
+            if (isDraftsView) void loadList({ silent: true });
+          }}
+          onDraftDiscarded={() => {
+            setNotice("Draft discarded.");
+            onMailExtrasChangeRef.current?.();
+            void loadList({ silent: true });
+          }}
           onSent={(message) => {
             setNotice(message);
+            setComposeDraft(null);
             void loadList({ silent: true });
             void refreshFolderCounts();
+            onMailExtrasChangeRef.current?.();
           }}
           onError={onError}
         />

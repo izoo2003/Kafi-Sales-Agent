@@ -1,8 +1,12 @@
 """Company-grade scoring (AAA / AA / A) — replaces HOT / WARM / COLD.
 
 Grade reflects importer quality: product-range fit, market/country strength,
-and business scale — not post-call “how warm they felt.” Sales can override
-``buyers.company_grading`` manually after calling.
+and business scale — not post-call “how warm they felt.”
+
+AI / rule-based grades live only in ``lead_scores``. Spreadsheet
+``buyers.company_grading`` is the imported Excel grade and must never be
+copied into or overwritten by scoring. Sales may still edit company_grading
+manually in the table.
 """
 
 from __future__ import annotations
@@ -11,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
-from db.models import Buyer, Contact, ExportHistory, Interaction, LeadScore, LeadScoreLabel
+from db.models import Contact, ExportHistory, Interaction, LeadScore, LeadScoreLabel
 from modules.research import BuyerProfile
 
 # Strong Kafi export markets — importers here score higher when other signals match.
@@ -300,12 +304,8 @@ class LeadScoringModule:
             score_factors={"points": points, "factors": factors},
         )
         db.add(record)
-
-        # Canonical editable grade on the buyer row (sales can override after calls)
-        buyer = db.get(Buyer, profile.buyer_id)
-        if buyer is not None:
-            buyer.company_grading = label.value
-
+        # Do NOT write to buyers.company_grading — that field is the Excel /
+        # spreadsheet grade (and optional sales override). AI grade is lead_scores only.
         db.commit()
         db.refresh(record)
         return record
@@ -349,8 +349,11 @@ class LeadScoringModule:
             f"Website summary: {profile.website_summary or 'n/a'}\n"
             f"Matched categories: {', '.join(profile.matched_categories) or 'none'}\n"
             f"Product fit score: {profile.product_fit_score}\n"
-            f"Rule-based grade: {fallback_label} — {fallback_reasoning}\n"
-            f"Score factors: {score_factors}"
+            f"Rule-based grade (independent of any spreadsheet grade): "
+            f"{fallback_label} — {fallback_reasoning}\n"
+            f"Score factors: {score_factors}\n"
+            f"IMPORTANT: Ignore any Excel/spreadsheet company grading. "
+            f"Compute your own AAA/AA/A from the research signals above."
         )
         interactions_str = "\n".join(
             f"- [{i.channel}] {i.direction} on {i.created_at}: {(i.content or '')[:120]}"

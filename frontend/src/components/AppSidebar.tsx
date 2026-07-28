@@ -36,7 +36,25 @@ export function assignedUserIdFromSection(section: LeadsTableSection): number | 
   return Number.isFinite(id) ? id : null;
 }
 
-export type MailSection = "inbox" | "sent" | "trash" | "archive";
+export type MailSection =
+  | "inbox"
+  | "sent"
+  | "trash"
+  | "archive"
+  | "drafts"
+  | "activity"
+  | "email-templates"
+  | `label:${number}`;
+
+export function isMailLabelSection(section: string): section is `label:${number}` {
+  return /^label:\d+$/.test(section);
+}
+
+export function mailLabelIdFromSection(section: MailSection): number | null {
+  if (!isMailLabelSection(section)) return null;
+  const id = Number(section.slice("label:".length));
+  return Number.isFinite(id) ? id : null;
+}
 
 export type NavChild = {
   id: string;
@@ -59,7 +77,7 @@ interface AppSidebarProps {
   navItems: NavItem[];
   activeTab: Tab;
   tableSection?: LeadsTableSection;
-  /** Section opened when the table parent is clicked. Admins: "all"; sales users: "old_clients". */
+  /** Section opened when the table parent is clicked. Admins: "master"; sales users: "old_clients". */
   defaultTableSection?: LeadsTableSection;
   mailSection?: MailSection;
   onSelectTab: (tab: Tab) => void;
@@ -77,8 +95,8 @@ interface AppSidebarProps {
 export function AppSidebar({
   navItems,
   activeTab,
-  tableSection = "all",
-  defaultTableSection = "all",
+  tableSection = "master",
+  defaultTableSection = "master",
   mailSection = "inbox",
   onSelectTab,
   onSelectTableSection,
@@ -91,7 +109,9 @@ export function AppSidebar({
   onMobileClose,
 }: AppSidebarProps) {
   const [leadsMenuOpen, setLeadsMenuOpen] = useState(activeTab === "table");
-  const [mailMenuOpen, setMailMenuOpen] = useState(activeTab === "inbox");
+  const [mailMenuOpen, setMailMenuOpen] = useState(
+    activeTab === "inbox" || activeTab === "activity" || activeTab === "email-templates",
+  );
 
   useEffect(() => {
     if (activeTab === "table") {
@@ -100,7 +120,7 @@ export function AppSidebar({
   }, [activeTab]);
 
   useEffect(() => {
-    if (activeTab === "inbox") {
+    if (activeTab === "inbox" || activeTab === "activity" || activeTab === "email-templates") {
       setMailMenuOpen(true);
     }
   }, [activeTab]);
@@ -173,7 +193,12 @@ export function AppSidebar({
               );
             }
 
-            const isActive = activeTab === item.id;
+            const isActive =
+              item.id === "inbox"
+                ? activeTab === "inbox" ||
+                  activeTab === "activity" ||
+                  activeTab === "email-templates"
+                : activeTab === item.id;
             const hasAlert = Boolean(item.alert);
             const hasChildren = Boolean(item.children?.length);
             const isTableParent = item.id === "table" && hasChildren;
@@ -186,7 +211,15 @@ export function AppSidebar({
                 ? setMailMenuOpen
                 : undefined;
             const defaultChildId = isTableParent ? defaultTableSection : "inbox";
-            const activeChildId = isTableParent ? tableSection : isMailParent ? mailSection : null;
+            const activeChildId = isTableParent
+              ? tableSection
+              : isMailParent
+                ? activeTab === "activity"
+                  ? "activity"
+                  : activeTab === "email-templates"
+                    ? "email-templates"
+                    : mailSection
+                : null;
             const parentHighlighted =
               isExpandableParent && isActive && activeChildId === defaultChildId
                 ? true
@@ -291,7 +324,6 @@ export function AppSidebar({
                               onSelectTableSection?.(child.id as LeadsTableSection);
                             } else if (isMailParent) {
                               setMailMenuOpen(true);
-                              onSelectTab("inbox");
                               onSelectMailSection?.(child.id as MailSection);
                             }
                             closeMobile();

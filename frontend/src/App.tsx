@@ -28,6 +28,7 @@ import { UsersPage } from "./pages/UsersPage";
 import { TwilioVoiceProvider, useTwilioVoiceOptional } from "./hooks/useTwilioVoice";
 import { PostCallRemarksModal } from "./components/PostCallRemarksModal";
 import { CallingCardOverlay } from "./components/CallingCardOverlay";
+import { FloatingDialpad } from "./components/FloatingDialpad";
 import {
   alertInterestedFollowUp,
   alertNewInboxMessage,
@@ -55,10 +56,14 @@ function CallInitBanner() {
 
 function DashboardApp() {
   const { user, isAdmin, logout } = useAuth();
-  const [tab, setTab] = useState<Tab>("activity");
-  const [tableSection, setTableSection] = useState<LeadsTableSection>("all");
+  const [tab, setTab] = useState<Tab>("inbox");
+  const [tableSection, setTableSection] = useState<LeadsTableSection>("master");
   const [mailSection, setMailSection] = useState<MailSection>("inbox");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [mailDraftCount, setMailDraftCount] = useState(0);
+  const [mailLabels, setMailLabels] = useState<
+    Array<{ id: number; name: string; color: string; count: number }>
+  >([]);
   const [tableCounts, setTableCounts] = useState<LeadTableSectionCountsResponse>({
     all: 0,
     old_clients: 0,
@@ -98,22 +103,29 @@ function DashboardApp() {
 
   useEffect(() => {
     if (!isAdmin && tab === "leads") {
-      setTab("activity");
+      setTab("inbox");
       setSelectedLeadId(null);
     }
     if (!isAdmin && tab === "users") {
-      setTab("activity");
-    }
-    if (!isAdmin && tab === "master-table") {
-      setTab("activity");
-      setSelectedLeadId(null);
+      setTab("inbox");
     }
   }, [isAdmin, tab]);
 
-  // Sales users only get client buckets — never the main Leads table or admin assignee views.
+  useEffect(() => {
+    if (tab !== "master-table") return;
+    setTab("table");
+    setTableSection(isAdmin ? "master" : "old_clients");
+    setSelectedLeadId(null);
+  }, [tab, isAdmin]);
+
+  // Sales users only get client buckets — never Master / Scrapped Leads / assignee views.
   useEffect(() => {
     if (isAdmin) return;
-    if (tableSection === "all" || isAssignedLeadsSection(tableSection)) {
+    if (
+      tableSection === "all" ||
+      tableSection === "master" ||
+      isAssignedLeadsSection(tableSection)
+    ) {
       setTableSection("old_clients");
     }
   }, [isAdmin, tableSection]);
@@ -184,6 +196,19 @@ function DashboardApp() {
         }
       }
       setMailCounts(next);
+    } catch {
+      /* optional badges */
+    }
+  }, []);
+
+  const loadMailExtras = useCallback(async () => {
+    try {
+      const [drafts, labels] = await Promise.all([
+        client.getMailDraftCount(),
+        client.listMailLabels(),
+      ]);
+      setMailDraftCount(drafts.count);
+      setMailLabels(labels);
     } catch {
       /* optional badges */
     }
@@ -269,6 +294,7 @@ function DashboardApp() {
     void loadTableCounts();
     void loadAssigneeNavUsers();
     void loadMailCounts();
+    void loadMailExtras();
     void loadEmailTemplateCount();
     void loadWhatsappTemplateCount();
     client
@@ -282,6 +308,7 @@ function DashboardApp() {
     loadEmailTemplateCount,
     loadWhatsappTemplateCount,
     loadMailCounts,
+    loadMailExtras,
     loadTableCounts,
     loadAssigneeNavUsers,
     pollInbox,
@@ -292,6 +319,7 @@ function DashboardApp() {
     void loadTableCounts();
     void loadAssigneeNavUsers();
     void loadMailCounts();
+    void loadMailExtras();
     void loadDiscoverLeadsCount();
     void loadEmailTemplateCount();
     void loadWhatsappTemplateCount();
@@ -327,6 +355,7 @@ function DashboardApp() {
     loadEmailTemplateCount,
     loadWhatsappTemplateCount,
     loadMailCounts,
+    loadMailExtras,
     loadTableCounts,
     loadAssigneeNavUsers,
     pollInbox,
@@ -364,6 +393,16 @@ function DashboardApp() {
 
   function handleSelectMailSection(section: MailSection) {
     setMailSection(section);
+    setSelectedLeadId(null);
+    if (section === "activity") {
+      setTab("activity");
+      return;
+    }
+    if (section === "email-templates") {
+      setTab("email-templates");
+      return;
+    }
+    setTab("inbox");
   }
 
   const handleMailCountsChange = useCallback(
@@ -423,7 +462,7 @@ function DashboardApp() {
     if (selectedId == null) return;
     const stillExists = assigneeSectionUsers.some((u) => u.id === selectedId);
     if (!stillExists) {
-      setTableSection(isAdmin ? "all" : "old_clients");
+      setTableSection(isAdmin ? "master" : "old_clients");
     }
   }, [assigneeSectionUsers, isAdmin, tableSection]);
 
@@ -436,6 +475,15 @@ function DashboardApp() {
     : [];
 
   const clientSectionNavChildren = [
+    ...(isAdmin
+      ? [
+          {
+            id: "all" as const,
+            label: "Scrapped Leads",
+            count: tableCounts.all,
+          },
+        ]
+      : []),
     {
       id: "old_clients" as const,
       label: isAdmin ? "Old clients" : "Clients",
@@ -464,29 +512,18 @@ function DashboardApp() {
     tableCounts.not_interested_clients +
     tableCounts.not_received_call_clients;
 
-  const defaultTableSection: LeadsTableSection = isAdmin ? "all" : "old_clients";
+  const defaultTableSection: LeadsTableSection = isAdmin ? "master" : "old_clients";
 
   const navItems: NavItem[] = [
-    { id: "activity", label: "Email Activity", count: emailActivityUnread, alert: emailActivityUnread > 0 },
-    { id: "email-templates", label: "Email templates", count: emailTemplateCount },
     { id: "whatsapp-templates", label: "WhatsApp templates", count: whatsappTemplateCount },
     { id: "whatsapp-inbox", label: "WhatsApp inbox", count: 0 },
     ...(isAdmin
       ? [{ id: "leads" as const, label: "Discover Leads", count: discoverLeadsCount }]
       : []),
-    ...(isAdmin
-      ? [
-          {
-            id: "master-table" as const,
-            label: "Master table",
-            count: tableCounts.master ?? 0,
-          },
-        ]
-      : []),
     {
       id: "table",
-      label: isAdmin ? "Leads table" : "Clients table",
-      count: isAdmin ? tableCounts.all : clientsTableCount,
+      label: isAdmin ? "Master table" : "Clients table",
+      count: isAdmin ? (tableCounts.master ?? 0) : clientsTableCount,
       children: [
         ...clientSectionNavChildren,
         ...assigneeNavChildren,
@@ -495,13 +532,29 @@ function DashboardApp() {
     {
       id: "inbox",
       label: "Mail",
-      count: inboxUnread,
-      alert: inboxUnread > 0,
+      count: inboxUnread + emailActivityUnread,
+      alert: inboxUnread > 0 || emailActivityUnread > 0,
       children: [
         { id: "inbox", label: "Inbox", count: mailCounts.inbox },
         { id: "sent", label: "Sent", count: mailCounts.sent },
+        { id: "drafts", label: "Drafts", count: mailDraftCount },
         { id: "trash", label: "Trash", count: mailCounts.trash },
         { id: "archive", label: "Archive", count: mailCounts.archive },
+        {
+          id: "activity",
+          label: "Email Activity",
+          count: emailActivityUnread,
+        },
+        {
+          id: "email-templates",
+          label: "Email templates",
+          count: emailTemplateCount,
+        },
+        ...mailLabels.map((label) => ({
+          id: `label:${label.id}`,
+          label: label.name,
+          count: label.count,
+        })),
       ],
     },
     { id: "calls", label: "Calls", count: 0 },
@@ -516,8 +569,9 @@ function DashboardApp() {
     ...(isAdmin ? [{ id: "users" as const, label: "Users", count: 0 }] : []),
   ];
 
-  const isWideTable =
-    (tab === "table" || tab === "master-table") && selectedLeadId === null;
+  const isWideTable = tab === "table" && selectedLeadId === null;
+  const isWideMail =
+    tab === "inbox" || tab === "activity" || tab === "email-templates";
 
   return (
     <TwilioVoiceProvider>
@@ -528,6 +582,7 @@ function DashboardApp() {
         }}
       />
       <CallingCardOverlay />
+      <FloatingDialpad onError={setError} />
       <div className="min-h-dvh flex">
         <InboxAlertToasts
           onOpenInbox={() => {
@@ -578,7 +633,7 @@ function DashboardApp() {
 
           <main
             className={`w-full mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 lg:py-8 ${
-              isWideTable ? "max-w-none" : "max-w-6xl"
+              isWideTable || isWideMail ? "max-w-none" : "max-w-6xl"
             }`}
           >
             <CallInitBanner />
@@ -643,30 +698,13 @@ function DashboardApp() {
                 onSectionCountsChange={setTableCounts}
               />
             )}
-            {tab === "master-table" && isAdmin && selectedLeadId !== null && (
-              <BuyerProfile
-                leadId={selectedLeadId}
-                onBack={handleBackFromProfile}
-                onError={setError}
-                onCallFollowUpSaved={handleCallFollowUpSaved}
-                canDiscover
-              />
-            )}
-            {tab === "master-table" && isAdmin && selectedLeadId === null && (
-              <LeadsTablePage
-                section="master"
-                refreshToken={leadsTableRefreshToken}
-                onError={setError}
-                onSelectLead={handleSelectLead}
-                onSectionCountsChange={setTableCounts}
-              />
-            )}
             {tab === "inbox" && (
               <InboxPage
                 section={mailSection}
                 onError={setError}
                 onUnreadChange={setInboxUnread}
                 onFolderCountsChange={handleMailCountsChange}
+                onMailExtrasChange={() => void loadMailExtras()}
               />
             )}
             {tab === "calls" && selectedLeadId !== null && (

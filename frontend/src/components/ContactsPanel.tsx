@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { client, type Contact, type ContactCreate, type ContactUpdate } from "../api/client";
 import { CallLeadButton } from "./CallLeadButton";
+import { DialpadPhoneText } from "./DialpadPhoneText";
 
 interface ContactsPanelProps {
   leadId: number;
@@ -245,7 +246,11 @@ export function ContactsPanel({ leadId, onError, onContactsChange }: ContactsPan
                     )}
                     {contact.phone ? (
                       <div className="flex items-center gap-2 flex-wrap">
-                        <p className="text-slate-400">{contact.phone}</p>
+                        <DialpadPhoneText
+                          phone={contact.phone}
+                          contactName={contact.name}
+                          className="text-slate-400 hover:text-sky-300 hover:underline cursor-pointer"
+                        />
                         <CallLeadButton
                           leadId={leadId}
                           phone={contact.phone}

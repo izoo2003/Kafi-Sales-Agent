@@ -23,6 +23,7 @@ from api.schemas import (
     InteractionRead,
     LeadScoreRead,
     LeadTableCleanupResponse,
+    LeadTableNameRepairResponse,
     LeadTableDedupeResponse,
     RemoveOldClientOverlapsResponse,
     LeadTableBulkDeleteRequest,
@@ -675,6 +676,38 @@ def cleanup_sparse_csv_leads(
         unassigned_only=unassigned_only,
     )
     return LeadTableCleanupResponse(**result)
+
+
+@router.post("/table/repair-location-names", response_model=LeadTableNameRepairResponse)
+def repair_location_company_names(
+    source: str | None = None,
+    exclude_source: str | None = None,
+    assigned_to_user_id: int | None = None,
+    master: bool = False,
+    dry_run: bool = False,
+    limit: int | None = None,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    """Move location-as-company-name into city/country/address; recover real name."""
+    from modules.buyer_name_repair import repair_location_company_names as repair_fn
+
+    assignee_id, unassigned_only = _maintenance_assignee_scope(
+        user,
+        assigned_to_user_id=assigned_to_user_id,
+        master=master,
+    )
+    result = repair_fn(
+        db,
+        source=source,
+        exclude_source=exclude_source,
+        assigned_to_user_id=assignee_id,
+        unassigned_only=unassigned_only,
+        dry_run=dry_run,
+        limit=limit,
+        sleep_s=0.05 if not dry_run else 0.0,
+    )
+    return LeadTableNameRepairResponse(**result)
 
 
 @router.get("/discover/regions", response_model=DiscoveryRegionsResponse)

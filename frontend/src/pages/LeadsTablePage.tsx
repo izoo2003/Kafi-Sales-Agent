@@ -23,6 +23,7 @@ import {
   type BulkActionProgress,
 } from "../components/BulkActionProgressPanel";
 import { CallLeadButton } from "../components/CallLeadButton";
+import { DialpadPhoneText } from "../components/DialpadPhoneText";
 import { EmailComposeButton } from "../components/EmailComposeLink";
 import { Pagination } from "../components/Pagination";
 import { exportLeadsTableCsv } from "../utils/exportCsv";
@@ -215,7 +216,7 @@ function sectionTitle(
   if (isAssignedLeadsSection(section)) {
     return `Leads Sent To ${assigneeUsername || "user"}`;
   }
-  return "Leads table";
+  return "Scrapped Leads";
 }
 
 function sectionDescription(
@@ -228,22 +229,22 @@ function sectionDescription(
   }
   if (section === "old_clients") {
     return isAdmin
-      ? "Past clients from your spreadsheet only. Kept separate from Discover Leads / Leads table — companies here are never mixed into new discoveries."
+      ? "Past clients from your spreadsheet only. Kept separate from Discover Leads / Scrapped Leads — companies here are never mixed into new discoveries."
       : "Your client list from imports and past relationships. Import a spreadsheet to add clients — only you can see rows assigned to you.";
   }
   if (section === "interested_clients") {
     return "Clients moved here after a call is labeled Interested. Use the calendar on each row to set when you want a follow-up reminder — you are only notified on that date.";
   }
   if (section === "not_interested_clients") {
-    return "Clients moved here after a call is labeled Not interested. They no longer appear in Leads table or Old clients.";
+    return "Clients moved here after a call is labeled Not interested. They no longer appear in Scrapped Leads or Old clients.";
   }
   if (section === "not_received_call_clients") {
     return "Clients moved here when a call is labeled Did not receive call. Use the calendar on each row to set when you want a reminder to try again.";
   }
   if (isAssignedLeadsSection(section)) {
-    return `All leads transferred to ${assigneeUsername || "this user"}. These no longer appear in the main Leads table or Old clients.`;
+    return `All leads transferred to ${assigneeUsername || "this user"}. These no longer appear in Scrapped Leads or Old clients.`;
   }
-  return "New discoveries from Discover Leads (and leads-table imports). Does not include Old clients — companies already in Old clients are blocked from being added here.";
+  return "New discoveries from Discover Leads (and spreadsheet imports into this section). Does not include Old clients — companies already in Old clients are blocked from being added here.";
 }
 
 function sectionEmptyMessage(section: LeadsTableSection): string | null {
@@ -260,7 +261,7 @@ function sectionEmptyMessage(section: LeadsTableSection): string | null {
     return "No clients listed yet. After a call, label the client as Did not receive call, then set a reminder date with the calendar.";
   }
   if (isAssignedLeadsSection(section)) {
-    return "No leads transferred to this user yet. Assign a lead from Leads table or Old clients to move it here.";
+    return "No leads transferred to this user yet. Assign a lead from Scrapped Leads or Old clients to move it here.";
   }
   return null;
 }
@@ -989,7 +990,7 @@ export function LeadsTablePage({
         `• Looks up company details and fills empty table fields (not just the score).\n` +
         (isOldClients
           ? `• Clients table priority: city & address first, then phone/email/designation.\n`
-          : `• Leads table priority: website, email, phone, socials, country.\n`) +
+          : `• Scrapped Leads priority: website, email, phone, socials, country.\n`) +
         `• Runs one at a time (~${estimateSec}s estimated).\n` +
         (withoutWebsite.length > 0
           ? `• ${withoutWebsite.length} selected lead${withoutWebsite.length === 1 ? " has" : "s have"} no website — fit signals will be weaker.\n`
@@ -1136,13 +1137,53 @@ export function LeadsTablePage({
     }
   }
 
+  async function repairLocationAsCompanyNames() {
+    const confirmed = window.confirm(
+      "Fix company names that are actually locations?\n\n" +
+        "• Detects city / country / address stored as the company name.\n" +
+        "• Moves that value into City, Country, or Address.\n" +
+        "• Looks up the real company name from website, email domain, phone, and search.\n" +
+        "• Leaves Company Name empty when no company can be found.\n\n" +
+        "This can take several minutes. Continue?",
+    );
+    if (!confirmed) return;
+
+    setDeduping(true);
+    setSaveNotice(null);
+    setActionProgress({
+      title: "Repairing location-as-company-name rows",
+      mode: "indeterminate",
+      detail: "Scanning and recovering company names…",
+      startedAt: Date.now(),
+      accent: "amber",
+    });
+    try {
+      const result = await client.repairLocationCompanyNames(sectionTableScope(section));
+      await loadTable();
+      await loadSectionCounts();
+      const fixed = result.repaired_with_name + result.relocated_name_empty;
+      setSaveNotice(
+        fixed > 0
+          ? `Location-name repair: ${result.repaired_with_name} renamed, ${result.relocated_name_empty} cleared (of ${result.location_name_candidates} candidates in ${result.scanned} rows)`
+          : result.location_name_candidates === 0
+            ? "No company names looked like locations"
+            : "No rows were updated",
+      );
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to repair location company names");
+    } finally {
+      setActionProgress(null);
+      setDeduping(false);
+    }
+  }
+
   async function removeOldClientOverlaps() {
     if (!isAdmin || isOldClients) return;
     const confirmed = window.confirm(
-      "Remove Discover / Leads table rows that match Old clients?\n\n" +
+      "Remove Discover / Scrapped Leads rows that match Old clients?\n\n" +
         "• Matches by company name or website domain.\n" +
         "• Old clients are never deleted — only overlapping new-discovery leads are removed.\n" +
-        "• Use this if Old clients were accidentally mixed into Discover Leads.\n\n" +
+        "• Use this if Old clients were accidentally mixed into Scrapped Leads.\n\n" +
         "Continue?",
     );
     if (!confirmed) return;
@@ -1152,7 +1193,7 @@ export function LeadsTablePage({
     setActionProgress({
       title: "Removing leads that match Old clients",
       mode: "indeterminate",
-      detail: "Comparing Leads table against Old clients…",
+      detail: "Comparing Scrapped Leads against Old clients…",
       startedAt: Date.now(),
       accent: "violet",
     });
@@ -1163,7 +1204,7 @@ export function LeadsTablePage({
       setSaveNotice(
         result.removed_count > 0
           ? `Removed ${result.removed_count} lead${result.removed_count === 1 ? "" : "s"} that matched Old clients (${result.kept_count} discovery lead${result.kept_count === 1 ? "" : "s"} kept)`
-          : "No Discover / Leads table rows matched Old clients",
+          : "No Discover / Scrapped Leads rows matched Old clients",
       );
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to remove old-client overlaps");
@@ -1553,6 +1594,25 @@ export function LeadsTablePage({
                 : "Remove empty imports"}
             </button>
           )}
+          {isOldClients && (
+            <button
+              type="button"
+              onClick={() => void repairLocationAsCompanyNames()}
+              disabled={
+                deduping ||
+                rows.length === 0 ||
+                loading ||
+                bulkOnboarding ||
+                deletingSelected
+              }
+              className="px-3 py-1.5 rounded-lg bg-sky-900/60 hover:bg-sky-800 border border-sky-800/60 text-sm text-sky-100 disabled:opacity-50"
+              title="Move city/country/address out of Company Name and recover the real company"
+            >
+              {deduping && actionProgress?.title.includes("location-as-company")
+                ? "Fixing names…"
+                : "Fix location names"}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => void removeDuplicates()}
@@ -1580,7 +1640,7 @@ export function LeadsTablePage({
                 deletingSelected
               }
               className="px-3 py-1.5 rounded-lg bg-violet-900/60 hover:bg-violet-800 border border-violet-700/50 text-sm text-violet-100 disabled:opacity-50"
-              title="Delete Leads table rows that match Old clients by name or website"
+              title="Delete Scrapped Leads rows that match Old clients by name or website"
             >
               {deduping && actionProgress?.title.includes("Old clients")
                 ? "Cleaning overlaps…"
@@ -1762,7 +1822,7 @@ export function LeadsTablePage({
                   <option value="oldest">Oldest first</option>
                   <option value="company_name">Company name</option>
                   <option value="country">Country</option>
-                  <option value="latest_score">Grade</option>
+                  <option value="latest_score">AI company grading</option>
                 </select>
               </label>
 
@@ -1783,7 +1843,7 @@ export function LeadsTablePage({
               </label>
 
               <label className="block text-xs text-slate-400">
-                Companies grading
+                Excel / file grading
                 <select
                   value={companyGrading}
                   onChange={(e) => setCompanyGrading(e.target.value)}
@@ -1911,13 +1971,13 @@ export function LeadsTablePage({
                   <option value="oldest">Oldest first</option>
                   <option value="company_name">Company name</option>
                   <option value="country">Country</option>
-                  <option value="latest_score">Grade</option>
+                  <option value="latest_score">AI company grading</option>
                   <option value="market_role">Market role</option>
                 </select>
               </label>
 
               <label className="block text-xs text-slate-400">
-                Grade
+                AI company grading
                 <select
                   value={score}
                   onChange={(e) => setScore(e.target.value)}
@@ -2102,7 +2162,7 @@ export function LeadsTablePage({
                     </button>
                   </th>
                   <th className={`${TH} min-w-[140px]`}>Business Type</th>
-                  <th className={`${TH} min-w-[140px]`}>Companies Grading</th>
+                  <th className={`${TH} min-w-[140px]`}>Excel grading</th>
                   <th className={`${TH} min-w-[130px]`}>Designation</th>
                   <th className={`${TH} min-w-[150px]`}>Contact Person</th>
                   <th className={`${TH} min-w-[170px]`}>Primary Mobile No.</th>
@@ -2118,7 +2178,7 @@ export function LeadsTablePage({
                   <th className={`${TH} min-w-[200px]`}>Address</th>
                   <th className={`${TH} min-w-[180px]`}>Remarks</th>
                   <th className={`${TH} min-w-[150px]`}>Assigned To</th>
-                  <th className={`${TH} min-w-[90px]`}>Grade</th>
+                  <th className={`${TH} min-w-[120px]`}>AI grading</th>
                   <th className={`${TH} min-w-[160px]`}>Website</th>
                   <th className={`${TH} min-w-[120px]`}>Socials</th>
                   {editMode && <th className={`${TH} min-w-[120px]`}>Edit</th>}
@@ -2198,7 +2258,11 @@ export function LeadsTablePage({
                           cell("contact_phone", row.contact_phone ?? "")
                         ) : row.contact_phone ? (
                           <span className="flex items-center gap-2 min-w-0">
-                            <span className="truncate">{row.contact_phone}</span>
+                            <DialpadPhoneText
+                              phone={row.contact_phone}
+                              contactName={row.contact_name}
+                              countryHint={row.country}
+                            />
                             <CallLeadButton
                               leadId={row.id}
                               phone={row.contact_phone}
@@ -2218,7 +2282,11 @@ export function LeadsTablePage({
                           cell("contact_primary_phone", row.contact_primary_phone ?? "")
                         ) : row.contact_primary_phone ? (
                           <span className="flex items-center gap-2 min-w-0">
-                            <span className="truncate">{row.contact_primary_phone}</span>
+                            <DialpadPhoneText
+                              phone={row.contact_primary_phone}
+                              contactName={row.contact_name}
+                              countryHint={row.country}
+                            />
                             <CallLeadButton
                               leadId={row.id}
                               phone={row.contact_primary_phone}
@@ -2292,7 +2360,16 @@ export function LeadsTablePage({
                         {renderAssignedToCell(row, draft)}
                       </td>
                       <td className={TD}>
-                        <ScoreBadge score={scoreLabel(row.company_grading || row.latest_score)} />
+                        {row.latest_score ? (
+                          <div className="space-y-0.5">
+                            <ScoreBadge score={scoreLabel(row.latest_score)} />
+                            <p className="text-[10px] uppercase tracking-wide text-slate-500">
+                              AI grading
+                            </p>
+                          </div>
+                        ) : (
+                          <span className="text-slate-500 text-sm">Not scored</span>
+                        )}
                       </td>
                       <td className={TD_MUTED}>
                         {editMode ? (
@@ -2414,9 +2491,9 @@ export function LeadsTablePage({
                     Added{sortIndicator("created_at")}
                   </button>
                 </th>
-                <th className={`${TH} min-w-[88px]`}>
+                <th className={`${TH} min-w-[110px]`}>
                   <button type="button" onClick={() => toggleSort("latest_score")} className="hover:text-slate-300">
-                    Grade{sortIndicator("latest_score")}
+                    AI grading{sortIndicator("latest_score")}
                   </button>
                 </th>
                 <th className={`${TH} min-w-[140px]`}>
@@ -2491,25 +2568,15 @@ export function LeadsTablePage({
                       {formatAddedAt(row.created_at)}
                     </td>
                     <td className={TD}>
-                      {editMode ? (
-                        <div onClick={(e) => e.stopPropagation()}>
-                          <select
-                            value={draft.company_grading ?? row.company_grading ?? row.latest_score ?? ""}
-                            onChange={(e) =>
-                              updateDraft(row.id, "company_grading", e.target.value)
-                            }
-                            className={EDIT_INPUT}
-                          >
-                            <option value="">Ungraded</option>
-                            <option value="AAA">AAA</option>
-                            <option value="AA">AA</option>
-                            <option value="A">A</option>
-                          </select>
+                      {row.latest_score ? (
+                        <div className="space-y-0.5">
+                          <ScoreBadge score={scoreLabel(row.latest_score)} />
+                          <p className="text-[10px] uppercase tracking-wide text-slate-500">
+                            AI grading
+                          </p>
                         </div>
                       ) : (
-                        <ScoreBadge
-                          score={scoreLabel(row.company_grading || row.latest_score)}
-                        />
+                        <span className="text-slate-500 text-sm">Not scored</span>
                       )}
                     </td>
                     <td className={TD}>
@@ -2593,7 +2660,11 @@ export function LeadsTablePage({
                         />
                       ) : row.contact_phone ? (
                         <span className="flex items-center gap-2 min-w-0">
-                          <span className="truncate">{row.contact_phone}</span>
+                          <DialpadPhoneText
+                            phone={row.contact_phone}
+                            contactName={row.contact_name}
+                            countryHint={row.country}
+                          />
                           <CallLeadButton
                             leadId={row.id}
                             phone={row.contact_phone}

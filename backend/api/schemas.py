@@ -22,6 +22,7 @@ class BuyerRead(BaseModel):
     country: Optional[str]
     industry: Optional[str]
     source: Optional[str]
+    company_grading: Optional[str] = None
     market_role: str = "unknown"
     market_role_reasoning: Optional[str] = None
     market_role_confidence: Optional[float] = None
@@ -744,6 +745,16 @@ class RemoveOldClientOverlapsResponse(BaseModel):
 class LeadTableCleanupResponse(BaseModel):
     removed_count: int
     removed: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class LeadTableNameRepairResponse(BaseModel):
+    scanned: int
+    location_name_candidates: int
+    repaired_with_name: int
+    relocated_name_empty: int
+    skipped: int
+    dry_run: bool
+    samples: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class LeadTableBulkDeleteRequest(BaseModel):

@@ -1,12 +1,19 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { client } from "../api/client";
+import { client, type EmailTemplate, type MailComposeDraft } from "../api/client";
 
 interface ComposeMailModalProps {
   fromEmail: string;
   onClose: () => void;
   onSent: (message: string) => void;
   onError: (message: string) => void;
+  initialDraft?: MailComposeDraft | null;
+  onDraftSaved?: () => void;
+  onDraftDiscarded?: () => void;
+}
+
+function hasDraftContent(to: string, cc: string, subject: string, body: string): boolean {
+  return Boolean(to.trim() || cc.trim() || subject.trim() || body.trim());
 }
 
 export function ComposeMailModal({
@@ -14,22 +21,133 @@ export function ComposeMailModal({
   onClose,
   onSent,
   onError,
+  initialDraft = null,
+  onDraftSaved,
+  onDraftDiscarded,
 }: ComposeMailModalProps) {
   const titleId = useId();
-  const [to, setTo] = useState("");
-  const [cc, setCc] = useState("");
-  const [subject, setSubject] = useState("");
-  const [body, setBody] = useState("");
+  const [to, setTo] = useState(initialDraft?.to_addrs || "");
+  const [cc, setCc] = useState(initialDraft?.cc_addrs || "");
+  const [subject, setSubject] = useState(initialDraft?.subject || "");
+  const [body, setBody] = useState(initialDraft?.body || "");
   const [sending, setSending] = useState(false);
-  const [showCc, setShowCc] = useState(false);
+  const [showCc, setShowCc] = useState(Boolean(initialDraft?.cc_addrs?.trim()));
+  const [draftId, setDraftId] = useState<number | null>(initialDraft?.id ?? null);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [templates, setTemplates] = useState<EmailTemplate[]>([]);
+  const [loadingTemplates, setLoadingTemplates] = useState(false);
+  const sentRef = useRef(false);
+  const discardedRef = useRef(false);
+  const closingRef = useRef(false);
+  const stateRef = useRef({ to, cc, subject, body, draftId });
+  stateRef.current = { to, cc, subject, body, draftId };
+
+  async function saveDraftNow(force = false): Promise<number | null> {
+    const snap = stateRef.current;
+    if (sentRef.current || discardedRef.current || sending || discarding) return snap.draftId;
+    if (!force && !hasDraftContent(snap.to, snap.cc, snap.subject, snap.body)) {
+      return snap.draftId;
+    }
+    setSavingDraft(true);
+    try {
+      const saved = await client.upsertMailDraft({
+        id: snap.draftId,
+        to_addrs: snap.to,
+        cc_addrs: snap.cc,
+        subject: snap.subject,
+        body: snap.body,
+      });
+      setDraftId(saved.id);
+      stateRef.current.draftId = saved.id;
+      onDraftSaved?.();
+      return saved.id;
+    } catch (e) {
+      if (force) {
+        onError(e instanceof Error ? e.message : "Failed to save draft");
+      }
+      return snap.draftId;
+    } finally {
+      setSavingDraft(false);
+    }
+  }
+
+  async function closeWithDraftSave() {
+    if (closingRef.current || sending || discarding) return;
+    closingRef.current = true;
+    await saveDraftNow();
+    onClose();
+  }
+
+  async function discardDraft() {
+    if (sending || discarding || closingRef.current) return;
+    const id = stateRef.current.draftId;
+    setDiscarding(true);
+    discardedRef.current = true;
+    closingRef.current = true;
+    try {
+      if (id != null) {
+        await client.deleteMailDraft(id);
+      }
+      onDraftDiscarded?.();
+      onClose();
+    } catch (e) {
+      discardedRef.current = false;
+      closingRef.current = false;
+      onError(e instanceof Error ? e.message : "Failed to discard draft");
+    } finally {
+      setDiscarding(false);
+    }
+  }
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape" && !sending) onClose();
+      if (e.key === "Escape" && !sending) {
+        void closeWithDraftSave();
+      }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, sending]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sending]);
+
+  useEffect(() => {
+    function onVisibility() {
+      if (document.visibilityState === "hidden") {
+        void saveDraftNow();
+      }
+    }
+    function onPageHide() {
+      void saveDraftNow();
+    }
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", onPageHide);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function openTemplates() {
+    setShowTemplates(true);
+    setLoadingTemplates(true);
+    try {
+      setTemplates(await client.listEmailTemplates());
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to load templates");
+      setShowTemplates(false);
+    } finally {
+      setLoadingTemplates(false);
+    }
+  }
+
+  function applyTemplate(template: EmailTemplate) {
+    setSubject(template.subject || "");
+    setBody(template.body || "");
+    setShowTemplates(false);
+  }
 
   async function handleSend() {
     const recipient = to.trim();
@@ -49,6 +167,15 @@ export function ComposeMailModal({
         body: body.trimEnd(),
         cc: cc.trim() || undefined,
       });
+      sentRef.current = true;
+      if (draftId != null) {
+        try {
+          await client.deleteMailDraft(draftId);
+          onDraftSaved?.();
+        } catch {
+          /* draft cleanup is best-effort */
+        }
+      }
       onSent(
         `Sent to ${result.to || recipient}` +
           (result.subject ? ` — ${result.subject}` : ""),
@@ -68,17 +195,26 @@ export function ComposeMailModal({
       aria-modal="true"
       aria-labelledby={titleId}
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget && !sending) onClose();
+        if (e.target === e.currentTarget && !sending) {
+          void closeWithDraftSave();
+        }
       }}
     >
-      <div className="w-full sm:max-w-2xl max-h-[92vh] overflow-y-auto rounded-t-2xl sm:rounded-xl border border-slate-700 bg-slate-900 shadow-2xl">
+      <div className="w-full sm:max-w-5xl max-h-[94vh] overflow-y-auto rounded-t-2xl sm:rounded-xl border border-slate-700 bg-slate-900 shadow-2xl">
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-800">
-          <h3 id={titleId} className="text-base font-medium text-slate-100">
-            Compose mail
-          </h3>
+          <div className="min-w-0">
+            <h3 id={titleId} className="text-base font-medium text-slate-100">
+              Compose mail
+            </h3>
+            {(savingDraft || draftId) && (
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                {savingDraft ? "Saving draft…" : "Draft saved"}
+              </p>
+            )}
+          </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => void closeWithDraftSave()}
             disabled={sending}
             className="text-slate-400 hover:text-slate-200 text-sm disabled:opacity-50"
           >
@@ -87,6 +223,17 @@ export function ComposeMailModal({
         </div>
 
         <div className="px-4 py-3 space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void openTemplates()}
+              disabled={sending}
+              className="px-3 py-1.5 rounded-lg border border-emerald-700/50 bg-emerald-900/30 text-emerald-200 text-xs font-medium hover:bg-emerald-900/50 disabled:opacity-50"
+            >
+              Import From Email Templates
+            </button>
+          </div>
+
           <label className="block space-y-1">
             <span className="text-xs text-slate-500">From</span>
             <input
@@ -149,32 +296,94 @@ export function ComposeMailModal({
             <textarea
               value={body}
               onChange={(e) => setBody(e.target.value)}
-              rows={12}
+              rows={14}
               placeholder="Write your email…"
-              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-emerald-600 resize-y min-h-[180px]"
+              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-emerald-600 resize-y min-h-[220px]"
             />
           </label>
         </div>
 
-        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-slate-800 bg-slate-950/40">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={sending}
-            className="px-3 py-2 rounded-lg border border-slate-700 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleSend()}
-            disabled={sending || !to.trim() || !body.trim()}
-            className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium text-white disabled:opacity-50"
-          >
-            {sending ? "Sending…" : "Send"}
-          </button>
+        <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-slate-800 bg-slate-950/40">
+          <div>
+            {(draftId != null ||
+              hasDraftContent(to, cc, subject, body) ||
+              Boolean(initialDraft)) && (
+              <button
+                type="button"
+                onClick={() => void discardDraft()}
+                disabled={sending || discarding}
+                className="px-3 py-2 rounded-lg border border-red-800/50 text-sm text-red-300 hover:bg-red-950/40 disabled:opacity-50"
+              >
+                {discarding ? "Discarding…" : "Discard"}
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void closeWithDraftSave()}
+              disabled={sending || discarding}
+              className="px-3 py-2 rounded-lg border border-slate-700 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleSend()}
+              disabled={sending || discarding || !to.trim() || !body.trim()}
+              className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium text-white disabled:opacity-50"
+            >
+              {sending ? "Sending…" : "Send"}
+            </button>
+          </div>
         </div>
       </div>
+
+      {showTemplates && (
+        <div
+          className="absolute inset-0 z-[90] flex items-end sm:items-center justify-center bg-black/50 p-0 sm:p-6"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setShowTemplates(false);
+          }}
+        >
+          <div className="w-full sm:max-w-2xl max-h-[80vh] overflow-hidden rounded-t-2xl sm:rounded-xl border border-slate-700 bg-slate-900 shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+              <h4 className="text-sm font-medium text-slate-100">Email templates</h4>
+              <button
+                type="button"
+                onClick={() => setShowTemplates(false)}
+                className="text-slate-400 hover:text-slate-200 text-sm"
+              >
+                Close
+              </button>
+            </div>
+            <div className="overflow-y-auto divide-y divide-slate-800/80">
+              {loadingTemplates ? (
+                <p className="py-10 text-center text-slate-500 text-sm">Loading templates…</p>
+              ) : templates.length === 0 ? (
+                <p className="py-10 text-center text-slate-500 text-sm">No templates yet.</p>
+              ) : (
+                templates.map((template) => (
+                  <button
+                    key={template.id}
+                    type="button"
+                    onClick={() => applyTemplate(template)}
+                    className="w-full text-left px-4 py-3 hover:bg-slate-800/60 transition"
+                  >
+                    <div className="text-sm font-medium text-slate-100">{template.name}</div>
+                    <div className="text-xs text-slate-400 truncate mt-0.5">
+                      {template.subject || "(no subject)"}
+                    </div>
+                    <div className="text-xs text-slate-500 truncate mt-1">
+                      {(template.body || "").replace(/\s+/g, " ").slice(0, 120)}
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>,
     document.body,
   );

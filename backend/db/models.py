@@ -510,3 +510,57 @@ class UserActivityEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
+
+
+class MailLabel(Base):
+    """Per-user Gmail-style label for IMAP messages (app-level, not IMAP folders)."""
+
+    __tablename__ = "mail_labels"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    color: Mapped[str] = mapped_column(String(32), nullable=False, default="#34d399")
+    # Domain, URL, or keyword — messages matching this are routed to the label (hidden from Inbox).
+    match_query: Mapped[Optional[str]] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MailLabelAssignment(Base):
+    __tablename__ = "mail_label_assignments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    label_id: Mapped[int] = mapped_column(
+        ForeignKey("mail_labels.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    folder: Mapped[str] = mapped_column(String(64), nullable=False, default="inbox")
+    message_uid: Mapped[str] = mapped_column(String(128), nullable=False)
+    message_id: Mapped[Optional[str]] = mapped_column(String(512))
+    thread_id: Mapped[Optional[str]] = mapped_column(String(255))
+    from_email: Mapped[Optional[str]] = mapped_column(String(255))
+    subject_key: Mapped[Optional[str]] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MailComposeDraft(Base):
+    """Saved outbound compose drafts (auto-saved when closing the compose modal)."""
+
+    __tablename__ = "mail_compose_drafts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    to_addrs: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    cc_addrs: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    subject: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    body: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

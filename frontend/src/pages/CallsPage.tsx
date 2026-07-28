@@ -15,6 +15,7 @@ import { BulkCallQueuePanel } from "../components/BulkCallQueuePanel";
 import { CountrySelect } from "../components/CountrySelect";
 import { Pagination } from "../components/Pagination";
 import { type CallOutcome, callOutcomeBadge, callOutcomeLabel, callOutcomeListNotice } from "../utils/callOutcomes";
+import { pushNumberToFloatingDialpad } from "../utils/dialpadEvents";
 import { useCallQueue, BATCH_SIZE } from "../hooks/useCallQueue";
 
 interface CallsPageProps {
@@ -488,7 +489,16 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
                     />
                     <button
                       type="button"
-                      onClick={() => onSelectLead?.(lead.id)}
+                      onClick={() => {
+                        if (lead.contact_phone) {
+                          pushNumberToFloatingDialpad({
+                            phone: lead.contact_phone,
+                            contactName: lead.contact_name ?? undefined,
+                            countryHint: lead.country,
+                          });
+                        }
+                        onSelectLead?.(lead.id);
+                      }}
                       className="text-left min-w-0 flex-1"
                     >
                       <p className="text-sm text-slate-200 truncate">{lead.company_name}</p>

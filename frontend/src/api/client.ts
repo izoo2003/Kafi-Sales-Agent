@@ -8,8 +8,35 @@
 
 import { clearSession, getStoredToken } from "../auth/session";
 
-/** Prefer relative /api (Vercel rewrite / Vite proxy) so cookies stay same-site. */
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
+/**
+ * Prefer relative `/api` (Vercel rewrite / Vite proxy) so cookies stay same-site.
+ * Normalizes common misconfigs like a bare hostname without https:// which the
+ * browser would treat as a path on the current origin (causing 405 on login).
+ */
+function resolveApiBase(raw: unknown): string {
+  const value = String(raw ?? "").trim();
+  if (!value || value === "/" || value === "/api" || value === "/api/") {
+    return "/api";
+  }
+  // Bare host → absolute https URL
+  let base = value;
+  if (!/^https?:\/\//i.test(base) && !base.startsWith("/")) {
+    base = `https://${base.replace(/^\/+/, "")}`;
+  }
+  // Absolute Railway (or other) host without /api suffix
+  if (/^https?:\/\//i.test(base)) {
+    const trimmed = base.replace(/\/+$/, "");
+    if (!/\/api$/i.test(trimmed)) {
+      return `${trimmed}/api`;
+    }
+    return trimmed;
+  }
+  // Relative path — keep leading slash, drop trailing
+  const rel = base.startsWith("/") ? base : `/${base}`;
+  return rel.replace(/\/+$/, "") || "/api";
+}
+
+const API_BASE = resolveApiBase(import.meta.env.VITE_API_BASE_URL);
 
 /** External quotation agent (separate app). */
 export const QUOTATION_AGENT_URL =
@@ -54,6 +81,8 @@ function timeoutForPath(path: string): number {
   if (path.startsWith("/auth/")) return AUTH_FETCH_TIMEOUT_MS;
   if (
     path.startsWith("/leads/table/dedupe") ||
+    path.startsWith("/leads/table/cleanup-sparse") ||
+    path.startsWith("/leads/table/repair-location-names") ||
     path.startsWith("/leads/table/unassign") ||
     path.startsWith("/leads/table/cleanup") ||
     path.startsWith("/leads/table/remove-old-client-overlaps")
@@ -370,6 +399,7 @@ export interface Lead {
   country: string | null;
   industry: string | null;
   source: string | null;
+  company_grading?: string | null;
   market_role?: string;
   market_role_reasoning?: string | null;
   market_role_confidence?: number | null;
@@ -586,6 +616,33 @@ export interface EmailTemplate {
   subject: string;
   body: string;
   attachments?: EmailAttachment[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MailLabel {
+  id: number;
+  name: string;
+  color: string;
+  match_query?: string | null;
+  count: number;
+}
+
+export interface MailLabelMessageKey {
+  folder: string;
+  message_uid: string;
+  message_id: string | null;
+  thread_id: string | null;
+  from_email: string | null;
+  subject_key: string | null;
+}
+
+export interface MailComposeDraft {
+  id: number;
+  to_addrs: string;
+  cc_addrs: string;
+  subject: string;
+  body: string;
   created_at: string;
   updated_at: string;
 }
@@ -958,6 +1015,16 @@ export interface RemoveOldClientOverlapsResponse {
 export interface LeadTableCleanupResponse {
   removed_count: number;
   removed: Array<{ id: number; company_name: string }>;
+}
+
+export interface LeadTableNameRepairResponse {
+  scanned: number;
+  location_name_candidates: number;
+  repaired_with_name: number;
+  relocated_name_empty: number;
+  skipped: number;
+  dry_run: boolean;
+  samples: Array<Record<string, unknown>>;
 }
 
 export interface LeadTableSectionCountsResponse {
@@ -1364,6 +1431,24 @@ export const client = {
       { method: "POST" },
     );
   },
+  repairLocationCompanyNames: (
+    params: LeadTableSectionScope & { dry_run?: boolean; limit?: number } = {},
+  ) => {
+    const search = new URLSearchParams();
+    if (params.source) search.set("source", params.source);
+    if (params.exclude_source) search.set("exclude_source", params.exclude_source);
+    if (params.assigned_to_user_id != null) {
+      search.set("assigned_to_user_id", String(params.assigned_to_user_id));
+    }
+    if (params.master) search.set("master", "true");
+    if (params.dry_run) search.set("dry_run", "true");
+    if (params.limit != null) search.set("limit", String(params.limit));
+    const query = search.toString();
+    return request<LeadTableNameRepairResponse>(
+      `/leads/table/repair-location-names${query ? `?${query}` : ""}`,
+      { method: "POST" },
+    );
+  },
   createLead: (data: LeadCreate) =>
     request<Lead>("/leads", { method: "POST", body: JSON.stringify(data) }),
   getLead: (id: number) => request<Lead>(`/leads/${id}`),
@@ -1705,6 +1790,57 @@ export const client = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+
+  listMailLabels: () => request<MailLabel[]>("/inbox/labels"),
+  createMailLabel: (data: { name: string; color?: string; match_query?: string | null }) =>
+    request<MailLabel>("/inbox/labels", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  deleteMailLabel: (labelId: number) =>
+    request<void>(`/inbox/labels/${labelId}`, { method: "DELETE" }),
+  assignMailLabel: (payload: {
+    label_id: number;
+    folder?: string;
+    message_uid: string;
+    message_id?: string | null;
+    thread_id?: string | null;
+    from_email?: string | null;
+    subject?: string | null;
+    apply_similar?: boolean;
+  }) =>
+    request<{ assigned: number; similar_rule: number; label_id: number }>("/inbox/labels/assign", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  unassignMailLabel: (payload: { label_id: number; folder?: string; message_uid: string }) =>
+    request<{ removed: boolean }>("/inbox/labels/unassign", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  listMailLabelMessages: (labelId: number) =>
+    request<MailLabelMessageKey[]>(`/inbox/labels/${labelId}/messages`),
+  mapMailLabelsByUids: (folder: string, uids: string[]) => {
+    const search = new URLSearchParams();
+    search.set("folder", folder);
+    if (uids.length) search.set("uids", uids.join(","));
+    return request<Record<string, MailLabel[]>>(`/inbox/labels/map/by-uids?${search.toString()}`);
+  },
+  listMailDrafts: () => request<MailComposeDraft[]>("/inbox/drafts"),
+  getMailDraftCount: () => request<{ count: number }>("/inbox/drafts/count"),
+  upsertMailDraft: (payload: {
+    id?: number | null;
+    to_addrs?: string;
+    cc_addrs?: string;
+    subject?: string;
+    body?: string;
+  }) =>
+    request<MailComposeDraft>("/inbox/drafts", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  deleteMailDraft: (draftId: number) =>
+    request<void>(`/inbox/drafts/${draftId}`, { method: "DELETE" }),
 
   listEmailTemplates: () => request<EmailTemplate[]>("/email-templates"),
   getEmailTemplatePlaceholders: () =>

@@ -224,3 +224,45 @@ export function buildE164(countryCode: string, localNumber: string): string | nu
   const full = `+${dial}${local}`;
   return /^\+\d{8,15}$/.test(full) ? full : null;
 }
+
+/** Longest dial-code match first so +971… beats +9… */
+const _DIAL_CODE_ENTRIES = Object.entries(COUNTRY_DIAL_CODES).sort(
+  (a, b) => b[1].length - a[1].length,
+);
+
+/**
+ * Split a phone string into dialpad country + national digits.
+ * Prefers an explicit +/00 prefix; otherwise uses ``countryHint`` ISO code.
+ */
+export function parsePhoneForDialpad(
+  phone: string,
+  countryHint?: string | null,
+): { countryCode: string; digits: string } | null {
+  const raw = phone.trim();
+  if (!raw) return null;
+
+  let digitsOnly = "";
+  if (raw.startsWith("+")) {
+    digitsOnly = raw.slice(1).replace(/\D/g, "");
+  } else if (raw.startsWith("00")) {
+    digitsOnly = raw.slice(2).replace(/\D/g, "");
+  } else {
+    const local = raw.replace(/\D/g, "").replace(/^0+/, "");
+    if (!local) return null;
+    const hint = (countryHint || "PK").toUpperCase();
+    return { countryCode: COUNTRY_DIAL_CODES[hint] ? hint : "PK", digits: local.slice(0, 20) };
+  }
+
+  if (digitsOnly.length < 6) return null;
+
+  for (const [iso, dial] of _DIAL_CODE_ENTRIES) {
+    if (digitsOnly.startsWith(dial) && digitsOnly.length > dial.length) {
+      return {
+        countryCode: iso,
+        digits: digitsOnly.slice(dial.length).slice(0, 20),
+      };
+    }
+  }
+
+  return { countryCode: "PK", digits: digitsOnly.slice(0, 20) };
+}

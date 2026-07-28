@@ -645,7 +645,7 @@ def _filtered_lead_table_rows(
     Returns (rows_or_id_dicts, section_total, filtered_count).
     When page/page_size are set, only that page is hydrated (unless ids_only).
     """
-    from sqlalchemy import and_, or_
+    from sqlalchemy import or_
 
     buyer_query = _apply_lead_table_scope(
         db.query(Buyer),
@@ -761,9 +761,6 @@ def _filtered_lead_table_rows(
             buyer_query = buyer_query.outerjoin(
                 latest_scores, Buyer.id == latest_scores.c.buyer_id
             ).filter(
-                sa_func.nullif(sa_func.btrim(sa_func.coalesce(Buyer.company_grading, "")), "").is_(
-                    None
-                ),
                 latest_scores.c.buyer_id.is_(None),
             )
         else:
@@ -772,21 +769,10 @@ def _filtered_lead_table_rows(
             except ValueError:
                 score_label = None
             if score_label is not None:
-                # Prefer editable company_grading; fall back to latest scored grade
+                # AI grade filter uses lead_scores only (never spreadsheet company_grading)
                 buyer_query = buyer_query.outerjoin(
                     latest_scores, Buyer.id == latest_scores.c.buyer_id
-                ).filter(
-                    or_(
-                        sa_func.upper(sa_func.btrim(sa_func.coalesce(Buyer.company_grading, "")))
-                        == score_label.value,
-                        and_(
-                            sa_func.nullif(
-                                sa_func.btrim(sa_func.coalesce(Buyer.company_grading, "")), ""
-                            ).is_(None),
-                            latest_scores.c.score == score_label,
-                        ),
-                    )
-                )
+                ).filter(latest_scores.c.score == score_label)
 
     sort_field = sort_by if sort_by in _SORT_FIELDS else "created_at"
     reverse = sort_dir.lower() != "asc"
