@@ -6,7 +6,6 @@ import {
   assignedUserIdFromSection,
   isAssignedLeadsSection,
   type LeadsTableSection,
-  type MailSection,
   type NavItem,
   type Tab,
   type WhatsAppSection,
@@ -57,12 +56,7 @@ function DashboardApp() {
   const { user, isAdmin, logout } = useAuth();
   const [tab, setTab] = useState<Tab>("table");
   const [tableSection, setTableSection] = useState<LeadsTableSection>("master");
-  const [mailSection, setMailSection] = useState<MailSection>("inbox");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [mailDraftCount, setMailDraftCount] = useState(0);
-  const [mailLabels, setMailLabels] = useState<
-    Array<{ id: number; name: string; color: string; count: number }>
-  >([]);
   const [tableCounts, setTableCounts] = useState<LeadTableSectionCountsResponse>({
     all: 0,
     old_clients: 0,
@@ -73,17 +67,10 @@ function DashboardApp() {
     by_assignee: {},
   });
   const [assigneeNavUsers, setAssigneeNavUsers] = useState<AppUser[]>([]);
-  const [mailCounts, setMailCounts] = useState({
-    inbox: 0,
-    sent: 0,
-    trash: 0,
-    archive: 0,
-  });
   const [leadsTableRefreshToken, setLeadsTableRefreshToken] = useState(0);
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [emailActivityUnread, setEmailActivityUnread] = useState(0);
-  const [emailTemplateCount, setEmailTemplateCount] = useState(0);
   const [whatsappTemplateCount, setWhatsappTemplateCount] = useState(0);
   const [discoverLeadsCount, setDiscoverLeadsCount] = useState(0);
 
@@ -142,15 +129,6 @@ function DashboardApp() {
     }
   }, [isAdmin]);
 
-  const loadEmailTemplateCount = useCallback(async () => {
-    try {
-      const rows = await client.listEmailTemplates();
-      setEmailTemplateCount(rows.length);
-    } catch {
-      setEmailTemplateCount(0);
-    }
-  }, []);
-
   const loadWhatsappTemplateCount = useCallback(async () => {
     try {
       const rows = await client.listWhatsAppTemplates();
@@ -184,34 +162,6 @@ function DashboardApp() {
       setAssigneeNavUsers([]);
     }
   }, [isAdmin]);
-
-  const loadMailCounts = useCallback(async () => {
-    try {
-      const result = await client.listInboxFolders();
-      const next = { inbox: 0, sent: 0, trash: 0, archive: 0 };
-      for (const folder of result.folders) {
-        if (folder.key === "inbox" || folder.key === "sent" || folder.key === "trash" || folder.key === "archive") {
-          next[folder.key] = folder.count;
-        }
-      }
-      setMailCounts(next);
-    } catch {
-      /* optional badges */
-    }
-  }, []);
-
-  const loadMailExtras = useCallback(async () => {
-    try {
-      const [drafts, labels] = await Promise.all([
-        client.getMailDraftCount(),
-        client.listMailLabels(),
-      ]);
-      setMailDraftCount(drafts.count);
-      setMailLabels(labels);
-    } catch {
-      /* optional badges */
-    }
-  }, []);
 
   const pollInbox = useCallback(() => {
     client
@@ -292,9 +242,6 @@ function DashboardApp() {
     void loadDiscoverLeadsCount();
     void loadTableCounts();
     void loadAssigneeNavUsers();
-    void loadMailCounts();
-    void loadMailExtras();
-    void loadEmailTemplateCount();
     void loadWhatsappTemplateCount();
     client
       .getEmailActivityUnreadCount()
@@ -304,10 +251,7 @@ function DashboardApp() {
     pollInterestedFollowUps();
   }, [
     loadDiscoverLeadsCount,
-    loadEmailTemplateCount,
     loadWhatsappTemplateCount,
-    loadMailCounts,
-    loadMailExtras,
     loadTableCounts,
     loadAssigneeNavUsers,
     pollInbox,
@@ -317,10 +261,7 @@ function DashboardApp() {
   useEffect(() => {
     void loadTableCounts();
     void loadAssigneeNavUsers();
-    void loadMailCounts();
-    void loadMailExtras();
     void loadDiscoverLeadsCount();
-    void loadEmailTemplateCount();
     void loadWhatsappTemplateCount();
     requestNotificationPermission();
 
@@ -351,10 +292,7 @@ function DashboardApp() {
     };
   }, [
     loadDiscoverLeadsCount,
-    loadEmailTemplateCount,
     loadWhatsappTemplateCount,
-    loadMailCounts,
-    loadMailExtras,
     loadTableCounts,
     loadAssigneeNavUsers,
     pollInbox,
@@ -370,8 +308,6 @@ function DashboardApp() {
     setSelectedLeadId(null);
     void loadDiscoverLeadsCount();
     void loadTableCounts();
-    void loadMailCounts();
-    void loadEmailTemplateCount();
   }
 
   function handleSelectTab(nextTab: Tab) {
@@ -404,21 +340,8 @@ function DashboardApp() {
     setTab(section);
   }
 
-  const handleMailCountsChange = useCallback(
-    (counts: {
-      inbox: number;
-      sent: number;
-      trash: number;
-      archive: number;
-    }) => {
-      setMailCounts(counts);
-    },
-    [],
-  );
-
   function handleCallFollowUpSaved(_outcome: string | null | undefined) {
     void loadTableCounts();
-    void loadEmailTemplateCount();
     setLeadsTableRefreshToken((token) => token + 1);
   }
 
@@ -590,7 +513,6 @@ function DashboardApp() {
           activeTab={tab}
           tableSection={tableSection}
           defaultTableSection={defaultTableSection}
-          mailSection={mailSection}
           onSelectTab={handleSelectTab}
           onSelectTableSection={handleSelectTableSection}
           onSelectWhatsAppSection={handleSelectWhatsAppSection}
