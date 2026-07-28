@@ -1676,6 +1676,18 @@ export const client = {
   getBulkEmailSettings: () =>
     request<BulkEmailSettings>("/interactions/bulk-email-settings"),
 
+  createMailerHandoff: (buyerIds: number[]) =>
+    request<{
+      url: string;
+      token: string;
+      expires_in_seconds: number;
+      recipient_count: number;
+      skipped_no_email: number;
+    }>("/mailer/handoff", {
+      method: "POST",
+      body: JSON.stringify({ buyer_ids: buyerIds }),
+    }),
+
   getDailyKpi: (params: {
     date: string;
     period?: KpiPeriod | string;

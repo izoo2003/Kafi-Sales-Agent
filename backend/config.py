@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     # each user's mailbox email. Leave unset to use SMTP (local / Railway Pro).
     resend_api_key: str | None = None
 
+    # Vercel mailer handoff (SMTP on Vercel, not Railway).
+    # Same MAILER_HANDOFF_SECRET must be set on the mailer Vercel project.
+    mailer_handoff_secret: str | None = None
+    mailer_public_url: str | None = None  # e.g. https://kafi-mailer.vercel.app
+
     # Gemini LLM (see modules/llm_client.py) — loaded from .env into Settings, not os.environ.
     gemini_api_key: str | None = None
     llm_api_key: str | None = None  # legacy alias for gemini_api_key

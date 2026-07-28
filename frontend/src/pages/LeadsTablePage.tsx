@@ -405,6 +405,7 @@ export function LeadsTablePage({
   const [actionProgress, setActionProgress] = useState<BulkActionProgress | null>(null);
   const [bulkResults, setBulkResults] = useState<BulkOnboardRowResult[] | null>(null);
   const [showBulkEmail, setShowBulkEmail] = useState(false);
+  const [openingMailer, setOpeningMailer] = useState(false);
   const [showBulkWhatsApp, setShowBulkWhatsApp] = useState(false);
   const [bulkWhatsAppNotice, setBulkWhatsAppNotice] = useState<string | null>(null);
   const [showCsvImport, setShowCsvImport] = useState(false);
@@ -416,6 +417,34 @@ export function LeadsTablePage({
     setBulkEmailNotice(message);
     window.setTimeout(() => setBulkEmailNotice(null), 8000);
   }, []);
+
+  const openBulkMailer = useCallback(async () => {
+    const ids = [...selected];
+    if (!ids.length) return;
+    const mailerUrl = (import.meta.env.VITE_BULK_MAILER_URL as string | undefined)?.trim();
+    if (!mailerUrl) {
+      // Fallback: in-app modal (Railway SMTP — works locally / Pro only)
+      setShowBulkEmail(true);
+      return;
+    }
+    setOpeningMailer(true);
+    try {
+      const handoff = await client.createMailerHandoff(ids);
+      window.open(handoff.url, "_blank", "noopener,noreferrer");
+      showEmailNotice(
+        `Opened Vercel mailer with ${handoff.recipient_count} recipient${
+          handoff.recipient_count === 1 ? "" : "s"
+        }` +
+          (handoff.skipped_no_email
+            ? ` (${handoff.skipped_no_email} skipped — no email).`
+            : "."),
+      );
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to open mailer");
+    } finally {
+      setOpeningMailer(false);
+    }
+  }, [selected, onError, showEmailNotice]);
 
   useEffect(() => {
     if (!isAdmin) {
@@ -1513,17 +1542,20 @@ export function LeadsTablePage({
           )}
           <button
             type="button"
-            onClick={() => setShowBulkEmail(true)}
+            onClick={() => void openBulkMailer()}
             disabled={
               selected.size === 0 ||
               bulkOnboarding ||
               deletingSelected ||
               deletingId !== null ||
-              editMode
+              editMode ||
+              openingMailer
             }
             className="px-3 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-600 border border-sky-600/50 text-sm font-medium disabled:opacity-50"
           >
-            Send emails ({selected.size})
+            {openingMailer
+              ? "Opening mailer…"
+              : `Send emails (${selected.size})`}
           </button>
           <button
             type="button"

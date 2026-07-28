@@ -1,4 +1,6 @@
-/** Inbox alerts — sound, desktop notification, and in-app popup (no voice/speech). */
+/** Inbox alerts — popup, chime, optional voiceover, or fully off (user preference). */
+
+export type NotificationMode = "popup_sound" | "popup_voiceover" | "off";
 
 export interface InboxPopupPayload {
   id: string;
@@ -17,10 +19,14 @@ export interface InterestedFollowUpPopupPayload {
   tableSection?: "interested_clients" | "not_received_call_clients";
 }
 
+const MODE_STORAGE_KEY = "kafi.notificationMode";
+const MODE_VALUES: NotificationMode[] = ["popup_sound", "popup_voiceover", "off"];
+
 let audioCtx: AudioContext | null = null;
 let audioUnlocked = false;
 const popupListeners = new Set<(payload: InboxPopupPayload) => void>();
 const followUpListeners = new Set<(payload: InterestedFollowUpPopupPayload) => void>();
+const prefListeners = new Set<() => void>();
 
 function getAudioContext(): AudioContext | null {
   if (typeof window === "undefined") return null;
@@ -36,6 +42,33 @@ function getAudioContext(): AudioContext | null {
   } catch {
     return null;
   }
+}
+
+export function getNotificationMode(): NotificationMode {
+  if (typeof window === "undefined") return "popup_sound";
+  try {
+    const raw = localStorage.getItem(MODE_STORAGE_KEY);
+    if (raw && MODE_VALUES.includes(raw as NotificationMode)) {
+      return raw as NotificationMode;
+    }
+  } catch {
+    /* ignore */
+  }
+  return "popup_sound";
+}
+
+export function setNotificationMode(mode: NotificationMode) {
+  try {
+    localStorage.setItem(MODE_STORAGE_KEY, mode);
+  } catch {
+    /* ignore */
+  }
+  prefListeners.forEach((listener) => listener());
+}
+
+export function subscribeNotificationPrefs(listener: () => void) {
+  prefListeners.add(listener);
+  return () => prefListeners.delete(listener);
 }
 
 export function subscribeInboxPopup(listener: (payload: InboxPopupPayload) => void) {
@@ -124,6 +157,31 @@ function stopAnySpeech() {
   }
 }
 
+function speakAlert(text: string) {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+  try {
+    stopAnySpeech();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    utterance.volume = 1;
+    window.speechSynthesis.speak(utterance);
+  } catch {
+    /* ignore */
+  }
+}
+
+function applyAlertEffects(mode: NotificationMode, spokenText: string) {
+  if (mode === "off") return;
+  unlockNotificationAudio();
+  if (mode === "popup_sound") {
+    stopAnySpeech();
+    playNotificationChime();
+  } else if (mode === "popup_voiceover") {
+    speakAlert(spokenText);
+  }
+}
+
 export function getNotificationPermission(): NotificationPermission | "unsupported" {
   if (typeof window === "undefined" || !("Notification" in window)) return "unsupported";
   return Notification.permission;
@@ -140,12 +198,13 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
 export function showDesktopNotification(title: string, body: string) {
   if (typeof window === "undefined" || !("Notification" in window)) return;
   if (Notification.permission !== "granted") return;
+  if (getNotificationMode() === "off") return;
   try {
     const notification = new Notification(title, {
       body,
       tag: "kafi-inbox",
       requireInteraction: true,
-      silent: true, // we already play our own chime
+      silent: true, // we already play our own chime / voiceover
     });
     notification.onclick = () => {
       window.focus();
@@ -161,9 +220,8 @@ export function alertNewInboxMessage(details: {
   subject?: string | null;
   count?: number;
 }) {
-  stopAnySpeech();
-  unlockNotificationAudio();
-  playNotificationChime();
+  const mode = getNotificationMode();
+  if (mode === "off") return;
 
   const sender = details.from?.trim() || "a contact";
   const subject = details.subject?.trim() || "New message";
@@ -176,6 +234,12 @@ export function alertNewInboxMessage(details: {
         ? `${sender}: ${subject}`
         : `New email from ${sender}`;
 
+  const spoken =
+    count > 1
+      ? `You have ${count} new inbox messages.`
+      : `New inbox message from ${sender}. ${subject}.`;
+
+  applyAlertEffects(mode, spoken);
   showDesktopNotification("New inbox message", body);
 
   emitInboxPopup({
@@ -195,9 +259,8 @@ export function alertInterestedFollowUp(details: {
   daysSincePlacement?: number;
   tableSection?: "interested_clients" | "not_received_call_clients";
 }) {
-  stopAnySpeech();
-  unlockNotificationAudio();
-  playNotificationChime();
+  const mode = getNotificationMode();
+  if (mode === "off") return;
 
   const label = details.contactName?.trim()
     ? `${details.contactName} (${details.companyName})`
@@ -210,6 +273,11 @@ export function alertInterestedFollowUp(details: {
         month: "short",
         day: "numeric",
       });
+
+  applyAlertEffects(
+    mode,
+    `Follow up reminder. ${label}. Follow-up due ${dueLabel}.`,
+  );
 
   showDesktopNotification(
     "Follow up client reminder",

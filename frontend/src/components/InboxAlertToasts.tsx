@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import {
-  getNotificationPermission,
-  requestNotificationPermission,
+  getNotificationMode,
   subscribeInboxPopup,
+  subscribeNotificationPrefs,
   type InboxPopupPayload,
 } from "../utils/notify";
 
@@ -14,12 +14,21 @@ const AUTO_DISMISS_MS = 15_000;
 
 export function InboxAlertToasts({ onOpenInbox }: InboxAlertToastsProps) {
   const [alerts, setAlerts] = useState<InboxPopupPayload[]>([]);
-  const [notifPermission, setNotifPermission] = useState(getNotificationPermission());
+  const [mode, setMode] = useState(getNotificationMode);
+
+  useEffect(() => {
+    return subscribeNotificationPrefs(() => {
+      const next = getNotificationMode();
+      setMode(next);
+      if (next === "off") setAlerts([]);
+    });
+  }, []);
 
   useEffect(() => {
     const timers = new Map<string, number>();
 
     const unsubscribe = subscribeInboxPopup((payload) => {
+      if (getNotificationMode() === "off") return;
       setAlerts((prev) => [payload, ...prev].slice(0, 3));
       const timer = window.setTimeout(() => {
         setAlerts((prev) => prev.filter((item) => item.id !== payload.id));
@@ -38,29 +47,10 @@ export function InboxAlertToasts({ onOpenInbox }: InboxAlertToastsProps) {
     setAlerts((prev) => prev.filter((item) => item.id !== id));
   }
 
-  async function enableDesktopNotifications() {
-    const result = await requestNotificationPermission();
-    setNotifPermission(result);
-  }
+  if (mode === "off" || alerts.length === 0) return null;
 
   return (
-    <div className="fixed top-4 right-4 z-[100] flex flex-col items-end gap-3 max-w-sm w-[calc(100vw-2rem)] pointer-events-none">
-      {notifPermission !== "granted" && notifPermission !== "unsupported" && (
-        <div className="pointer-events-auto w-full rounded-xl border border-slate-700 bg-slate-900/95 backdrop-blur px-4 py-3 shadow-2xl text-sm">
-          <p className="text-slate-200 font-medium">Enable desktop popups?</p>
-          <p className="text-slate-400 text-xs mt-1">
-            Get Windows/macOS notifications when new email arrives (even in another tab).
-          </p>
-          <button
-            type="button"
-            onClick={() => void enableDesktopNotifications()}
-            className="mt-2 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium"
-          >
-            Allow notifications
-          </button>
-        </div>
-      )}
-
+    <div className="fixed top-14 right-4 z-[100] flex flex-col items-end gap-3 max-w-sm w-[calc(100vw-2rem)] pointer-events-none">
       {alerts.map((alert) => (
         <div
           key={alert.id}

@@ -13,6 +13,7 @@ import {
 } from "./components/AppSidebar";
 import { InboxAlertToasts } from "./components/InboxAlertToasts";
 import { InterestedFollowUpAlertToasts } from "./components/InterestedFollowUpAlertToasts";
+import { AppTopActions } from "./components/AppTopActions";
 import { EmailActivityPage } from "./pages/EmailActivityPage";
 import { EmailTemplatesPage } from "./pages/EmailTemplatesPage";
 import { WhatsAppTemplatesPage } from "./pages/WhatsAppTemplatesPage";
@@ -631,16 +632,14 @@ function DashboardApp() {
           onSelectTableSection={handleSelectTableSection}
           onSelectMailSection={handleSelectMailSection}
           onSelectWhatsAppSection={handleSelectWhatsAppSection}
-          onRefresh={refreshAll}
           userLabel={user?.full_name || user?.username}
           userRole={user?.role}
-          onLogout={() => void logout()}
           mobileOpen={mobileNavOpen}
           onMobileClose={() => setMobileNavOpen(false)}
         />
 
         <div className="flex-1 min-w-0 flex flex-col overflow-x-hidden">
-          <header className="lg:hidden sticky top-0 z-30 flex items-center gap-3 border-b border-slate-800 bg-slate-950/95 backdrop-blur px-3 py-2.5 pt-[max(0.625rem,env(safe-area-inset-top))]">
+          <header className="lg:hidden sticky top-0 z-30 flex items-center gap-2 border-b border-slate-800 bg-slate-950/95 backdrop-blur px-3 py-2.5 pt-[max(0.625rem,env(safe-area-inset-top))]">
             <button
               type="button"
               onClick={() => setMobileNavOpen(true)}
@@ -657,7 +656,19 @@ function DashboardApp() {
                 {user?.full_name || user?.username || "Signed in"}
               </p>
             </div>
+            <AppTopActions
+              compact
+              onRefresh={refreshAll}
+              onLogout={() => void logout()}
+            />
           </header>
+
+          <div className="hidden lg:flex sticky top-0 z-30 justify-end items-center gap-2 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur px-4 sm:px-6 lg:px-8 py-2.5">
+            <AppTopActions
+              onRefresh={refreshAll}
+              onLogout={() => void logout()}
+            />
+          </div>
 
           <main
             className={`w-full mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 lg:py-8 ${

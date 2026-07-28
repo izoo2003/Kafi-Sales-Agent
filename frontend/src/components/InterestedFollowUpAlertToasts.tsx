@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import {
+  getNotificationMode,
   subscribeInterestedFollowUpPopup,
+  subscribeNotificationPrefs,
   type InterestedFollowUpPopupPayload,
 } from "../utils/notify";
 
@@ -30,11 +32,21 @@ export function InterestedFollowUpAlertToasts({
 }: InterestedFollowUpAlertToastsProps) {
   const [alerts, setAlerts] = useState<InterestedFollowUpPopupPayload[]>([]);
   const [acknowledging, setAcknowledging] = useState<number | null>(null);
+  const [mode, setMode] = useState(getNotificationMode);
+
+  useEffect(() => {
+    return subscribeNotificationPrefs(() => {
+      const next = getNotificationMode();
+      setMode(next);
+      if (next === "off") setAlerts([]);
+    });
+  }, []);
 
   useEffect(() => {
     const timers = new Map<string, number>();
 
     const unsubscribe = subscribeInterestedFollowUpPopup((payload) => {
+      if (getNotificationMode() === "off") return;
       setAlerts((prev) => {
         if (prev.some((item) => item.id === payload.id)) return prev;
         return [payload, ...prev].slice(0, 5);
@@ -73,7 +85,7 @@ export function InterestedFollowUpAlertToasts({
     }
   }
 
-  if (alerts.length === 0) return null;
+  if (mode === "off" || alerts.length === 0) return null;
 
   return (
     <div className="fixed bottom-4 right-4 z-[100] flex flex-col items-end gap-3 max-w-sm w-[calc(100vw-2rem)] pointer-events-none">

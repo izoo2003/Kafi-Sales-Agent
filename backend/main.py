@@ -17,6 +17,7 @@ from api import (
     kpi,
     leads,
     mail_extras,
+    mailer_handoff,
     scheduler,
     track,
     whatsapp,
@@ -232,6 +233,7 @@ app.include_router(calls.router, prefix="/api")
 app.include_router(email_attachments.router, prefix="/api")
 app.include_router(inbox.router, prefix="/api")
 app.include_router(mail_extras.router, prefix="/api")
+app.include_router(mailer_handoff.router, prefix="/api")
 app.include_router(calls.webhooks_router, prefix="/api")
 app.include_router(chatbot.router, prefix="/api")
 app.include_router(kpi.router, prefix="/api")
