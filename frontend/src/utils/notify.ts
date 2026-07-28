@@ -68,19 +68,25 @@ export function setNotificationMode(mode: NotificationMode) {
 
 export function subscribeNotificationPrefs(listener: () => void) {
   prefListeners.add(listener);
-  return () => prefListeners.delete(listener);
+  return () => {
+    prefListeners.delete(listener);
+  };
 }
 
 export function subscribeInboxPopup(listener: (payload: InboxPopupPayload) => void) {
   popupListeners.add(listener);
-  return () => popupListeners.delete(listener);
+  return () => {
+    popupListeners.delete(listener);
+  };
 }
 
 export function subscribeInterestedFollowUpPopup(
   listener: (payload: InterestedFollowUpPopupPayload) => void,
 ) {
   followUpListeners.add(listener);
-  return () => followUpListeners.delete(listener);
+  return () => {
+    followUpListeners.delete(listener);
+  };
 }
 
 function emitInboxPopup(payload: InboxPopupPayload) {
