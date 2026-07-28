@@ -119,7 +119,9 @@ export function AppSidebar({
   onMobileClose,
 }: AppSidebarProps) {
   const [leadsMenuOpen, setLeadsMenuOpen] = useState(activeTab === "table");
-  const [mailMenuOpen, setMailMenuOpen] = useState(false);
+  const [mailMenuOpen, setMailMenuOpen] = useState(
+    activeTab === "inbox" || activeTab === "activity" || activeTab === "email-templates",
+  );
   const [whatsappMenuOpen, setWhatsappMenuOpen] = useState(
     activeTab === "whatsapp-inbox" || activeTab === "whatsapp-templates",
   );

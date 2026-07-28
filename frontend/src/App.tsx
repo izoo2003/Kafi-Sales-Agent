@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useRef, useState } from "react";
 import { client, QUOTATION_AGENT_URL, type AppUser, type LeadTableSectionCountsResponse } from "./api/client";
 import { useAuth } from "./auth/AuthContext";
 import {
@@ -6,6 +6,7 @@ import {
   assignedUserIdFromSection,
   isAssignedLeadsSection,
   type LeadsTableSection,
+  type MailSection,
   type NavItem,
   type Tab,
   type WhatsAppSection,
@@ -13,10 +14,13 @@ import {
 import { InboxAlertToasts } from "./components/InboxAlertToasts";
 import { InterestedFollowUpAlertToasts } from "./components/InterestedFollowUpAlertToasts";
 import { AppTopActions } from "./components/AppTopActions";
+import { EmailActivityPage } from "./pages/EmailActivityPage";
+import { EmailTemplatesPage } from "./pages/EmailTemplatesPage";
 import { WhatsAppTemplatesPage } from "./pages/WhatsAppTemplatesPage";
 import { WhatsAppInboxPage } from "./pages/WhatsAppInboxPage";
 import { BuyerProfile } from "./pages/BuyerProfile";
 import { CallsPage } from "./pages/CallsPage";
+import { InboxPage } from "./pages/InboxPage";
 import { LeadsPage } from "./pages/LeadsPage";
 import { LeadsTablePage } from "./pages/LeadsTablePage";
 import { ChatbotPage } from "./pages/ChatbotPage";
@@ -54,9 +58,14 @@ function CallInitBanner() {
 
 function DashboardApp() {
   const { user, isAdmin, logout } = useAuth();
-  const [tab, setTab] = useState<Tab>("table");
+  const [tab, setTab] = useState<Tab>("inbox");
   const [tableSection, setTableSection] = useState<LeadsTableSection>("master");
+  const [mailSection, setMailSection] = useState<MailSection>("inbox");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [mailDraftCount, setMailDraftCount] = useState(0);
+  const [mailLabels, setMailLabels] = useState<
+    Array<{ id: number; name: string; color: string; count: number }>
+  >([]);
   const [tableCounts, setTableCounts] = useState<LeadTableSectionCountsResponse>({
     all: 0,
     old_clients: 0,
@@ -67,10 +76,17 @@ function DashboardApp() {
     by_assignee: {},
   });
   const [assigneeNavUsers, setAssigneeNavUsers] = useState<AppUser[]>([]);
+  const [mailCounts, setMailCounts] = useState({
+    inbox: 0,
+    sent: 0,
+    trash: 0,
+    archive: 0,
+  });
   const [leadsTableRefreshToken, setLeadsTableRefreshToken] = useState(0);
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [emailActivityUnread, setEmailActivityUnread] = useState(0);
+  const [emailTemplateCount, setEmailTemplateCount] = useState(0);
   const [whatsappTemplateCount, setWhatsappTemplateCount] = useState(0);
   const [discoverLeadsCount, setDiscoverLeadsCount] = useState(0);
 
@@ -89,11 +105,11 @@ function DashboardApp() {
 
   useEffect(() => {
     if (!isAdmin && tab === "leads") {
-      setTab("table");
+      setTab("inbox");
       setSelectedLeadId(null);
     }
     if (!isAdmin && tab === "users") {
-      setTab("table");
+      setTab("inbox");
     }
   }, [isAdmin, tab]);
 
@@ -104,7 +120,7 @@ function DashboardApp() {
     setSelectedLeadId(null);
   }, [tab, isAdmin]);
 
-  // Sales users only get client buckets — never Master / Scrapped Leads / assignee views.
+  // Sales users only get client buckets ΓÇö never Master / Scrapped Leads / assignee views.
   useEffect(() => {
     if (isAdmin) return;
     if (
@@ -128,6 +144,15 @@ function DashboardApp() {
       setDiscoverLeadsCount(0);
     }
   }, [isAdmin]);
+
+  const loadEmailTemplateCount = useCallback(async () => {
+    try {
+      const rows = await client.listEmailTemplates();
+      setEmailTemplateCount(rows.length);
+    } catch {
+      setEmailTemplateCount(0);
+    }
+  }, []);
 
   const loadWhatsappTemplateCount = useCallback(async () => {
     try {
@@ -163,6 +188,34 @@ function DashboardApp() {
     }
   }, [isAdmin]);
 
+  const loadMailCounts = useCallback(async () => {
+    try {
+      const result = await client.listInboxFolders();
+      const next = { inbox: 0, sent: 0, trash: 0, archive: 0 };
+      for (const folder of result.folders) {
+        if (folder.key === "inbox" || folder.key === "sent" || folder.key === "trash" || folder.key === "archive") {
+          next[folder.key] = folder.count;
+        }
+      }
+      setMailCounts(next);
+    } catch {
+      /* optional badges */
+    }
+  }, []);
+
+  const loadMailExtras = useCallback(async () => {
+    try {
+      const [drafts, labels] = await Promise.all([
+        client.getMailDraftCount(),
+        client.listMailLabels(),
+      ]);
+      setMailDraftCount(drafts.count);
+      setMailLabels(labels);
+    } catch {
+      /* optional badges */
+    }
+  }, []);
+
   const pollInbox = useCallback(() => {
     client
       .getInboxStatus()
@@ -177,7 +230,7 @@ function DashboardApp() {
         lastInboxUnreadRef.current = status.unread_count;
         setInboxUnread(status.unread_count);
 
-        // Only pull a message list when unread goes up — avoid downloading mail
+        // Only pull a message list when unread goes up ΓÇö avoid downloading mail
         // on every badge poll just to detect new arrivals.
         if (status.unread_count <= previousUnread && seenMessageUidsRef.current !== null) {
           return;
@@ -206,7 +259,7 @@ function DashboardApp() {
         });
       })
       .catch(() => {
-        /* mailbox may be unconfigured — ignore */
+        /* mailbox may be unconfigured ΓÇö ignore */
       });
   }, []);
 
@@ -242,6 +295,9 @@ function DashboardApp() {
     void loadDiscoverLeadsCount();
     void loadTableCounts();
     void loadAssigneeNavUsers();
+    void loadMailCounts();
+    void loadMailExtras();
+    void loadEmailTemplateCount();
     void loadWhatsappTemplateCount();
     client
       .getEmailActivityUnreadCount()
@@ -251,7 +307,10 @@ function DashboardApp() {
     pollInterestedFollowUps();
   }, [
     loadDiscoverLeadsCount,
+    loadEmailTemplateCount,
     loadWhatsappTemplateCount,
+    loadMailCounts,
+    loadMailExtras,
     loadTableCounts,
     loadAssigneeNavUsers,
     pollInbox,
@@ -261,7 +320,10 @@ function DashboardApp() {
   useEffect(() => {
     void loadTableCounts();
     void loadAssigneeNavUsers();
+    void loadMailCounts();
+    void loadMailExtras();
     void loadDiscoverLeadsCount();
+    void loadEmailTemplateCount();
     void loadWhatsappTemplateCount();
     requestNotificationPermission();
 
@@ -292,7 +354,10 @@ function DashboardApp() {
     };
   }, [
     loadDiscoverLeadsCount,
+    loadEmailTemplateCount,
     loadWhatsappTemplateCount,
+    loadMailCounts,
+    loadMailExtras,
     loadTableCounts,
     loadAssigneeNavUsers,
     pollInbox,
@@ -308,6 +373,8 @@ function DashboardApp() {
     setSelectedLeadId(null);
     void loadDiscoverLeadsCount();
     void loadTableCounts();
+    void loadMailCounts();
+    void loadEmailTemplateCount();
   }
 
   function handleSelectTab(nextTab: Tab) {
@@ -326,12 +393,26 @@ function DashboardApp() {
     setSelectedLeadId(null);
   }
 
+  function handleSelectMailSection(section: MailSection) {
+    setMailSection(section);
+    setSelectedLeadId(null);
+    if (section === "activity") {
+      setTab("activity");
+      return;
+    }
+    if (section === "email-templates") {
+      setTab("email-templates");
+      return;
+    }
+    setTab("inbox");
+  }
+
   async function openMailerApp() {
     try {
       const session = await client.createMailerSession();
       window.location.href = session.url;
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not open Mail");
+      setError(e instanceof Error ? e.message : "Could not open Vercel mailer");
     }
   }
 
@@ -340,8 +421,21 @@ function DashboardApp() {
     setTab(section);
   }
 
+  const handleMailCountsChange = useCallback(
+    (counts: {
+      inbox: number;
+      sent: number;
+      trash: number;
+      archive: number;
+    }) => {
+      setMailCounts(counts);
+    },
+    [],
+  );
+
   function handleCallFollowUpSaved(_outcome: string | null | undefined) {
     void loadTableCounts();
+    void loadEmailTemplateCount();
     setLeadsTableRefreshToken((token) => token + 1);
   }
 
@@ -463,10 +557,37 @@ function DashboardApp() {
       ],
     },
     {
-      id: "mail",
+      id: "inbox",
       label: "Mail",
       count: inboxUnread + emailActivityUnread,
       alert: inboxUnread > 0 || emailActivityUnread > 0,
+      children: [
+        { id: "inbox", label: "Inbox", count: mailCounts.inbox },
+        { id: "sent", label: "Sent", count: mailCounts.sent },
+        { id: "drafts", label: "Drafts", count: mailDraftCount },
+        { id: "trash", label: "Trash", count: mailCounts.trash },
+        { id: "archive", label: "Archive", count: mailCounts.archive },
+        {
+          id: "activity",
+          label: "Email Activity",
+          count: emailActivityUnread,
+        },
+        {
+          id: "email-templates",
+          label: "Email templates",
+          count: emailTemplateCount,
+        },
+        ...mailLabels.map((label) => ({
+          id: `label:${label.id}`,
+          label: label.name,
+          count: label.count,
+        })),
+      ],
+    },
+    {
+      id: "mail",
+      label: "Vercel mailer",
+      count: 0,
       openMailer: true,
     },
     { id: "calls", label: "Calls", count: 0 },
@@ -482,8 +603,11 @@ function DashboardApp() {
   ];
 
   const isWideTable = tab === "table" && selectedLeadId === null;
+  const isWideMail =
+    tab === "inbox" || tab === "activity" || tab === "email-templates";
   const isWideContent =
     isWideTable ||
+    isWideMail ||
     tab === "whatsapp-templates" ||
     tab === "whatsapp-inbox" ||
     (tab === "leads" && selectedLeadId === null) ||
@@ -503,7 +627,12 @@ function DashboardApp() {
       <CallingCardOverlay />
       <FloatingDialpad onError={setError} />
       <div className="min-h-dvh flex">
-        <InboxAlertToasts onOpenInbox={() => void openMailerApp()} />
+        <InboxAlertToasts
+          onOpenInbox={() => {
+            setMailSection("inbox");
+            handleSelectTab("inbox");
+          }}
+        />
         <InterestedFollowUpAlertToasts
           onViewClient={handleViewInterestedClient}
           onAcknowledge={handleAcknowledgeInterestedFollowUp}
@@ -513,8 +642,10 @@ function DashboardApp() {
           activeTab={tab}
           tableSection={tableSection}
           defaultTableSection={defaultTableSection}
+          mailSection={mailSection}
           onSelectTab={handleSelectTab}
           onSelectTableSection={handleSelectTableSection}
+          onSelectMailSection={handleSelectMailSection}
           onSelectWhatsAppSection={handleSelectWhatsAppSection}
           onOpenMailer={() => void openMailerApp()}
           userLabel={user?.full_name || user?.username}
@@ -572,6 +703,15 @@ function DashboardApp() {
               </div>
             )}
 
+            {tab === "activity" && (
+              <EmailActivityPage onError={setError} onUnreadChange={setEmailActivityUnread} />
+            )}
+            {tab === "email-templates" && (
+              <EmailTemplatesPage
+                onError={setError}
+                onCountChange={setEmailTemplateCount}
+              />
+            )}
             {tab === "whatsapp-templates" && (
               <WhatsAppTemplatesPage
                 onError={setError}
@@ -611,6 +751,15 @@ function DashboardApp() {
                 onError={setError}
                 onSelectLead={handleSelectLead}
                 onSectionCountsChange={setTableCounts}
+              />
+            )}
+            {tab === "inbox" && (
+              <InboxPage
+                section={mailSection}
+                onError={setError}
+                onUnreadChange={setInboxUnread}
+                onFolderCountsChange={handleMailCountsChange}
+                onMailExtrasChange={() => void loadMailExtras()}
               />
             )}
             {tab === "calls" && selectedLeadId !== null && (
@@ -653,7 +802,7 @@ export default function App() {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-400 text-sm">
-        Checking session…
+        Checking sessionΓÇª
       </div>
     );
   }
