@@ -46,9 +46,9 @@ export function PostCallRemarksModal({ onError, onSaved }: PostCallRemarksModalP
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/60">
       <div
-        className="w-full max-w-lg rounded-xl border border-slate-700 bg-slate-900 shadow-2xl p-5 space-y-4"
+        className="w-full sm:max-w-lg max-h-[92vh] overflow-y-auto rounded-t-2xl sm:rounded-xl border border-slate-700 bg-slate-900 shadow-2xl p-5 space-y-4"
         role="dialog"
         aria-labelledby="post-call-title"
       >

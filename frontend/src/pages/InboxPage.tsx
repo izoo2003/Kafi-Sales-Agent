@@ -713,7 +713,11 @@ export function InboxPage({
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(280px,380px)_1fr] gap-4">
-        <div className="rounded-xl border border-slate-800 overflow-hidden bg-slate-950/40">
+        <div
+          className={`rounded-xl border border-slate-800 overflow-hidden bg-slate-950/40 ${
+            selectedThreadId || selectedMessageKey ? "hidden lg:block" : ""
+          }`}
+        >
           <div className="max-h-[75vh] overflow-y-auto divide-y divide-slate-800/80">
             {loading ? (
               <p className="py-10 text-center text-slate-500 text-sm">
@@ -828,7 +832,23 @@ export function InboxPage({
           </div>
         </div>
 
-        <div className="rounded-xl border border-slate-800 min-h-[50vh] flex flex-col bg-slate-950/30">
+        <div
+          className={`rounded-xl border border-slate-800 min-h-[50vh] flex-col bg-slate-950/30 ${
+            selectedThreadId || selectedMessageKey ? "flex" : "hidden lg:flex"
+          }`}
+        >
+              <div className="lg:hidden px-4 pt-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedThreadId(null);
+                    setSelectedMessageKey(null);
+                  }}
+                  className="text-sm text-slate-400 hover:text-slate-200"
+                >
+                  ← Back to list
+                </button>
+              </div>
           {isThreadView ? (
             !selectedThreadId ? (
               <div className="flex-1 flex items-center justify-center text-slate-500 text-sm">

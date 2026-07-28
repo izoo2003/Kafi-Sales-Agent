@@ -118,7 +118,7 @@ export function BuyerProfile({
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
         <div>
           <button
             type="button"
@@ -152,12 +152,12 @@ export function BuyerProfile({
             </a>
           )}
         </div>
-        <div className="flex gap-2 shrink-0 flex-wrap justify-end">
+        <div className="flex gap-2 shrink-0 flex-wrap sm:justify-end w-full sm:w-auto">
           {canDiscover && (
             <button
               type="button"
               onClick={() => setShowDiscover((v) => !v)}
-              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm"
+              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm flex-1 sm:flex-none"
             >
               {showDiscover ? "Hide discovery" : "Find similar"}
             </button>

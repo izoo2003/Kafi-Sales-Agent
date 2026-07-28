@@ -199,13 +199,13 @@ export function BulkEmailModal({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 p-0 sm:p-4"
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
       role="presentation"
     >
       <div
-        className="w-full max-w-3xl rounded-xl border border-slate-700 bg-slate-900 shadow-xl max-h-[92vh] overflow-hidden flex flex-col"
+        className="w-full sm:max-w-3xl max-h-[92vh] overflow-hidden flex flex-col rounded-t-2xl sm:rounded-xl border border-slate-700 bg-slate-900 shadow-xl"
         onClick={(e) => e.stopPropagation()}
         onMouseDown={(e) => e.stopPropagation()}
         role="dialog"

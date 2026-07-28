@@ -228,7 +228,7 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
         </button>
       </form>
 
-      <div className="rounded-xl border border-slate-800 overflow-hidden">
+      <div className="rounded-xl border border-slate-800 overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-slate-900/80 text-slate-400 text-left">
             <tr>

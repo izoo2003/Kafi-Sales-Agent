@@ -141,8 +141,12 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-[280px_1fr] gap-4 rounded-xl border border-slate-800 bg-slate-900/50 overflow-hidden min-h-[520px]">
-        <div className="border-r border-slate-800 overflow-y-auto max-h-[70vh]">
+      <div className="grid grid-cols-1 md:grid-cols-[minmax(0,280px)_1fr] gap-0 md:gap-0 rounded-xl border border-slate-800 bg-slate-900/50 overflow-hidden min-h-[min(70vh,520px)]">
+        <div
+          className={`border-r border-slate-800 overflow-y-auto max-h-[70vh] ${
+            selected ? "hidden md:block" : ""
+          }`}
+        >
           <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between sticky top-0 bg-slate-900/80">
             <h3 className="text-sm font-medium text-slate-300">Conversations</h3>
             <span className="text-xs text-slate-500">{conversations.length}</span>
@@ -196,7 +200,11 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
           )}
         </div>
 
-        <div className="flex flex-col min-h-[520px]">
+        <div
+          className={`flex flex-col min-h-[min(70vh,520px)] ${
+            selected ? "" : "hidden md:flex"
+          }`}
+        >
           {!selected ? (
             <div className="flex-1 flex items-center justify-center text-sm text-slate-500">
               Select a conversation to view messages.
@@ -204,6 +212,13 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
           ) : (
             <>
               <div className="px-4 py-3 border-b border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setSelected(null)}
+                  className="md:hidden text-sm text-slate-400 hover:text-slate-200 mb-2"
+                >
+                  ← Back to list
+                </button>
                 <p className="text-sm font-medium text-slate-200">
                   {selected.company_name || selected.contact_name}
                 </p>

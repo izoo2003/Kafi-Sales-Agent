@@ -58,6 +58,7 @@ function DashboardApp() {
   const [tab, setTab] = useState<Tab>("activity");
   const [tableSection, setTableSection] = useState<LeadsTableSection>("all");
   const [mailSection, setMailSection] = useState<MailSection>("inbox");
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [tableCounts, setTableCounts] = useState<LeadTableSectionCountsResponse>({
     all: 0,
     old_clients: 0,
@@ -515,6 +516,9 @@ function DashboardApp() {
     ...(isAdmin ? [{ id: "users" as const, label: "Users", count: 0 }] : []),
   ];
 
+  const isWideTable =
+    (tab === "table" || tab === "master-table") && selectedLeadId === null;
+
   return (
     <TwilioVoiceProvider>
       <PostCallRemarksModal
@@ -524,7 +528,7 @@ function DashboardApp() {
         }}
       />
       <CallingCardOverlay />
-      <div className="min-h-screen flex">
+      <div className="min-h-dvh flex">
         <InboxAlertToasts
           onOpenInbox={() => {
             setMailSection("inbox");
@@ -548,10 +552,35 @@ function DashboardApp() {
           userLabel={user?.full_name || user?.username}
           userRole={user?.role}
           onLogout={() => void logout()}
+          mobileOpen={mobileNavOpen}
+          onMobileClose={() => setMobileNavOpen(false)}
         />
 
-        <div className="flex-1 min-w-0 overflow-x-hidden">
-          <main className="max-w-6xl mx-auto px-8 py-8">
+        <div className="flex-1 min-w-0 flex flex-col overflow-x-hidden">
+          <header className="lg:hidden sticky top-0 z-30 flex items-center gap-3 border-b border-slate-800 bg-slate-950/95 backdrop-blur px-3 py-2.5 pt-[max(0.625rem,env(safe-area-inset-top))]">
+            <button
+              type="button"
+              onClick={() => setMobileNavOpen(true)}
+              className="shrink-0 rounded-lg p-2 text-slate-300 hover:bg-slate-800 hover:text-slate-100"
+              aria-label="Open menu"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <path d="M4 7h16M4 12h16M4 17h16" />
+              </svg>
+            </button>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-slate-100 truncate">Kafi Sales Agent</p>
+              <p className="text-[11px] text-slate-500 truncate capitalize">
+                {user?.full_name || user?.username || "Signed in"}
+              </p>
+            </div>
+          </header>
+
+          <main
+            className={`w-full mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 lg:py-8 ${
+              isWideTable ? "max-w-none" : "max-w-6xl"
+            }`}
+          >
             <CallInitBanner />
             {error && (
               <div className="mb-7 p-4 rounded-lg bg-red-500/10 border border-red-500/30 text-red-200 text-sm">
