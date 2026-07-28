@@ -248,7 +248,7 @@ export function ContactsPanel({ leadId, onError, onContactsChange }: ContactsPan
                       <div className="flex items-center gap-2 flex-wrap">
                         <DialpadPhoneText
                           phone={contact.phone}
-                          contactName={contact.name}
+                          contactName={contact.full_name}
                           className="text-slate-400 hover:text-sky-300 hover:underline cursor-pointer"
                         />
                         <CallLeadButton
