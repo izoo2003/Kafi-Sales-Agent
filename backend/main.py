@@ -246,6 +246,7 @@ OLD_CLIENTS_IMPORT_PARSER = "old_clients_v2"
 
 @app.get("/api/health")
 def health():
+    from config import settings
     from integrations.mail_client import mail_client
     from integrations.outlook_client import outlook_client
     from integrations.voice_client import voice_client
@@ -260,6 +261,7 @@ def health():
         "sadia": bool(settings.mailbox_sadia_email and settings.mailbox_sadia_password),
     }
 
+    account_sid = (settings.twilio_account_sid or "").strip()
     return {
         "status": "ok",
         "service": "kafi-sales-agent",
@@ -279,6 +281,10 @@ def health():
         "twilio_configured": voice_client.is_configured,
         "twilio_webhooks_ready": voice_client.webhooks_ready,
         "twilio_browser_ready": voice_client.browser_ready,
+        "twilio_account_sid": account_sid or None,
+        "twilio_twiml_app_sid": (settings.twilio_twiml_app_sid or "").strip() or None,
+        "twilio_webhook_base_url": (settings.twilio_webhook_base_url or "").strip() or None,
+        "twilio_validate_webhooks": bool(settings.twilio_validate_webhooks),
         "whatsapp_configured": whatsapp_client.is_configured,
         "whatsapp_webhook_configured": whatsapp_client.webhook_configured,
     }
