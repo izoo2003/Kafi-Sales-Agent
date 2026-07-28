@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { getStoredToken, loginFromHandoff } from "@/lib/api";
 import { useAuth } from "@/components/AuthProvider";
+import { TemplatePicker } from "@/components/TemplatePicker";
 
 type Lead = {
   buyer_id: number;
@@ -71,6 +72,8 @@ function BulkInner() {
   const [batchPause, setBatchPause] = useState(45);
   const [running, setRunning] = useState(false);
   const [log, setLog] = useState<string[]>([]);
+  const [templateId, setTemplateId] = useState("");
+  const [tplNotice, setTplNotice] = useState<string | null>(null);
 
   const leads: Lead[] = (preview?.leads || []).filter((l) =>
     (l.contact_email || "").includes("@"),
@@ -174,6 +177,23 @@ function BulkInner() {
           <span className="chip">User: {preview?.username || "—"}</span>
           <span className="chip">Recipients: {leads.length}</span>
         </div>
+
+        {tplNotice && <p className="ok small">{tplNotice}</p>}
+        <TemplatePicker
+          key={user?.id ?? "pending-auth"}
+          value={templateId}
+          hint="Placeholders like {{company_name}} are filled per recipient when you send."
+          onChange={(id, tpl) => {
+            setTemplateId(id);
+            if (tpl) {
+              setSubject(tpl.subject);
+              setBody(tpl.body);
+              setTplNotice(`Loaded template “${tpl.name}”`);
+            } else {
+              setTplNotice(null);
+            }
+          }}
+        />
 
         <label>Subject</label>
         <input value={subject} onChange={(e) => setSubject(e.target.value)} />

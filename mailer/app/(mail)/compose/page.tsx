@@ -4,6 +4,7 @@ import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { apiFetch, getStoredToken } from "@/lib/api";
 import { useAuth } from "@/components/AuthProvider";
+import { TemplatePicker } from "@/components/TemplatePicker";
 
 function ComposeInner() {
   const params = useSearchParams();
@@ -12,6 +13,7 @@ function ComposeInner() {
   const [to, setTo] = useState(params.get("to") || "");
   const [subject, setSubject] = useState(params.get("subject") || "");
   const [body, setBody] = useState(params.get("body") || "");
+  const [templateId, setTemplateId] = useState("");
   const [sending, setSending] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -85,6 +87,19 @@ function ComposeInner() {
       </p>
       {error && <p className="bad">{error}</p>}
       {notice && <p className="ok">{notice}</p>}
+
+      <TemplatePicker
+        value={templateId}
+        onChange={(id, tpl) => {
+          setTemplateId(id);
+          if (tpl) {
+            setSubject(tpl.subject);
+            setBody(tpl.body);
+            setNotice(`Loaded template “${tpl.name}” — edit before send if needed`);
+          }
+        }}
+      />
+
       <label>To</label>
       <input value={to} onChange={(e) => setTo(e.target.value)} placeholder="name@example.com" />
       <label>Subject</label>
