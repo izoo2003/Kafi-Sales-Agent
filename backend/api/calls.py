@@ -48,12 +48,43 @@ def _twilio_webhook_url(request: Request) -> str:
     return url
 
 
+def _twilio_webhook_url_candidates(request: Request) -> list[str]:
+    """Build URL variants Railway/Twilio may disagree on during signature checks."""
+    primary = _twilio_webhook_url(request)
+    out = [primary]
+    forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",")[0].strip()
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or "https").split(",")[0].strip()
+    if forwarded_host:
+        path = request.url.path
+        query = request.url.query
+        out.append(
+            f"{forwarded_proto}://{forwarded_host}{path}" + (f"?{query}" if query else "")
+        )
+    # Full request URL as seen by Starlette (often http:// inside Railway)
+    out.append(str(request.url))
+    if str(request.url).startswith("http://"):
+        out.append("https://" + str(request.url)[7:])
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for u in out:
+        if u and u not in seen:
+            seen.add(u)
+            unique.append(u)
+    return unique
+
+
 async def _twilio_form(request: Request) -> dict[str, str]:
     form = await request.form()
     params = {str(k): str(v) for k, v in form.items()}
     if voice_client.is_configured:
         signature = request.headers.get("X-Twilio-Signature", "")
-        if not voice_client.validate_webhook(_twilio_webhook_url(request), params, signature):
+        if not voice_client.validate_webhook(
+            _twilio_webhook_url(request),
+            params,
+            signature,
+            alternate_urls=_twilio_webhook_url_candidates(request),
+        ):
             raise HTTPException(403, "Invalid Twilio signature")
     return params
 
@@ -336,7 +367,22 @@ webhooks_router = APIRouter(prefix="/webhooks/twilio", tags=["twilio-webhooks"])
 @webhooks_router.post("/voice/client-dial")
 async def twilio_client_dial(request: Request):
     """TwiML: browser client connects → dial the lead directly."""
-    params = await _twilio_form(request)
+    try:
+        params = await _twilio_form(request)
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            # Twilio plays this instead of a generic "application error".
+            return Response(
+                content=(
+                    '<?xml version="1.0" encoding="UTF-8"?>'
+                    "<Response><Say>Webhook signature check failed. "
+                    "Confirm TWILIO_AUTH_TOKEN and TWILIO_WEBHOOK_BASE_URL on Railway "
+                    "match the TwiML App voice URL.</Say></Response>"
+                ),
+                media_type="application/xml",
+            )
+        raise
+
     lead_phone = params.get("To") or request.query_params.get("To")
     interaction_id = params.get("interaction_id") or request.query_params.get("interaction_id")
 

@@ -68,15 +68,38 @@ class VoiceClient:
             path = f"/{path}"
         return f"{base}{path}"
 
-    def validate_webhook(self, url: str, params: dict[str, str], signature: str) -> bool:
+    def validate_webhook(
+        self,
+        url: str,
+        params: dict[str, str],
+        signature: str,
+        *,
+        alternate_urls: list[str] | None = None,
+    ) -> bool:
         if not settings.twilio_validate_webhooks:
             return True
         if not settings.twilio_auth_token or not signature:
             return False
         from twilio.request_validator import RequestValidator
 
-        validator = RequestValidator(settings.twilio_auth_token)
-        return validator.validate(url, params, signature)
+        validator = RequestValidator(settings.twilio_auth_token.strip())
+        candidates: list[str] = []
+        for candidate in [url, *(alternate_urls or [])]:
+            raw = (candidate or "").strip()
+            if not raw:
+                continue
+            # Twilio signs the exact URL it requested; proxies often differ by slash/scheme.
+            for variant in (raw, raw.rstrip("/"), raw.replace("http://", "https://", 1)):
+                if variant and variant not in candidates:
+                    candidates.append(variant)
+
+        for candidate in candidates:
+            try:
+                if validator.validate(candidate, params, signature):
+                    return True
+            except Exception:
+                continue
+        return False
 
     def create_access_token(self, *, identity: str = "sales-agent") -> str:
         if not self.browser_ready:
