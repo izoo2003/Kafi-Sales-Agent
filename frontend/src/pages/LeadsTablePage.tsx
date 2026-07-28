@@ -421,16 +421,18 @@ export function LeadsTablePage({
   const openBulkMailer = useCallback(async () => {
     const ids = [...selected];
     if (!ids.length) return;
-    const mailerUrl = (import.meta.env.VITE_BULK_MAILER_URL as string | undefined)?.trim();
-    if (!mailerUrl) {
-      // Fallback: in-app modal (Railway SMTP — works locally / Pro only)
-      setShowBulkEmail(true);
-      return;
-    }
     setOpeningMailer(true);
     try {
+      // Always use Railway handoff → Vercel mailer URL (SMTP cannot run on Hobby).
+      // Do not fall back to in-app BulkEmailModal unless mailer env is missing.
       const handoff = await client.createMailerHandoff(ids);
-      window.open(handoff.url, "_blank", "noopener,noreferrer");
+      const opened = window.open(handoff.url, "_blank", "noopener,noreferrer");
+      if (!opened) {
+        onError(
+          "Pop-up blocked. Allow pop-ups for this site, then click Send emails again.",
+        );
+        return;
+      }
       showEmailNotice(
         `Opened Vercel mailer with ${handoff.recipient_count} recipient${
           handoff.recipient_count === 1 ? "" : "s"
@@ -440,7 +442,18 @@ export function LeadsTablePage({
             : "."),
       );
     } catch (e) {
-      onError(e instanceof Error ? e.message : "Failed to open mailer");
+      const msg = e instanceof Error ? e.message : "Failed to open mailer";
+      const mailerMissing =
+        /not configured|MAILER_HANDOFF_SECRET|MAILER_PUBLIC_URL/i.test(msg);
+      if (mailerMissing) {
+        // Local / misconfigured: old modal (still fails on Railway Hobby SMTP).
+        showEmailNotice(
+          "Vercel mailer not configured on Railway — using in-app compose (SMTP may fail on Hobby).",
+        );
+        setShowBulkEmail(true);
+        return;
+      }
+      onError(msg);
     } finally {
       setOpeningMailer(false);
     }
