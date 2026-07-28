@@ -45,12 +45,15 @@ const FOLLOW_UP_POLL_INTERVAL_MS = 60_000;
 function CallInitBanner() {
   const voice = useTwilioVoiceOptional();
   if (!voice?.initError) return null;
+  const micFail = /31402|AcquisitionFailed|getting the media failed/i.test(voice.initError);
   return (
     <div className="mb-7 p-4 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-100 text-sm">
       <p className="font-medium">Browser calling is not ready</p>
       <p className="mt-1 text-amber-200/80">{voice.initError}</p>
       <p className="mt-2 text-xs text-amber-200/60">
-        Refresh the page, or open Calls and try again in a moment. Railway may still be warming up.
+        {micFail
+          ? "Microphone access failed after permission was granted. Close other apps using the mic (Zoom/Teams/WhatsApp), use Chrome/Edge on HTTPS, unplug/replug the headset, then refresh and try again."
+          : "Refresh the page, or open Calls and try again in a moment. Railway may still be warming up."}
       </p>
     </div>
   );
