@@ -1,4 +1,4 @@
-/** Persist lightweight user profile hint; real auth is the httpOnly session cookie. */
+/** Persist lightweight user profile; session cookie is primary, Bearer token is backup. */
 
 export type AppRole = "admin" | "user";
 
@@ -10,7 +10,7 @@ export interface AuthUser {
   is_active: boolean;
 }
 
-/** Legacy localStorage token — cleared on login/logout; Bearer still sent if present (migration). */
+/** Bearer backup when httpOnly cookie is missing (some proxy / browser edge cases). */
 const TOKEN_KEY = "kafi_auth_token";
 const USER_KEY = "kafi_auth_user";
 
@@ -34,16 +34,15 @@ export function getStoredUser(): AuthUser | null {
   }
 }
 
-/** Cache display profile only — session lives in httpOnly cookie `kafi_session`. */
+/** Cache display profile only. */
 export function storeUser(user: AuthUser): void {
   localStorage.setItem(USER_KEY, JSON.stringify(user));
-  // Drop legacy bearer tokens so cookie auth is the source of truth.
-  localStorage.removeItem(TOKEN_KEY);
 }
 
-/** @deprecated Prefer storeUser — kept for call sites during migration. */
-export function storeSession(_token: string, user: AuthUser): void {
-  storeUser(user);
+/** Persist profile + Bearer token from /auth/login (cookie is still set by the API). */
+export function storeSession(token: string, user: AuthUser): void {
+  localStorage.setItem(TOKEN_KEY, token);
+  localStorage.setItem(USER_KEY, JSON.stringify(user));
 }
 
 export function clearSession(): void {

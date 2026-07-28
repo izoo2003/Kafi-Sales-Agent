@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -12,6 +13,7 @@ import {
   clearSession,
   getStoredUser,
   isAdmin,
+  storeSession,
   storeUser,
   type AuthUser,
 } from "./session";
@@ -34,11 +36,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(() => getStoredUser());
   // Always verify cookie session on boot (httpOnly cookie isn't readable from JS).
   const [loading, setLoading] = useState(true);
+  /** Bumped on login/logout so a late /auth/me failure cannot wipe a fresh session. */
+  const authEpochRef = useRef(0);
 
   const refreshMe = useCallback(async () => {
+    const epoch = authEpochRef.current;
     let safetyTimer: ReturnType<typeof setTimeout> | null = null;
     const safetyPromise = new Promise<void>((resolve) => {
       safetyTimer = setTimeout(() => {
+        if (authEpochRef.current !== epoch) {
+          resolve();
+          return;
+        }
         clearSession();
         setUser(null);
         setLoading(false);
@@ -51,7 +60,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // Wake Railway (cold start / idle) before /auth/me so the first
         // authenticated call is less likely to abort mid-hop.
         await client.wakeBackend();
+        if (authEpochRef.current !== epoch) return;
         const me = await client.getMe();
+        if (authEpochRef.current !== epoch) return;
         const next: AuthUser = {
           id: me.id,
           username: me.username,
@@ -62,11 +73,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         storeUser(next);
         setUser(next);
       } catch {
+        // Ignore stale bootstrap failures after the user already signed in.
+        if (authEpochRef.current !== epoch) return;
         clearSession();
         setUser(null);
       } finally {
         if (safetyTimer !== null) clearTimeout(safetyTimer);
-        setLoading(false);
+        if (authEpochRef.current === epoch) {
+          setLoading(false);
+        }
       }
     };
 
@@ -79,6 +94,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const onExpired = () => {
+      authEpochRef.current += 1;
       clearSession();
       setUser(null);
       setLoading(false);
@@ -88,6 +104,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = useCallback(async (username: string, password: string) => {
+    // Invalidate any in-flight /auth/me from page load so it cannot clear this login.
+    authEpochRef.current += 1;
     const result = await client.login({ username, password });
     const next: AuthUser = {
       id: result.user.id,
@@ -96,12 +114,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       role: result.user.role === "admin" ? "admin" : "user",
       is_active: result.user.is_active,
     };
-    // Cookie is set by the API; we only cache the profile for UI.
-    storeUser(next);
+    storeSession(result.token, next);
     setUser(next);
+    setLoading(false);
   }, []);
 
   const logout = useCallback(async () => {
+    authEpochRef.current += 1;
     try {
       await client.logout();
     } catch {
