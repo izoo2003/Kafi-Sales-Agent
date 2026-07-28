@@ -3,6 +3,10 @@
     {
       "source": "/api/:path*",
       "destination": "https://kafi-sales-agent.up.railway.app/api/:path*"
+    },
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
     }
   ]
 }
