@@ -23,6 +23,11 @@ body {
   font-family: "Segoe UI", system-ui, sans-serif;
 }
 
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
 button,
 input,
 textarea {
@@ -50,6 +55,14 @@ h1 {
 .muted {
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.small {
+  font-size: 0.75rem;
+}
+
+.pad {
+  padding: 1rem 1.25rem;
 }
 
 label {
@@ -88,6 +101,9 @@ textarea {
 }
 
 .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 0;
   border-radius: 10px;
   padding: 0.7rem 1rem;
@@ -97,11 +113,17 @@ textarea {
   cursor: pointer;
 }
 
+.btn.small {
+  padding: 0.35rem 0.65rem;
+  font-size: 0.8rem;
+}
+
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
+.btn.ghost,
 .btn-ghost {
   background: transparent;
   border: 1px solid var(--border);
@@ -141,4 +163,229 @@ textarea {
   border-radius: 999px;
   padding: 0.2rem 0.55rem;
   color: var(--muted);
+}
+
+/* Mail shell */
+.mail-shell {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  min-height: 100dvh;
+}
+
+@media (max-width: 800px) {
+  .mail-shell {
+    grid-template-columns: 1fr;
+  }
+}
+
+.mail-sidebar {
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 88%, black);
+  padding: 1rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.mail-brand-title {
+  margin: 0;
+  font-weight: 700;
+}
+
+.mail-brand-sub {
+  margin: 0.2rem 0 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.compose-btn {
+  width: 100%;
+}
+
+.mail-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  flex: 1;
+}
+
+.mail-nav-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.55rem 0.7rem;
+  border-radius: 10px;
+  color: var(--muted);
+}
+
+.mail-nav-item:hover {
+  background: #0b1220;
+  color: var(--text);
+}
+
+.mail-nav-item.active {
+  background: color-mix(in srgb, #059669 35%, #0b1220);
+  color: #ecfdf5;
+}
+
+.mail-nav-count {
+  font-size: 0.75rem;
+  opacity: 0.8;
+}
+
+.mail-sidebar-foot {
+  border-top: 1px solid var(--border);
+  padding-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.mail-main {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.folder-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 380px) 1fr;
+  height: 100dvh;
+}
+
+@media (max-width: 900px) {
+  .folder-layout {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+}
+
+.folder-list {
+  border-right: 1px solid var(--border);
+  overflow: auto;
+}
+
+.folder-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.folder-title {
+  margin: 0;
+  font-size: 1.05rem;
+  text-transform: capitalize;
+}
+
+.msg-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.msg-row {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.msg-row:hover,
+.msg-row.selected {
+  background: #0b1220;
+}
+
+.msg-row.unread .msg-from,
+.msg-row.unread .msg-subject {
+  font-weight: 700;
+  color: #fff;
+}
+
+.msg-from {
+  font-size: 0.85rem;
+}
+
+.msg-subject {
+  font-size: 0.9rem;
+}
+
+.msg-preview {
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-detail {
+  overflow: auto;
+}
+
+.detail-card {
+  padding: 1.25rem;
+}
+
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.75rem 0 1rem;
+}
+
+.detail-body {
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+  line-height: 1.5;
+  overflow-x: auto;
+}
+
+.detail-body.pre {
+  white-space: pre-wrap;
+}
+
+.reply-box {
+  margin-top: 1rem;
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+}
+
+.simple-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+}
+
+.card-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.85rem 1rem;
+  margin-bottom: 0.6rem;
+  background: color-mix(in srgb, var(--panel) 80%, black);
+}
+
+.card-row.unread {
+  border-color: color-mix(in srgb, #059669 50%, var(--border));
+}
+
+.row-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+.compose-page {
+  max-width: 720px;
 }

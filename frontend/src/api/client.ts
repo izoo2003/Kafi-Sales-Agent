@@ -1688,6 +1688,13 @@ export const client = {
       body: JSON.stringify({ buyer_ids: buyerIds }),
     }),
 
+  createMailerSession: () =>
+    request<{
+      url: string;
+      code: string;
+      expires_in_seconds: number;
+    }>("/mailer/session", { method: "POST" }),
+
   getDailyKpi: (params: {
     date: string;
     period?: KpiPeriod | string;

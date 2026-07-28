@@ -70,9 +70,17 @@ export type NavItem =
       count: number;
       alert?: boolean;
       external?: undefined;
+      openMailer?: undefined;
       children?: NavChild[];
     }
-  | { id: "quotation-agent"; label: string; count: number; external: string };
+  | { id: "quotation-agent"; label: string; count: number; external: string }
+  | {
+      id: "mail";
+      label: string;
+      count: number;
+      alert?: boolean;
+      openMailer: true;
+    };
 
 interface AppSidebarProps {
   navItems: NavItem[];
@@ -85,6 +93,8 @@ interface AppSidebarProps {
   onSelectTableSection?: (section: LeadsTableSection) => void;
   onSelectMailSection?: (section: MailSection) => void;
   onSelectWhatsAppSection?: (section: WhatsAppSection) => void;
+  /** Open Vercel mailer (same tab) with session exchange. */
+  onOpenMailer?: () => void;
   userLabel?: string;
   userRole?: string;
   /** Mobile drawer open state (< lg). Ignored on desktop. */
@@ -102,15 +112,14 @@ export function AppSidebar({
   onSelectTableSection,
   onSelectMailSection,
   onSelectWhatsAppSection,
+  onOpenMailer,
   userLabel,
   userRole,
   mobileOpen = false,
   onMobileClose,
 }: AppSidebarProps) {
   const [leadsMenuOpen, setLeadsMenuOpen] = useState(activeTab === "table");
-  const [mailMenuOpen, setMailMenuOpen] = useState(
-    activeTab === "inbox" || activeTab === "activity" || activeTab === "email-templates",
-  );
+  const [mailMenuOpen, setMailMenuOpen] = useState(false);
   const [whatsappMenuOpen, setWhatsappMenuOpen] = useState(
     activeTab === "whatsapp-inbox" || activeTab === "whatsapp-templates",
   );
@@ -184,6 +193,34 @@ export function AppSidebar({
 
         <nav className="flex-1 overflow-y-auto overscroll-contain px-3 py-4 space-y-1">
           {navItems.map((item) => {
+            if ("openMailer" in item && item.openMailer) {
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    onOpenMailer?.();
+                    closeMobile();
+                  }}
+                  className="w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg text-sm font-medium text-left transition text-slate-300 hover:bg-slate-800 hover:text-slate-100"
+                >
+                  <span className="flex items-center gap-2 truncate min-w-0">
+                    {item.alert && (
+                      <span
+                        aria-label="new messages"
+                        className="shrink-0 text-emerald-400 animate-pulse"
+                      >
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                          <path d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm7-5-1.6-1.6V10a5.4 5.4 0 0 0-4-5.23V4a1.4 1.4 0 0 0-2.8 0v.77A5.4 5.4 0 0 0 6.6 10v5.4L5 17a.9.9 0 0 0 .64 1.54h12.72A.9.9 0 0 0 19 17Z" />
+                        </svg>
+                      </span>
+                    )}
+                    <span className="truncate">{item.label}</span>
+                  </span>
+                  <span className="shrink-0 text-xs opacity-70">↗</span>
+                </button>
+              );
+            }
             if ("external" in item) {
               return (
                 <button

@@ -14,13 +14,10 @@ import {
 import { InboxAlertToasts } from "./components/InboxAlertToasts";
 import { InterestedFollowUpAlertToasts } from "./components/InterestedFollowUpAlertToasts";
 import { AppTopActions } from "./components/AppTopActions";
-import { EmailActivityPage } from "./pages/EmailActivityPage";
-import { EmailTemplatesPage } from "./pages/EmailTemplatesPage";
 import { WhatsAppTemplatesPage } from "./pages/WhatsAppTemplatesPage";
 import { WhatsAppInboxPage } from "./pages/WhatsAppInboxPage";
 import { BuyerProfile } from "./pages/BuyerProfile";
 import { CallsPage } from "./pages/CallsPage";
-import { InboxPage } from "./pages/InboxPage";
 import { LeadsPage } from "./pages/LeadsPage";
 import { LeadsTablePage } from "./pages/LeadsTablePage";
 import { ChatbotPage } from "./pages/ChatbotPage";
@@ -58,7 +55,7 @@ function CallInitBanner() {
 
 function DashboardApp() {
   const { user, isAdmin, logout } = useAuth();
-  const [tab, setTab] = useState<Tab>("inbox");
+  const [tab, setTab] = useState<Tab>("table");
   const [tableSection, setTableSection] = useState<LeadsTableSection>("master");
   const [mailSection, setMailSection] = useState<MailSection>("inbox");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -105,11 +102,11 @@ function DashboardApp() {
 
   useEffect(() => {
     if (!isAdmin && tab === "leads") {
-      setTab("inbox");
+      setTab("table");
       setSelectedLeadId(null);
     }
     if (!isAdmin && tab === "users") {
-      setTab("inbox");
+      setTab("table");
     }
   }, [isAdmin, tab]);
 
@@ -393,18 +390,13 @@ function DashboardApp() {
     setSelectedLeadId(null);
   }
 
-  function handleSelectMailSection(section: MailSection) {
-    setMailSection(section);
-    setSelectedLeadId(null);
-    if (section === "activity") {
-      setTab("activity");
-      return;
+  async function openMailerApp() {
+    try {
+      const session = await client.createMailerSession();
+      window.location.href = session.url;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not open Mail");
     }
-    if (section === "email-templates") {
-      setTab("email-templates");
-      return;
-    }
-    setTab("inbox");
   }
 
   function handleSelectWhatsAppSection(section: WhatsAppSection) {
@@ -548,32 +540,11 @@ function DashboardApp() {
       ],
     },
     {
-      id: "inbox",
+      id: "mail",
       label: "Mail",
       count: inboxUnread + emailActivityUnread,
       alert: inboxUnread > 0 || emailActivityUnread > 0,
-      children: [
-        { id: "inbox", label: "Inbox", count: mailCounts.inbox },
-        { id: "sent", label: "Sent", count: mailCounts.sent },
-        { id: "drafts", label: "Drafts", count: mailDraftCount },
-        { id: "trash", label: "Trash", count: mailCounts.trash },
-        { id: "archive", label: "Archive", count: mailCounts.archive },
-        {
-          id: "activity",
-          label: "Email Activity",
-          count: emailActivityUnread,
-        },
-        {
-          id: "email-templates",
-          label: "Email templates",
-          count: emailTemplateCount,
-        },
-        ...mailLabels.map((label) => ({
-          id: `label:${label.id}`,
-          label: label.name,
-          count: label.count,
-        })),
-      ],
+      openMailer: true,
     },
     { id: "calls", label: "Calls", count: 0 },
     {
@@ -588,11 +559,8 @@ function DashboardApp() {
   ];
 
   const isWideTable = tab === "table" && selectedLeadId === null;
-  const isWideMail =
-    tab === "inbox" || tab === "activity" || tab === "email-templates";
   const isWideContent =
     isWideTable ||
-    isWideMail ||
     tab === "whatsapp-templates" ||
     tab === "whatsapp-inbox" ||
     (tab === "leads" && selectedLeadId === null) ||
@@ -612,12 +580,7 @@ function DashboardApp() {
       <CallingCardOverlay />
       <FloatingDialpad onError={setError} />
       <div className="min-h-dvh flex">
-        <InboxAlertToasts
-          onOpenInbox={() => {
-            setMailSection("inbox");
-            handleSelectTab("inbox");
-          }}
-        />
+        <InboxAlertToasts onOpenInbox={() => void openMailerApp()} />
         <InterestedFollowUpAlertToasts
           onViewClient={handleViewInterestedClient}
           onAcknowledge={handleAcknowledgeInterestedFollowUp}
@@ -630,8 +593,8 @@ function DashboardApp() {
           mailSection={mailSection}
           onSelectTab={handleSelectTab}
           onSelectTableSection={handleSelectTableSection}
-          onSelectMailSection={handleSelectMailSection}
           onSelectWhatsAppSection={handleSelectWhatsAppSection}
+          onOpenMailer={() => void openMailerApp()}
           userLabel={user?.full_name || user?.username}
           userRole={user?.role}
           mobileOpen={mobileNavOpen}
@@ -687,15 +650,6 @@ function DashboardApp() {
               </div>
             )}
 
-            {tab === "activity" && (
-              <EmailActivityPage onError={setError} onUnreadChange={setEmailActivityUnread} />
-            )}
-            {tab === "email-templates" && (
-              <EmailTemplatesPage
-                onError={setError}
-                onCountChange={setEmailTemplateCount}
-              />
-            )}
             {tab === "whatsapp-templates" && (
               <WhatsAppTemplatesPage
                 onError={setError}
@@ -735,15 +689,6 @@ function DashboardApp() {
                 onError={setError}
                 onSelectLead={handleSelectLead}
                 onSectionCountsChange={setTableCounts}
-              />
-            )}
-            {tab === "inbox" && (
-              <InboxPage
-                section={mailSection}
-                onError={setError}
-                onUnreadChange={setInboxUnread}
-                onFolderCountsChange={handleMailCountsChange}
-                onMailExtrasChange={() => void loadMailExtras()}
               />
             )}
             {tab === "calls" && selectedLeadId !== null && (

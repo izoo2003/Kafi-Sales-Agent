@@ -7,51 +7,44 @@ click **Send emails**.
 ## Architecture
 
 ```
-Sales Agent (Railway API + main Vercel UI)
-  → POST /api/mailer/handoff  (signed short-lived token)
-  → opens https://YOUR-MAILER.vercel.app/?token=...
+Sales Agent Mail click
+  → POST /api/mailer/session → mailer /auth/callback?code=…
+  → full Mail UI (inbox/sent/drafts/trash/archive/activity/templates)
 
-Mailer (this folder on Vercel)
-  → SMTP to mail.kafi-group.com as the logged-in user's mailbox
-  → sends in batches with pauses (client-orchestrated)
+Sales Agent Send emails
+  → POST /api/mailer/handoff → mailer /bulk?token=…
+  → batch SMTP on Vercel (+ session login from handoff)
+
+Mailer reads IMAP via Railway /api/inbox/*
+Mailer sends only via /api/send and /api/send-batch (Vercel SMTP)
 ```
 
 ## What you must provide
 
 1. Create a **second Vercel project** pointed at this `mailer/` directory (Root Directory = `mailer`).
-2. Copy these env vars into that Vercel project (same mailbox passwords as Railway):
+2. Env vars on that Vercel project:
 
 ```
 MAILER_HANDOFF_SECRET=<long random string, same as Railway>
+KAFI_API_BASE_URL=https://YOUR-RAILWAY-HOST/api
+NEXT_PUBLIC_KAFI_API_BASE_URL=https://YOUR-RAILWAY-HOST/api
 MAILBOX_SMTP_HOST=67.23.252.42
 MAILBOX_SMTP_PORT=465
 MAILBOX_SSL_HOSTNAME=mail.kafi-group.com
 MAILBOX_ADMIN_EMAIL=...
 MAILBOX_ADMIN_PASSWORD=...
-MAILBOX_ASIM_EMAIL=...
-MAILBOX_ASIM_PASSWORD=...
-MAILBOX_USMAN_EMAIL=...
-MAILBOX_USMAN_PASSWORD=...
-MAILBOX_SADIA_EMAIL=...
-MAILBOX_SADIA_PASSWORD=...
-# optional display names
-MAILBOX_ADMIN_DISPLAY_NAME=...
+# (+ other MAILBOX_* users)
 ```
 
-3. On **Railway** (Sales Agent backend) and main frontend:
+3. On **Railway** (Sales Agent backend):
 
 ```
 MAILER_HANDOFF_SECRET=<same secret>
 MAILER_PUBLIC_URL=https://YOUR-MAILER.vercel.app
 ```
 
-Frontend (main app `frontend/.env` + Vercel):
-
-```
-VITE_BULK_MAILER_URL=https://YOUR-MAILER.vercel.app
-```
-
-4. Deploy this folder → tell the agent the live URL.
+4. Sales Agent **Mail** nav opens `/auth/callback?code=…` (session exchange).
+   Leads **Send emails** opens `/bulk?token=…`.
 
 ## Batch defaults
 

@@ -1,15 +1,18 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { AuthProvider } from "@/components/AuthProvider";
 
 export const metadata: Metadata = {
-  title: "Kafi Mailer",
-  description: "Bulk & individual email via Vercel SMTP (off Railway)",
+  title: "Kafi Mail",
+  description: "Kafi Commodities mail — read via Railway, send via Vercel SMTP",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <AuthProvider>{children}</AuthProvider>
+      </body>
     </html>
   );
 }
