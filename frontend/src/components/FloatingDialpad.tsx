@@ -75,6 +75,11 @@ export function FloatingDialpad({ onError }: FloatingDialpadProps) {
   const [calling, setCalling] = useState(false);
   const [countryOpen, setCountryOpen] = useState(false);
   const [countryQuery, setCountryQuery] = useState("");
+  const [dragging, setDragging] = useState(false);
+  const openRef = useRef(open);
+  const posRef = useRef(pos);
+  openRef.current = open;
+  posRef.current = pos;
 
   const selectedCountry = useMemo(() => findCountry(countryCode), [countryCode]);
   const dialPrefix = formatDialCode(countryCode);
@@ -160,71 +165,75 @@ export function FloatingDialpad({ onError }: FloatingDialpadProps) {
   }
 
   function onDragStart(e: React.PointerEvent) {
-    const target = e.target as HTMLElement;
-    // Never start a drag from interactive controls (fixes close button)
-    if (target.closest("button, input, select, a, textarea, label")) return;
-    e.currentTarget.setPointerCapture(e.pointerId);
+    // FAB button and panel header both use data-dialpad-drag — allow both.
+    // Do not require skipping "button" globally (that blocked the FAB itself).
+    if (!(e.target as HTMLElement).closest("[data-dialpad-drag]")) return;
+    e.preventDefault();
+    const pointerId = e.pointerId;
     dragRef.current = {
-      pointerId: e.pointerId,
+      pointerId,
       startX: e.clientX,
       startY: e.clientY,
-      origX: pos.x,
-      origY: pos.y,
+      origX: posRef.current.x,
+      origY: posRef.current.y,
       moved: false,
     };
-  }
+    setDragging(true);
 
-  function onDragMove(e: React.PointerEvent) {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== e.pointerId) return;
-    const dx = e.clientX - drag.startX;
-    const dy = e.clientY - drag.startY;
-    if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
-    const next = clampPos(
-      { x: drag.origX + dx, y: drag.origY + dy },
-      open ? PANEL_WIDTH : FAB_SIZE,
-      open ? (panelRef.current?.offsetHeight || 420) : FAB_SIZE,
-    );
-    setPos(next);
-  }
-
-  function onDragEnd(e: React.PointerEvent) {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== e.pointerId) return;
-    if (drag.moved) suppressClickRef.current = true;
-    dragRef.current = null;
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    } catch {
-      /* ignore */
-    }
-    setPos((prev) => {
+    const onMove = (ev: PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag || drag.pointerId !== ev.pointerId) return;
+      const dx = ev.clientX - drag.startX;
+      const dy = ev.clientY - drag.startY;
+      if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
+      const isOpen = openRef.current;
       const next = clampPos(
-        prev,
-        open ? PANEL_WIDTH : FAB_SIZE,
-        open ? (panelRef.current?.offsetHeight || 420) : FAB_SIZE,
+        { x: drag.origX + dx, y: drag.origY + dy },
+        isOpen ? PANEL_WIDTH : FAB_SIZE,
+        isOpen ? panelRef.current?.offsetHeight || 420 : FAB_SIZE,
       );
-      savePos(next);
-      return next;
-    });
+      setPos(next);
+    };
+
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      const drag = dragRef.current;
+      if (drag?.moved) suppressClickRef.current = true;
+      dragRef.current = null;
+      setDragging(false);
+      setPos((prev) => {
+        const isOpen = openRef.current;
+        const next = clampPos(
+          prev,
+          isOpen ? PANEL_WIDTH : FAB_SIZE,
+          isOpen ? panelRef.current?.offsetHeight || 420 : FAB_SIZE,
+        );
+        savePos(next);
+        return next;
+      });
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
   }
 
   if (typeof document === "undefined") return null;
 
   return createPortal(
     <div
-      className="fixed z-[70] touch-none"
+      className={`fixed z-[70] touch-none ${dragging ? "cursor-grabbing" : ""}`}
       style={{ left: pos.x, top: pos.y }}
-      onPointerMove={onDragMove}
-      onPointerUp={onDragEnd}
-      onPointerCancel={onDragEnd}
     >
       {!open ? (
         <button
           type="button"
           data-dialpad-drag
           aria-label="Open dialpad"
-          title="Dialpad"
+          title="Drag to move · Click to open"
           onPointerDown={onDragStart}
           onClick={(e) => {
             if (suppressClickRef.current) {
@@ -235,7 +244,7 @@ export function FloatingDialpad({ onError }: FloatingDialpadProps) {
             setOpen(true);
             setPos((prev) => clampPos(prev, PANEL_WIDTH, 420));
           }}
-          className="flex h-14 w-14 items-center justify-center rounded-full bg-sky-600 text-white shadow-lg shadow-sky-950/50 border border-sky-400/30 hover:bg-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-300"
+          className="flex h-14 w-14 items-center justify-center rounded-full bg-sky-600 text-white shadow-lg shadow-sky-950/50 border border-sky-400/30 hover:bg-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-300 cursor-grab active:cursor-grabbing"
         >
           <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
             <path d="M7 2h2v4H7V2zm4 0h2v4h-2V2zm4 0h2v4h-2V2zM7 8h2v4H7V8zm4 0h2v4h-2V8zm4 0h2v4h-2V8zM7 14h2v4H7v-4zm4 0h2v4h-2v-4zm4 0h2v4h-2v-4zM5 22h14a1 1 0 0 0 1-1v-2H4v2a1 1 0 0 0 1 1z" />

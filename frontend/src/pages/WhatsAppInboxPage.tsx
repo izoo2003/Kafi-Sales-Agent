@@ -141,9 +141,9 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-[minmax(0,280px)_1fr] gap-0 md:gap-0 rounded-xl border border-slate-800 bg-slate-900/50 overflow-hidden min-h-[min(70vh,520px)]">
+      <div className="grid grid-cols-1 md:grid-cols-[minmax(280px,360px)_1fr] gap-0 rounded-xl border border-slate-800 bg-slate-900/50 overflow-hidden min-h-[min(78vh,640px)]">
         <div
-          className={`border-r border-slate-800 overflow-y-auto max-h-[70vh] ${
+          className={`border-r border-slate-800 overflow-y-auto max-h-[78vh] ${
             selected ? "hidden md:block" : ""
           }`}
         >
@@ -201,7 +201,7 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
         </div>
 
         <div
-          className={`flex flex-col min-h-[min(70vh,520px)] ${
+          className={`flex flex-col min-h-[min(78vh,640px)] ${
             selected ? "" : "hidden md:flex"
           }`}
         >

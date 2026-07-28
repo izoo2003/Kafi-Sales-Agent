@@ -46,6 +46,8 @@ export type MailSection =
   | "email-templates"
   | `label:${number}`;
 
+export type WhatsAppSection = "whatsapp-inbox" | "whatsapp-templates";
+
 export function isMailLabelSection(section: string): section is `label:${number}` {
   return /^label:\d+$/.test(section);
 }
@@ -83,6 +85,7 @@ interface AppSidebarProps {
   onSelectTab: (tab: Tab) => void;
   onSelectTableSection?: (section: LeadsTableSection) => void;
   onSelectMailSection?: (section: MailSection) => void;
+  onSelectWhatsAppSection?: (section: WhatsAppSection) => void;
   onRefresh: () => void;
   userLabel?: string;
   userRole?: string;
@@ -101,6 +104,7 @@ export function AppSidebar({
   onSelectTab,
   onSelectTableSection,
   onSelectMailSection,
+  onSelectWhatsAppSection,
   onRefresh,
   userLabel,
   userRole,
@@ -112,6 +116,9 @@ export function AppSidebar({
   const [mailMenuOpen, setMailMenuOpen] = useState(
     activeTab === "inbox" || activeTab === "activity" || activeTab === "email-templates",
   );
+  const [whatsappMenuOpen, setWhatsappMenuOpen] = useState(
+    activeTab === "whatsapp-inbox" || activeTab === "whatsapp-templates",
+  );
 
   useEffect(() => {
     if (activeTab === "table") {
@@ -122,6 +129,12 @@ export function AppSidebar({
   useEffect(() => {
     if (activeTab === "inbox" || activeTab === "activity" || activeTab === "email-templates") {
       setMailMenuOpen(true);
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab === "whatsapp-inbox" || activeTab === "whatsapp-templates") {
+      setWhatsappMenuOpen(true);
     }
   }, [activeTab]);
 
@@ -198,19 +211,34 @@ export function AppSidebar({
                 ? activeTab === "inbox" ||
                   activeTab === "activity" ||
                   activeTab === "email-templates"
-                : activeTab === item.id;
+                : item.id === "whatsapp-inbox"
+                  ? activeTab === "whatsapp-inbox" || activeTab === "whatsapp-templates"
+                  : activeTab === item.id;
             const hasAlert = Boolean(item.alert);
             const hasChildren = Boolean(item.children?.length);
             const isTableParent = item.id === "table" && hasChildren;
             const isMailParent = item.id === "inbox" && hasChildren;
-            const isExpandableParent = isTableParent || isMailParent;
-            const menuOpen = isTableParent ? leadsMenuOpen : isMailParent ? mailMenuOpen : false;
+            const isWhatsAppParent = item.id === "whatsapp-inbox" && hasChildren;
+            const isExpandableParent = isTableParent || isMailParent || isWhatsAppParent;
+            const menuOpen = isTableParent
+              ? leadsMenuOpen
+              : isMailParent
+                ? mailMenuOpen
+                : isWhatsAppParent
+                  ? whatsappMenuOpen
+                  : false;
             const setMenuOpen = isTableParent
               ? setLeadsMenuOpen
               : isMailParent
                 ? setMailMenuOpen
-                : undefined;
-            const defaultChildId = isTableParent ? defaultTableSection : "inbox";
+                : isWhatsAppParent
+                  ? setWhatsappMenuOpen
+                  : undefined;
+            const defaultChildId = isTableParent
+              ? defaultTableSection
+              : isWhatsAppParent
+                ? "whatsapp-inbox"
+                : "inbox";
             const activeChildId = isTableParent
               ? tableSection
               : isMailParent
@@ -219,7 +247,11 @@ export function AppSidebar({
                   : activeTab === "email-templates"
                     ? "email-templates"
                     : mailSection
-                : null;
+                : isWhatsAppParent
+                  ? activeTab === "whatsapp-templates"
+                    ? "whatsapp-templates"
+                    : "whatsapp-inbox"
+                  : null;
             const parentHighlighted =
               isExpandableParent && isActive && activeChildId === defaultChildId
                 ? true
@@ -250,6 +282,12 @@ export function AppSidebar({
                         setMailMenuOpen(true);
                         onSelectTab("inbox");
                         onSelectMailSection?.("inbox");
+                        closeMobile();
+                        return;
+                      }
+                      if (isWhatsAppParent) {
+                        setWhatsappMenuOpen(true);
+                        onSelectWhatsAppSection?.("whatsapp-inbox");
                         closeMobile();
                         return;
                       }
@@ -325,6 +363,9 @@ export function AppSidebar({
                             } else if (isMailParent) {
                               setMailMenuOpen(true);
                               onSelectMailSection?.(child.id as MailSection);
+                            } else if (isWhatsAppParent) {
+                              setWhatsappMenuOpen(true);
+                              onSelectWhatsAppSection?.(child.id as WhatsAppSection);
                             }
                             closeMobile();
                           }}

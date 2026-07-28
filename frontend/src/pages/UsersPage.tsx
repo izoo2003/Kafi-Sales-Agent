@@ -161,7 +161,7 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
 
       <form
         onSubmit={handleCreate}
-        className="rounded-xl border border-slate-800 bg-slate-900/60 p-5 space-y-4 max-w-xl"
+        className="rounded-xl border border-slate-800 bg-slate-900/60 p-5 space-y-4 w-full max-w-4xl"
       >
         <h3 className="text-sm font-medium text-slate-200">Create user</h3>
         <div className="grid gap-3 sm:grid-cols-2">
@@ -258,7 +258,7 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
                 <tr key={user.id} className="border-t border-slate-800 align-top">
                   {editingId === user.id ? (
                     <td colSpan={6} className="px-4 py-4">
-                      <form onSubmit={handleSaveEdit} className="space-y-3 max-w-2xl">
+                      <form onSubmit={handleSaveEdit} className="space-y-3 w-full max-w-4xl">
                         <div className="grid gap-3 sm:grid-cols-2">
                           <label className="block">
                             <span className="text-xs text-slate-400">Username</span>

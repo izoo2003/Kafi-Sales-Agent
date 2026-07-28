@@ -233,7 +233,7 @@ export function ChatbotPage({ onError }: ChatbotPageProps) {
     : 0;
 
   return (
-    <div className="flex flex-col h-[calc(100dvh-8rem)] sm:h-[calc(100vh-6rem)] max-h-[900px]">
+    <div className="flex flex-col h-[calc(100dvh-6rem)] sm:h-[calc(100vh-5rem)] min-h-[520px]">
       {/* Header */}
       <div className="flex items-center justify-between pb-4 border-b border-slate-800">
         <div>

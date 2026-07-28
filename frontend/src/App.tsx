@@ -9,6 +9,7 @@ import {
   type MailSection,
   type NavItem,
   type Tab,
+  type WhatsAppSection,
 } from "./components/AppSidebar";
 import { InboxAlertToasts } from "./components/InboxAlertToasts";
 import { InterestedFollowUpAlertToasts } from "./components/InterestedFollowUpAlertToasts";
@@ -405,6 +406,11 @@ function DashboardApp() {
     setTab("inbox");
   }
 
+  function handleSelectWhatsAppSection(section: WhatsAppSection) {
+    setSelectedLeadId(null);
+    setTab(section);
+  }
+
   const handleMailCountsChange = useCallback(
     (counts: {
       inbox: number;
@@ -515,8 +521,19 @@ function DashboardApp() {
   const defaultTableSection: LeadsTableSection = isAdmin ? "master" : "old_clients";
 
   const navItems: NavItem[] = [
-    { id: "whatsapp-templates", label: "WhatsApp templates", count: whatsappTemplateCount },
-    { id: "whatsapp-inbox", label: "WhatsApp inbox", count: 0 },
+    {
+      id: "whatsapp-inbox",
+      label: "WhatsApp",
+      count: whatsappTemplateCount,
+      children: [
+        { id: "whatsapp-inbox", label: "WhatsApp inbox", count: 0 },
+        {
+          id: "whatsapp-templates",
+          label: "WhatsApp templates",
+          count: whatsappTemplateCount,
+        },
+      ],
+    },
     ...(isAdmin
       ? [{ id: "leads" as const, label: "Discover Leads", count: discoverLeadsCount }]
       : []),
@@ -572,6 +589,16 @@ function DashboardApp() {
   const isWideTable = tab === "table" && selectedLeadId === null;
   const isWideMail =
     tab === "inbox" || tab === "activity" || tab === "email-templates";
+  const isWideContent =
+    isWideTable ||
+    isWideMail ||
+    tab === "whatsapp-templates" ||
+    tab === "whatsapp-inbox" ||
+    (tab === "leads" && selectedLeadId === null) ||
+    (tab === "calls" && selectedLeadId === null) ||
+    tab === "chatbot" ||
+    tab === "kpi" ||
+    tab === "users";
 
   return (
     <TwilioVoiceProvider>
@@ -603,6 +630,7 @@ function DashboardApp() {
           onSelectTab={handleSelectTab}
           onSelectTableSection={handleSelectTableSection}
           onSelectMailSection={handleSelectMailSection}
+          onSelectWhatsAppSection={handleSelectWhatsAppSection}
           onRefresh={refreshAll}
           userLabel={user?.full_name || user?.username}
           userRole={user?.role}
@@ -633,7 +661,7 @@ function DashboardApp() {
 
           <main
             className={`w-full mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 lg:py-8 ${
-              isWideTable || isWideMail ? "max-w-none" : "max-w-6xl"
+              isWideContent ? "max-w-none" : "max-w-6xl"
             }`}
           >
             <CallInitBanner />

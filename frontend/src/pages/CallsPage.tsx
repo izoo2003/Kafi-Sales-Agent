@@ -345,8 +345,8 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
         />
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
-        <div className="lg:col-span-1 flex flex-col gap-4">
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 items-start">
+        <div className="xl:col-span-1 flex flex-col gap-4">
           <CallManualDialer
             onError={onError}
             onSuccess={(result) => {
@@ -545,7 +545,7 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
           </div>
         </div>
 
-        <div className="lg:col-span-1 rounded-xl border border-slate-800 bg-slate-900 flex flex-col overflow-hidden self-start">
+        <div className="xl:col-span-1 rounded-xl border border-slate-800 bg-slate-900 flex flex-col overflow-hidden self-start">
           <div className="px-4 py-3 border-b border-slate-800">
             <h3 className="text-sm font-medium text-slate-300">Recent calls</h3>
             <p className="text-xs text-slate-500 mt-1">
@@ -622,7 +622,7 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
           </div>
         </div>
 
-        <div className="lg:col-span-1 rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-4">
+        <div className="xl:col-span-1 rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-4">
           <h3 className="text-sm font-medium text-slate-300">Call detail</h3>
           {!selectedCall ? (
             <p className="text-sm text-slate-500">
