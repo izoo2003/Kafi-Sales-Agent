@@ -218,6 +218,7 @@ def call_config() -> dict:
             "TWILIO_API_KEY_SECRET, and TWILIO_TWIML_APP_SID in backend/.env"
         )
 
+    account_sid = (settings.twilio_account_sid or "").strip()
     return {
         "configured": voice_client.is_configured,
         "webhooks_ready": voice_client.webhooks_ready,
@@ -225,6 +226,11 @@ def call_config() -> dict:
         "caller_id_masked": mask_phone(settings.twilio_phone_number),
         "setup_message": setup_message,
         "missing_env": hints["missing"],
+        # Public diagnostics so Console vs Railway mismatches are obvious.
+        "twilio_account_sid": account_sid or None,
+        "twilio_twiml_app_sid": (settings.twilio_twiml_app_sid or "").strip() or None,
+        "twilio_webhook_base_url": (settings.twilio_webhook_base_url or "").strip() or None,
+        "twilio_validate_webhooks": bool(settings.twilio_validate_webhooks),
     }
 
 

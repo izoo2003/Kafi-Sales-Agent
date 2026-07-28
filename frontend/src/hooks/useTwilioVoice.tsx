@@ -96,6 +96,7 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
     const { token } = await client.getVoiceToken();
     const device = new Device(token, {
       codecPreferences: [Call.Codec.Opus, Call.Codec.PCMU],
+      logLevel: "warn",
     });
 
     device.on("registered", () => {
@@ -118,6 +119,7 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
     setReady(true);
   }, [refreshToken]);
 
+  // Mount once — do not re-run when callback identities change (would hang up live calls).
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -127,7 +129,6 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
         if (!cancelled) {
           setReady(false);
           const message = e instanceof Error ? e.message : "Failed to initialize calling";
-          // Don't treat one transient network blip as a permanent Twilio outage.
           if (/cannot reach the api|failed to fetch|network/i.test(message)) {
             setInitError("Calling is warming up — refresh in a few seconds if this persists.");
             window.setTimeout(() => {
@@ -148,7 +149,8 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
       deviceRef.current = null;
       callRef.current = null;
     };
-  }, [initDevice]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional mount-once init
+  }, []);
 
   const retryInit = useCallback(async () => {
     try {
@@ -205,6 +207,13 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
             });
           }
         };
+        call.on("error", (err) => {
+          console.error("Twilio call error:", err);
+          const message =
+            (err && typeof err === "object" && "message" in err && String(err.message)) ||
+            "Twilio call failed";
+          setInitError(message);
+        });
         call.on("disconnect", finishCall);
         call.on("cancel", finishCall);
 

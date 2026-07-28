@@ -79,12 +79,21 @@ async def _twilio_form(request: Request) -> dict[str, str]:
     params = {str(k): str(v) for k, v in form.items()}
     if voice_client.is_configured:
         signature = request.headers.get("X-Twilio-Signature", "")
+        candidates = _twilio_webhook_url_candidates(request)
         if not voice_client.validate_webhook(
             _twilio_webhook_url(request),
             params,
             signature,
-            alternate_urls=_twilio_webhook_url_candidates(request),
+            alternate_urls=candidates,
         ):
+            import logging
+
+            logging.getLogger("twilio.webhook").warning(
+                "Twilio signature mismatch path=%s candidates=%s has_signature=%s",
+                request.url.path,
+                candidates,
+                bool(signature),
+            )
             raise HTTPException(403, "Invalid Twilio signature")
     return params
 
@@ -104,6 +113,24 @@ def _transcribe_in_background(interaction_id: int) -> None:
 def get_call_config():
     cfg = calls_module.call_config()
     return CallConfigRead(**cfg)
+
+
+@router.get("/calls/twilio-status")
+def get_twilio_public_status():
+    """Unauthenticated diagnostics for Twilio Console vs Railway mismatches."""
+    cfg = calls_module.call_config()
+    return {
+        "configured": cfg.get("configured"),
+        "webhooks_ready": cfg.get("webhooks_ready"),
+        "browser_ready": cfg.get("browser_ready"),
+        "caller_id_masked": cfg.get("caller_id_masked"),
+        "twilio_account_sid": cfg.get("twilio_account_sid"),
+        "twilio_twiml_app_sid": cfg.get("twilio_twiml_app_sid"),
+        "twilio_webhook_base_url": cfg.get("twilio_webhook_base_url"),
+        "twilio_validate_webhooks": cfg.get("twilio_validate_webhooks"),
+        "setup_message": cfg.get("setup_message"),
+        "missing_env": cfg.get("missing_env"),
+    }
 
 
 @router.get("/calls/dialable-leads", response_model=DialableLeadsResponse)

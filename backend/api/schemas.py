@@ -821,6 +821,10 @@ class CallConfigRead(BaseModel):
     caller_id_masked: Optional[str] = None
     setup_message: Optional[str] = None
     missing_env: list[str] = Field(default_factory=list)
+    twilio_account_sid: Optional[str] = None
+    twilio_twiml_app_sid: Optional[str] = None
+    twilio_webhook_base_url: Optional[str] = None
+    twilio_validate_webhooks: bool = True
 
 
 class VoiceTokenRead(BaseModel):

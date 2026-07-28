@@ -329,6 +329,21 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
         </div>
       )}
 
+      {config?.browser_ready && (
+        <div className="p-3 rounded-lg border border-slate-800 bg-slate-950/60 text-xs text-slate-400 space-y-1 font-mono">
+          <p className="text-slate-500 font-sans not-italic">
+            Twilio diagnostics — must match Console Account SID + TwiML App Voice URL
+          </p>
+          <p>Account SID: {config.twilio_account_sid ?? "—"}</p>
+          <p>TwiML App: {config.twilio_twiml_app_sid ?? "—"}</p>
+          <p>Webhook base: {config.twilio_webhook_base_url ?? "—"}</p>
+          <p>
+            Validate signatures:{" "}
+            {config.twilio_validate_webhooks === false ? "off" : "on"}
+          </p>
+        </div>
+      )}
+
       {notice && (
         <p className="text-sm text-emerald-300/90 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3">
           {notice}

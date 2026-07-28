@@ -521,6 +521,10 @@ export interface CallConfig {
   caller_id_masked?: string | null;
   setup_message?: string | null;
   missing_env?: string[];
+  twilio_account_sid?: string | null;
+  twilio_twiml_app_sid?: string | null;
+  twilio_webhook_base_url?: string | null;
+  twilio_validate_webhooks?: boolean;
 }
 
 export interface VoiceToken {
