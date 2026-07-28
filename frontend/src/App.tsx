@@ -802,7 +802,7 @@ export default function App() {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-400 text-sm">
-        Checking sessionΓÇª
+        Checking session…
       </div>
     );
   }

@@ -29,18 +29,25 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-/** Max wait for session bootstrap before forcing login screen. */
-const AUTH_SAFETY_MS = 55_000;
+/** If /auth/me hangs (Railway cold start), stop blocking the UI. */
+const AUTH_SAFETY_MS = 18_000;
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<AuthUser | null>(() => getStoredUser());
-  // Always verify cookie session on boot (httpOnly cookie isn't readable from JS).
-  const [loading, setLoading] = useState(true);
+  const cached = getStoredUser();
+  const [user, setUser] = useState<AuthUser | null>(() => cached);
+  // Only block on "Checking session…" when we have no cached profile.
+  const [loading, setLoading] = useState(() => !cached);
   /** Bumped on login/logout so a late /auth/me failure cannot wipe a fresh session. */
   const authEpochRef = useRef(0);
 
   const refreshMe = useCallback(async () => {
     const epoch = authEpochRef.current;
+    const hadCachedUser = Boolean(getStoredUser());
+    // Cached users already see the app — never keep the splash for them.
+    if (hadCachedUser) {
+      setLoading(false);
+    }
+
     let safetyTimer: ReturnType<typeof setTimeout> | null = null;
     const safetyPromise = new Promise<void>((resolve) => {
       safetyTimer = setTimeout(() => {
@@ -48,8 +55,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           resolve();
           return;
         }
-        clearSession();
-        setUser(null);
+        // No cached session and API never answered — show login.
+        if (!getStoredUser()) {
+          clearSession();
+          setUser(null);
+        }
         setLoading(false);
         resolve();
       }, AUTH_SAFETY_MS);
@@ -57,9 +67,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const work = async () => {
       try {
-        // Wake Railway (cold start / idle) before /auth/me so the first
-        // authenticated call is less likely to abort mid-hop.
-        await client.wakeBackend();
+        // Short wake — don't let health retries dominate bootstrap.
+        await Promise.race([
+          client.wakeBackend(),
+          new Promise<boolean>((resolve) => window.setTimeout(() => resolve(false), 8_000)),
+        ]);
         if (authEpochRef.current !== epoch) return;
         const me = await client.getMe();
         if (authEpochRef.current !== epoch) return;
@@ -75,8 +87,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch {
         // Ignore stale bootstrap failures after the user already signed in.
         if (authEpochRef.current !== epoch) return;
-        clearSession();
-        setUser(null);
+        // Keep cached user if we already showed the app; only clear when
+        // we never had a local profile (cookie-only / first visit).
+        if (!hadCachedUser) {
+          clearSession();
+          setUser(null);
+        }
       } finally {
         if (safetyTimer !== null) clearTimeout(safetyTimer);
         if (authEpochRef.current === epoch) {

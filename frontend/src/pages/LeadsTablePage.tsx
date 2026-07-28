@@ -2208,6 +2208,7 @@ export function LeadsTablePage({
                   </th>
                   <th className={`${TH} min-w-[140px]`}>Business Type</th>
                   <th className={`${TH} min-w-[140px]`}>Excel grading</th>
+                  <th className={`${TH} min-w-[120px]`}>AI grading</th>
                   <th className={`${TH} min-w-[130px]`}>Designation</th>
                   <th className={`${TH} min-w-[150px]`}>Contact Person</th>
                   <th className={`${TH} min-w-[170px]`}>Primary Mobile No.</th>
@@ -2223,7 +2224,6 @@ export function LeadsTablePage({
                   <th className={`${TH} min-w-[200px]`}>Address</th>
                   <th className={`${TH} min-w-[180px]`}>Remarks</th>
                   <th className={`${TH} min-w-[150px]`}>Assigned To</th>
-                  <th className={`${TH} min-w-[120px]`}>AI grading</th>
                   <th className={`${TH} min-w-[160px]`}>Website</th>
                   <th className={`${TH} min-w-[120px]`}>Socials</th>
                   {editMode && <th className={`${TH} min-w-[120px]`}>Edit</th>}
@@ -2291,6 +2291,18 @@ export function LeadsTablePage({
                       <td className={TD_MUTED}>{cell("industry", row.industry ?? "")}</td>
                       <td className={TD_MUTED}>
                         {cell("company_grading", row.company_grading ?? "")}
+                      </td>
+                      <td className={TD}>
+                        {row.latest_score ? (
+                          <div className="space-y-0.5">
+                            <ScoreBadge score={scoreLabel(row.latest_score)} />
+                            <p className="text-[10px] uppercase tracking-wide text-slate-500">
+                              AI grading
+                            </p>
+                          </div>
+                        ) : (
+                          <span className="text-slate-500 text-sm">Not scored</span>
+                        )}
                       </td>
                       <td className={TD_MUTED}>
                         {cell("contact_designation", row.contact_designation ?? "")}
@@ -2403,18 +2415,6 @@ export function LeadsTablePage({
                       <td className={TD_MUTED}>{cell("remarks", row.remarks ?? "")}</td>
                       <td className={TD_MUTED} onClick={(e) => e.stopPropagation()}>
                         {renderAssignedToCell(row, draft)}
-                      </td>
-                      <td className={TD}>
-                        {row.latest_score ? (
-                          <div className="space-y-0.5">
-                            <ScoreBadge score={scoreLabel(row.latest_score)} />
-                            <p className="text-[10px] uppercase tracking-wide text-slate-500">
-                              AI grading
-                            </p>
-                          </div>
-                        ) : (
-                          <span className="text-slate-500 text-sm">Not scored</span>
-                        )}
                       </td>
                       <td className={TD_MUTED}>
                         {editMode ? (
