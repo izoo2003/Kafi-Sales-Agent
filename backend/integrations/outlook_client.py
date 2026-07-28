@@ -176,13 +176,13 @@ class OutlookClient:
         acct = get_active_mailbox()
         if acct and acct.password:
             return acct.password
-        return self._cred_password()
+        return settings.mailbox_password or None
 
     def _cred_display_name(self) -> str | None:
         acct = get_active_mailbox()
         if acct and acct.display_name:
             return acct.display_name
-        return self._cred_display_name()
+        return settings.mailbox_display_name or None
 
     @property
     def is_configured(self) -> bool:

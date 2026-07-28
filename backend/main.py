@@ -248,14 +248,30 @@ def health():
     from integrations.outlook_client import outlook_client
     from integrations.voice_client import voice_client
     from integrations.whatsapp_client import whatsapp_client
+    from modules.mailbox_accounts import hosts_enabled
+
+    # Safe diagnostics only — never return passwords or full emails.
+    per_user = {
+        "admin": bool(settings.mailbox_admin_email and settings.mailbox_admin_password),
+        "asim": bool(settings.mailbox_asim_email and settings.mailbox_asim_password),
+        "usmankhan": bool(settings.mailbox_usman_email and settings.mailbox_usman_password),
+        "sadia": bool(settings.mailbox_sadia_email and settings.mailbox_sadia_password),
+    }
 
     return {
         "status": "ok",
         "service": "kafi-sales-agent",
         "old_clients_import_parser": OLD_CLIENTS_IMPORT_PARSER,
         "api_port": settings.api_port,
+        "mailbox_enabled": bool(settings.mailbox_enabled),
+        "mailbox_hosts_enabled": hosts_enabled(),
+        "mailbox_smtp_host_set": bool((settings.mailbox_smtp_host or "").strip()),
+        "mailbox_imap_host_set": bool((settings.mailbox_imap_host or "").strip()),
+        "mailbox_ssl_hostname_set": bool((settings.mailbox_ssl_hostname or "").strip()),
+        "mailbox_credentials_key_set": bool((settings.mailbox_credentials_key or "").strip()),
+        "mailbox_per_user_env": per_user,
         "outlook_configured": outlook_client.is_configured,
-        "mailbox_configured": outlook_client.is_configured,
+        "mailbox_configured": hosts_enabled(),
         "outbound_email_configured": mail_client.is_configured,
         "twilio_configured": voice_client.is_configured,
         "twilio_webhooks_ready": voice_client.webhooks_ready,

@@ -23,9 +23,8 @@ class MailClient:
 
     @property
     def is_configured(self) -> bool:
-        return hosts_enabled() and (
-            outlook_client.is_configured or bool(settings_mailbox_fallback())
-        )
+        # Shared SMTP/IMAP hosts are enough — each send resolves per-user credentials.
+        return hosts_enabled()
 
     def mailbox_email(self, user: AppUser | None = None) -> str | None:
         if user is not None:
