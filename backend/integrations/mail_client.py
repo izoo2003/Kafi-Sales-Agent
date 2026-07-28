@@ -1,5 +1,4 @@
-"""Outbound email — uses the active user's cPanel mailbox (SMTP AUTH),
-or Microsoft Graph Mail.Send when Outlook OAuth is configured instead."""
+"""Outbound email — Resend HTTPS (Railway Hobby), cPanel SMTP AUTH, or Graph."""
 
 from __future__ import annotations
 
@@ -7,6 +6,7 @@ from typing import Any
 
 from db.models import AppUser
 from integrations.outlook_client import outlook_client
+from integrations.resend_client import resend_configured
 from modules.mailbox_accounts import (
     hosts_enabled,
     resolve_user_mailbox,
@@ -18,13 +18,18 @@ from modules.mailbox_accounts import (
 class MailClient:
     def is_configured_for(self, user: AppUser | None = None) -> bool:
         if user is not None:
-            return hosts_enabled() and user_mailbox_configured(user)
+            if not hosts_enabled():
+                return False
+            if resend_configured():
+                account = resolve_user_mailbox(user)
+                return bool(account and account.email)
+            return user_mailbox_configured(user)
         return outlook_client.is_configured
 
     @property
     def is_configured(self) -> bool:
-        # Shared SMTP/IMAP hosts are enough — each send resolves per-user credentials.
-        return hosts_enabled()
+        # Hosts enabled for IMAP, or Resend for Hobby outbound.
+        return hosts_enabled() or resend_configured()
 
     def mailbox_email(self, user: AppUser | None = None) -> str | None:
         if user is not None:

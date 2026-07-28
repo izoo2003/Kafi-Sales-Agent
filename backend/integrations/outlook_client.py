@@ -193,7 +193,17 @@ class OutlookClient:
             return False
         if self._use_oauth() and get_active_mailbox() is None:
             return True
+        # Resend HTTPS needs From email only (IMAP password still used for Sent/inbox).
+        from integrations.resend_client import resend_configured
+
+        if resend_configured():
+            return True
         return bool(self._cred_password())
+
+    def _use_resend(self) -> bool:
+        from integrations.resend_client import resend_configured
+
+        return resend_configured()
 
     def _use_oauth(self) -> bool:
         # Per-user cPanel accounts always use password auth; OAuth is legacy global only.
@@ -1076,7 +1086,20 @@ class OutlookClient:
                 except Exception:  # noqa: BLE001
                     pass
         except Exception as exc:  # noqa: BLE001
-            return {"status": "error", "message": f"SMTP send failed: {exc}"}
+            err = str(exc)
+            lower = err.lower()
+            if "timed out" in lower or "timeout" in lower:
+                return {
+                    "status": "error",
+                    "message": (
+                        "SMTP send failed: timed out. "
+                        "Railway Hobby blocks outbound SMTP (ports 25/465/587). "
+                        "Set RESEND_API_KEY (HTTPS send) after verifying kafi-group.com "
+                        "in Resend, or upgrade Railway to Pro for SMTP. "
+                        f"Detail: {err}"
+                    ),
+                }
+            return {"status": "error", "message": f"SMTP send failed: {err}"}
 
         # cPanel/SMTP does not auto-save to Sent — append a copy via IMAP.
         try:
@@ -1086,6 +1109,108 @@ class OutlookClient:
         _invalidate_mail_caches()
 
         return {"status": "sent", "message": "Email sent", "to": to, "subject": subject}
+
+    def _send_resend(
+        self,
+        *,
+        to: str,
+        subject: str,
+        body: str,
+        cc: str | None = None,
+        attachments: list[dict] | None = None,
+        interaction_id: int | None = None,
+        send_mode: str = "individual",
+        in_reply_to: str | None = None,
+        references: str | None = None,
+    ) -> dict[str, Any]:
+        """Send via Resend HTTPS — works on Railway Hobby (SMTP ports blocked)."""
+        from email import encoders, utils as email_utils
+        from email.mime.base import MIMEBase
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+
+        from integrations.resend_client import send_via_resend
+        from modules.email_attachments import load_bytes
+        from modules.email_tracking import build_tracked_bodies
+
+        from_addr = self._cred_email()
+        if not from_addr:
+            return {
+                "status": "error",
+                "message": (
+                    "No From address. Set this user's company mailbox email "
+                    "(Users page) so Resend can send as @kafi-group.com."
+                ),
+            }
+        display_name = self._cred_display_name()
+        plain_body, html_body = build_tracked_bodies(
+            body,
+            interaction_id=interaction_id,
+            send_mode=send_mode,
+        )
+        headers: dict[str, str] = {}
+        if in_reply_to:
+            headers["In-Reply-To"] = in_reply_to
+        if references:
+            headers["References"] = references
+
+        result = send_via_resend(
+            from_email=from_addr,
+            from_name=display_name,
+            to=to,
+            subject=subject,
+            plain_body=plain_body,
+            html_body=html_body,
+            cc=cc,
+            attachments=attachments,
+            headers=headers or None,
+        )
+        if result.get("status") != "sent":
+            return result
+
+        # Best-effort copy into IMAP Sent (993 is not blocked like SMTP on Hobby).
+        try:
+            message = MIMEMultipart("mixed")
+            message["From"] = f"{display_name} <{from_addr}>" if display_name else from_addr
+            message["To"] = to
+            if cc:
+                message["Cc"] = cc
+            message["Subject"] = subject
+            message["Date"] = email_utils.formatdate(localtime=True)
+            message["Message-ID"] = email_utils.make_msgid(
+                domain=from_addr.split("@")[-1]
+            )
+            if html_body:
+                alt = MIMEMultipart("alternative")
+                alt.attach(MIMEText(plain_body, "plain", "utf-8"))
+                alt.attach(MIMEText(html_body, "html", "utf-8"))
+                message.attach(alt)
+            else:
+                message.attach(MIMEText(plain_body, "plain", "utf-8"))
+            for meta in attachments or []:
+                try:
+                    data, filename, content_type = load_bytes(meta)
+                except FileNotFoundError:
+                    continue
+                maintype, _, subtype = (content_type or "application/octet-stream").partition(
+                    "/"
+                )
+                part = MIMEBase(maintype or "application", subtype or "octet-stream")
+                part.set_payload(data)
+                encoders.encode_base64(part)
+                part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
+                message.attach(part)
+            raw = (
+                message.as_bytes()
+                if hasattr(message, "as_bytes")
+                else message.as_string().encode("utf-8")
+            )
+            if self._cred_password():
+                self._append_to_sent(raw)
+        except Exception:  # noqa: BLE001
+            pass
+        _invalidate_mail_caches()
+        return result
 
     def _append_to_sent(self, raw_message: bytes) -> None:
         """Store a copy of an outbound SMTP message in the IMAP Sent folder."""
@@ -1127,6 +1252,18 @@ class OutlookClient:
         if not to:
             return {"status": "error", "message": "Recipient email is missing"}
         if not self._use_oauth():
+            if self._use_resend():
+                return self._send_resend(
+                    to=to,
+                    subject=subject,
+                    body=body,
+                    cc=cc,
+                    attachments=attachments,
+                    interaction_id=interaction_id,
+                    send_mode=send_mode,
+                    in_reply_to=in_reply_to,
+                    references=references,
+                )
             return self._send_smtp(
                 to=to,
                 subject=subject,

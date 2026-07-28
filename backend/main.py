@@ -270,6 +270,7 @@ def health():
         "mailbox_ssl_hostname_set": bool((settings.mailbox_ssl_hostname or "").strip()),
         "mailbox_credentials_key_set": bool((settings.mailbox_credentials_key or "").strip()),
         "mailbox_per_user_env": per_user,
+        "resend_configured": bool((settings.resend_api_key or "").strip()),
         "outlook_configured": outlook_client.is_configured,
         "mailbox_configured": hosts_enabled(),
         "outbound_email_configured": mail_client.is_configured,

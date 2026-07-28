@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     public_api_base_url: str | None = None
     email_track_secret: str | None = None  # optional HMAC secret for open tokens
 
+    # Resend HTTPS send (Railway Hobby — SMTP ports are blocked there).
+    # Verify kafi-group.com in Resend, then set RESEND_API_KEY. From-address =
+    # each user's mailbox email. Leave unset to use SMTP (local / Railway Pro).
+    resend_api_key: str | None = None
+
     # Gemini LLM (see modules/llm_client.py) — loaded from .env into Settings, not os.environ.
     gemini_api_key: str | None = None
     llm_api_key: str | None = None  # legacy alias for gemini_api_key
