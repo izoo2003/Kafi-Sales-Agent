@@ -100,6 +100,9 @@ interface AppSidebarProps {
   /** Mobile drawer open state (< lg). Ignored on desktop. */
   mobileOpen?: boolean;
   onMobileClose?: () => void;
+  /** Desktop sidebar visible (< lg always uses mobile drawer). */
+  desktopOpen?: boolean;
+  onToggleDesktop?: () => void;
 }
 
 export function AppSidebar({
@@ -117,6 +120,8 @@ export function AppSidebar({
   userRole,
   mobileOpen = false,
   onMobileClose,
+  desktopOpen = true,
+  onToggleDesktop,
 }: AppSidebarProps) {
   const [leadsMenuOpen, setLeadsMenuOpen] = useState(activeTab === "table");
   const [mailMenuOpen, setMailMenuOpen] = useState(
@@ -157,6 +162,11 @@ export function AppSidebar({
     onMobileClose?.();
   }
 
+  function closeSidebar() {
+    onToggleDesktop?.();
+    closeMobile();
+  }
+
   return (
     <>
       <div
@@ -168,11 +178,20 @@ export function AppSidebar({
       />
 
       <aside
-        className={`fixed lg:sticky inset-y-0 left-0 z-50 flex w-[min(18rem,85vw)] lg:w-64 shrink-0 flex-col border-r border-slate-800 bg-slate-950 lg:bg-slate-900/50 h-dvh lg:h-screen transition-transform duration-200 ease-out ${
-          mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
-        }`}
+        className={`fixed inset-y-0 left-0 z-50 flex flex-col border-r border-slate-800 bg-slate-950 h-dvh transition-[width,transform] duration-200 ease-out overflow-hidden
+          w-[min(18rem,85vw)]
+          ${mobileOpen ? "translate-x-0" : "-translate-x-full"}
+          lg:sticky lg:top-0 lg:h-screen lg:translate-x-0 lg:bg-slate-900/50
+          ${desktopOpen ? "lg:w-64 lg:border-r" : "lg:w-0 lg:border-0"}
+        `}
         aria-label="Main navigation"
+        aria-hidden={!mobileOpen && !desktopOpen}
       >
+        <div
+          className={`w-[min(18rem,85vw)] lg:w-64 shrink-0 flex flex-col h-full ${
+            desktopOpen ? "" : "lg:pointer-events-none lg:opacity-0"
+          }`}
+        >
         <div className="px-5 py-5 sm:py-6 border-b border-slate-800 flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-xs font-medium uppercase tracking-wider text-slate-500">Sales Agent</p>
@@ -183,9 +202,10 @@ export function AppSidebar({
           </div>
           <button
             type="button"
-            onClick={closeMobile}
-            className="lg:hidden shrink-0 rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
-            aria-label="Close menu"
+            onClick={closeSidebar}
+            className="shrink-0 rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+            aria-label="Close sidebar"
+            title="Close sidebar"
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
               <path d="M6 6l12 12M18 6L6 18" />
@@ -439,6 +459,7 @@ export function AppSidebar({
             </div>
           </div>
         )}
+        </div>
       </aside>
     </>
   );

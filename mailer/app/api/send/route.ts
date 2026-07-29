@@ -38,6 +38,7 @@ async function resolveUsernameFromSession(
 }
 
 export async function POST(req: NextRequest) {
+  try {
   let body: {
     token?: string;
     auth_token?: string;
@@ -110,4 +111,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: sent.message }, { status: 502 });
   }
   return NextResponse.json({ ok: true, message: sent.message });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return NextResponse.json(
+      { ok: false, error: `Send failed: ${message}` },
+      { status: 500 },
+    );
+  }
 }

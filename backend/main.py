@@ -151,7 +151,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-_PUBLIC_API_PATHS = {"/api/health", "/api/auth/login", "/api/calls/twilio-status"}
+_PUBLIC_API_PATHS = {
+    "/api/health",
+    "/api/auth/login",
+    "/api/calls/twilio-status",
+    "/api/mailer/session/redeem",
+    "/api/mailer/handoff-login",
+}
 _PUBLIC_API_PREFIXES = ("/api/webhooks/", "/api/track/")
 
 

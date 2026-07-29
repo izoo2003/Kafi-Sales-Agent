@@ -85,6 +85,7 @@ def create_mailer_session(
             "typ": "mailer_session",
             "session_token": session_token,
             "user_id": user.id,
+            "username": user.username,
             "iat": int(now.timestamp()),
             "exp": int((now + timedelta(seconds=expires_in)).timestamp()),
         },
@@ -95,7 +96,7 @@ def create_mailer_session(
         code = code.decode("ascii")
 
     return MailerSessionResponse(
-        url=f"{public_url}/auth/callback?code={code}",
+        url=f"{public_url}/auth/callback?code={code}&u={user.username}",
         code=code,
         expires_in_seconds=expires_in,
     )
@@ -119,6 +120,14 @@ def redeem_mailer_session(
     user = auth_module.get_user_by_token(db, session_token)
     if not user:
         raise HTTPException(status_code=401, detail="Session expired — log in again")
+
+    expected_id = data.get("user_id")
+    if expected_id is not None and int(expected_id) != user.id:
+        raise HTTPException(status_code=401, detail="Session user mismatch — log in again")
+
+    expected_username = str(data.get("username") or "").strip()
+    if expected_username and user.username != expected_username:
+        raise HTTPException(status_code=401, detail="Session user mismatch — log in again")
 
     return MailerAuthResponse(token=session_token, user=_to_user_read(user))
 

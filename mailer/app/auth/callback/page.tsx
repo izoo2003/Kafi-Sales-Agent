@@ -2,8 +2,13 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { redeemSessionCode } from "@/lib/api";
+import { redeemSessionCode, clearSession } from "@/lib/api";
 import { useAuth } from "@/components/AuthProvider";
+
+function safeMailerNext(raw: string | null): string {
+  if (!raw || !raw.startsWith("/") || raw.startsWith("//")) return "/inbox";
+  return raw;
+}
 
 function CallbackInner() {
   const params = useSearchParams();
@@ -17,12 +22,24 @@ function CallbackInner() {
       setError("Missing session code");
       return;
     }
+    const nextPath = safeMailerNext(params.get("next"));
+    const expectedUser = (params.get("u") || "").trim().toLowerCase();
     let cancelled = false;
     void (async () => {
       try {
-        await redeemSessionCode(code);
+        clearSession();
+        const result = await redeemSessionCode(code);
+        if (
+          expectedUser &&
+          result.user.username.toLowerCase() !== expectedUser
+        ) {
+          clearSession();
+          throw new Error(
+            `Expected mailer login as ${expectedUser}, got ${result.user.username}`,
+          );
+        }
         await refresh();
-        if (!cancelled) router.replace("/inbox");
+        if (!cancelled) router.replace(nextPath);
       } catch (e) {
         if (!cancelled) {
           setError(e instanceof Error ? e.message : "Could not open mail session");

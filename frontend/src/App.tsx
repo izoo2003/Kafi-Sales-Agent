@@ -41,6 +41,15 @@ import {
 
 const INBOX_POLL_INTERVAL_MS = 20_000;
 const FOLLOW_UP_POLL_INTERVAL_MS = 60_000;
+const SIDEBAR_OPEN_KEY = "kafi_sidebar_open";
+
+function readSidebarOpenPreference(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_OPEN_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
 
 function CallInitBanner() {
   const voice = useTwilioVoiceOptional();
@@ -65,6 +74,7 @@ function DashboardApp() {
   const [tableSection, setTableSection] = useState<LeadsTableSection>("master");
   const [mailSection, setMailSection] = useState<MailSection>("inbox");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(readSidebarOpenPreference);
   const [mailDraftCount, setMailDraftCount] = useState(0);
   const [mailLabels, setMailLabels] = useState<
     Array<{ id: number; name: string; color: string; count: number }>
@@ -410,13 +420,29 @@ function DashboardApp() {
     setTab("inbox");
   }
 
-  async function openMailerApp() {
+  async function openMailerApp(nextPath = "/inbox") {
     try {
       const session = await client.createMailerSession();
-      window.location.href = session.url;
+      const url = new URL(session.url);
+      if (nextPath.startsWith("/") && !nextPath.startsWith("//")) {
+        url.searchParams.set("next", nextPath);
+      }
+      window.location.href = url.toString();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not open Vercel mailer");
     }
+  }
+
+  function toggleSidebar() {
+    setSidebarOpen((open) => {
+      const next = !open;
+      try {
+        localStorage.setItem(SIDEBAR_OPEN_KEY, String(next));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
   }
 
   function handleSelectWhatsAppSection(section: WhatsAppSection) {
@@ -655,9 +681,11 @@ function DashboardApp() {
           userRole={user?.role}
           mobileOpen={mobileNavOpen}
           onMobileClose={() => setMobileNavOpen(false)}
+          desktopOpen={sidebarOpen}
+          onToggleDesktop={toggleSidebar}
         />
 
-        <div className="flex-1 min-w-0 flex flex-col overflow-x-hidden">
+        <div className="flex-1 min-w-0 flex flex-col overflow-x-hidden transition-[margin] duration-200">
           <header className="lg:hidden sticky top-0 z-30 flex items-center gap-2 border-b border-slate-800 bg-slate-950/95 backdrop-blur px-3 py-2.5 pt-[max(0.625rem,env(safe-area-inset-top))]">
             <button
               type="button"
@@ -682,7 +710,18 @@ function DashboardApp() {
             />
           </header>
 
-          <div className="hidden lg:flex sticky top-0 z-30 justify-end items-center gap-2 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur px-4 sm:px-6 lg:px-8 py-2.5">
+          <div className="hidden lg:flex sticky top-0 z-30 justify-between items-center gap-2 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur px-4 sm:px-6 lg:px-8 py-2.5">
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              className="rounded-lg p-2 text-slate-300 hover:bg-slate-800 hover:text-slate-100"
+              aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+              title={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <path d="M4 7h16M4 12h16M4 17h16" />
+              </svg>
+            </button>
             <AppTopActions
               onRefresh={refreshAll}
               onLogout={() => void logout()}
@@ -691,7 +730,7 @@ function DashboardApp() {
 
           <main
             className={`w-full mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 lg:py-8 ${
-              isWideContent ? "max-w-none" : "max-w-6xl"
+              isWideContent || !sidebarOpen ? "max-w-none" : "max-w-6xl"
             }`}
           >
             <CallInitBanner />
@@ -763,6 +802,7 @@ function DashboardApp() {
                 onUnreadChange={setInboxUnread}
                 onFolderCountsChange={handleMailCountsChange}
                 onMailExtrasChange={() => void loadMailExtras()}
+                onOpenMailerCompose={() => void openMailerApp("/compose")}
               />
             )}
             {tab === "calls" && selectedLeadId !== null && (

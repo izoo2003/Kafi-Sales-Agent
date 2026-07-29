@@ -30,6 +30,8 @@ interface InboxPageProps {
     archive: number;
   }) => void;
   onMailExtrasChange?: () => void;
+  /** Open Vercel mailer compose (mailer-pied). */
+  onOpenMailerCompose?: () => void;
 }
 
 function formatDate(value: string | null | undefined): string {
@@ -271,6 +273,7 @@ export function InboxPage({
   onUnreadChange,
   onFolderCountsChange,
   onMailExtrasChange,
+  onOpenMailerCompose,
 }: InboxPageProps) {
   const [status, setStatus] = useState<InboxStatus | null>(null);
   const [threads, setThreads] = useState<InboxThreadSummary[]>([]);
@@ -927,6 +930,10 @@ export function InboxPage({
           <button
             type="button"
             onClick={() => {
+              if (onOpenMailerCompose) {
+                onOpenMailerCompose();
+                return;
+              }
               setComposeDraft(null);
               setShowCompose(true);
             }}

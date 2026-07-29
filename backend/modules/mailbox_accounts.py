@@ -63,7 +63,9 @@ def _fernet_keys() -> list[bytes]:
     keys: list[bytes] = []
     raw = (settings.mailbox_credentials_key or "").strip()
     if raw:
-        keys.append(raw.encode("ascii"))
+        # .env keys are sometimes pasted without trailing '=' padding.
+        padded = raw + ("=" * ((4 - len(raw) % 4) % 4))
+        keys.append(padded.encode("ascii"))
     # Deterministic fallback so local/dev still works without a key set.
     digest = hashlib.sha256(b"kafi-mailbox-dev-key").digest()
     keys.append(base64.urlsafe_b64encode(digest))

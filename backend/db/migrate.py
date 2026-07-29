@@ -30,7 +30,7 @@ def _revision_known(script: ScriptDirectory, revision_id: str) -> bool:
 
 
 def _reconcile_unknown_db_revisions(alembic_cfg: Config, script: ScriptDirectory) -> None:
-    """If the DB was migrated on a newer deploy, stamp back to this build's head."""
+    """If the DB was migrated on a newer deploy, reset to this build's head."""
     with engine.connect() as conn:
         rows = conn.execute(text("SELECT version_num FROM alembic_version")).fetchall()
 
@@ -41,10 +41,16 @@ def _reconcile_unknown_db_revisions(alembic_cfg: Config, script: ScriptDirectory
     script_head = script.get_current_head()
     print(
         "Database alembic revision(s) not present in this deployment: "
-        f"{', '.join(unknown)}. Stamping to deployed head {script_head!r}.",
+        f"{', '.join(unknown)}. Resetting alembic_version to {script_head!r}.",
         flush=True,
     )
-    command.stamp(alembic_cfg, script_head)
+    # command.stamp() fails when the DB points at a revision missing from this codebase.
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM alembic_version"))
+        conn.execute(
+            text("INSERT INTO alembic_version (version_num) VALUES (:v)"),
+            {"v": script_head},
+        )
 
 
 def _stamp_head_if_interested_columns_already_applied(

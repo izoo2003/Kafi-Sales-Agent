@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { getStoredToken, loginFromHandoff } from "@/lib/api";
+import { loginFromHandoff, clearSession } from "@/lib/api";
 import { useAuth } from "@/components/AuthProvider";
 import { TemplatePicker } from "@/components/TemplatePicker";
 
@@ -55,10 +55,20 @@ function BulkInner() {
   }, [token]);
 
   useEffect(() => {
-    if (!token || getStoredToken()) return;
-    void loginFromHandoff(token)
-      .then(() => refresh())
-      .catch(() => null);
+    if (!token) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        clearSession();
+        await loginFromHandoff(token);
+        if (!cancelled) await refresh();
+      } catch {
+        /* preview still shows; send will prompt login */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [token, refresh]);
 
   const [subject, setSubject] = useState(
@@ -105,26 +115,62 @@ function BulkInner() {
       const batch = batches[b];
       pushLog(`Batch ${b + 1}/${batches.length} — ${batch.length} message(s)…`);
       try {
-        const res = await fetch("/api/send-batch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            token,
-            subject,
-            body,
-            leads: batch,
-            message_delay_seconds: messageDelay,
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          pushLog(`Batch failed: ${data.error || res.statusText}`);
-          failTotal += batch.length;
-        } else {
-          sentTotal += data.sent || 0;
-          failTotal += data.failed || 0;
-          for (const r of data.results || []) {
-            pushLog(`${r.ok ? "OK" : "FAIL"}  ${r.email}  ${r.ok ? "" : r.message}`);
+        // Prefer one-message requests so Vercel timeouts/crashes don't wipe a whole batch,
+        // and so every response is small JSON we can parse reliably.
+        for (let i = 0; i < batch.length; i++) {
+          const lead = batch[i];
+          try {
+            const res = await fetch("/api/send", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                token,
+                to: lead.contact_email,
+                subject: subject
+                  .replaceAll("{{company_name}}", lead.company_name || "")
+                  .replaceAll(
+                    "{{contact_name}}",
+                    lead.contact_name || lead.company_name || "",
+                  )
+                  .replaceAll("{{contact_email}}", lead.contact_email || ""),
+                body: body
+                  .replaceAll("{{company_name}}", lead.company_name || "")
+                  .replaceAll(
+                    "{{contact_name}}",
+                    lead.contact_name || lead.company_name || "",
+                  )
+                  .replaceAll("{{contact_email}}", lead.contact_email || ""),
+                html: true,
+              }),
+            });
+            const raw = await res.text();
+            let data: { ok?: boolean; error?: string; message?: string } = {};
+            try {
+              data = raw ? (JSON.parse(raw) as typeof data) : {};
+            } catch {
+              pushLog(
+                `FAIL  ${lead.contact_email}  Server returned non-JSON (${res.status}): ${raw.slice(0, 180)}`,
+              );
+              failTotal += 1;
+              continue;
+            }
+            if (!res.ok || data.ok === false) {
+              pushLog(
+                `FAIL  ${lead.contact_email}  ${data.error || data.message || res.statusText}`,
+              );
+              failTotal += 1;
+            } else {
+              pushLog(`OK  ${lead.contact_email}`);
+              sentTotal += 1;
+            }
+          } catch (e) {
+            pushLog(
+              `FAIL  ${lead.contact_email}  ${e instanceof Error ? e.message : String(e)}`,
+            );
+            failTotal += 1;
+          }
+          if (i < batch.length - 1 && messageDelay > 0) {
+            await sleep(messageDelay * 1000);
           }
         }
       } catch (e) {

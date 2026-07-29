@@ -114,7 +114,11 @@ export async function sendSmtp(options: {
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, message: msg };
   } finally {
-    transporter.close();
+    try {
+      transporter.close();
+    } catch {
+      /* ignore close errors */
+    }
   }
 }
 
