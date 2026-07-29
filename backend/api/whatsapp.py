@@ -270,12 +270,35 @@ async def receive_whatsapp_webhook(request: Request, db: Session = Depends(get_d
                 text = (message.get("text") or {}).get("body", "")
                 provider_message_id = message.get("id")
                 if wa_id:
-                    comms.record_inbound_whatsapp_message(
+                    interaction = comms.record_inbound_whatsapp_message(
                         db,
                         wa_id=wa_id,
                         message_text=text,
                         provider_message_id=provider_message_id,
+                        create_reply_draft=False,
                     )
+                    # AI Mode after-hours auto-reply (when enabled for assignee / any user).
+                    try:
+                        from modules import ai_mode as ai_mode_module
+                        from db.models import Contact
+
+                        contact = (
+                            db.query(Contact)
+                            .filter(Contact.wa_id == wa_id)
+                            .order_by(Contact.id.asc())
+                            .first()
+                        )
+                        if contact:
+                            ai_mode_module.maybe_auto_reply_whatsapp(
+                                db,
+                                contact=contact,
+                                message_text=text,
+                                provider_message_id=provider_message_id,
+                            )
+                        elif interaction is None:
+                            pass
+                    except Exception:  # noqa: BLE001
+                        pass
 
             for status_update in value.get("statuses", []):
                 message_id = status_update.get("id")

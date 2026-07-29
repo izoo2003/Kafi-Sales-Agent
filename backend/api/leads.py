@@ -508,7 +508,9 @@ def update_lead_table_row(
         else:
             data.pop("assigned_to", None)
     try:
-        row = leads_module.update_lead_table_row(db, lead_id, data)
+        row = leads_module.update_lead_table_row(
+            db, lead_id, data, remarks_by=user.username
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     if not row:

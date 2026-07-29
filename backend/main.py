@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api import (
+    ai_mode,
     auth,
     calls,
     chatbot,
@@ -46,6 +47,24 @@ def _run_daily_job():
         purged = calls_module.purge_old_call_logs(db)
         if purged:
             print(f"Purged {purged} call log(s) older than {calls_module.CALL_HISTORY_RETENTION_DAYS} days.", flush=True)
+    finally:
+        db.close()
+
+
+def _run_ai_mode_email_job():
+    db = SessionLocal()
+    try:
+        from modules import ai_mode as ai_mode_module
+
+        result = ai_mode_module.process_all_enabled_email_users(db)
+        if result.get("replied"):
+            print(
+                f"AI Mode email auto-reply: users={result.get('users')} "
+                f"replied={result.get('replied')} processed={result.get('processed')}",
+                flush=True,
+            )
+    except Exception as exc:  # noqa: BLE001
+        print(f"AI Mode email job failed: {exc}", flush=True)
     finally:
         db.close()
 
@@ -131,6 +150,14 @@ async def lifespan(app: FastAPI):
 
     if run_scheduler:
         apscheduler.add_job(_run_daily_job, "cron", hour=8, minute=0, id="daily_scheduler")
+        apscheduler.add_job(
+            _run_ai_mode_email_job,
+            "interval",
+            minutes=3,
+            id="ai_mode_email",
+            max_instances=1,
+            coalesce=True,
+        )
         apscheduler.start()
         print("Daily scheduler started in this worker.", flush=True)
     else:
@@ -245,6 +272,7 @@ app.include_router(chatbot.router, prefix="/api")
 app.include_router(kpi.router, prefix="/api")
 app.include_router(whatsapp.router, prefix="/api")
 app.include_router(whatsapp.webhooks_router, prefix="/api")
+app.include_router(ai_mode.router, prefix="/api")
 
 
 OLD_CLIENTS_IMPORT_PARSER = "old_clients_v2"

@@ -1073,6 +1073,8 @@ export interface LeadTableRow {
   city: string | null;
   address: string | null;
   remarks: string | null;
+  /** Prior remarks entries with timestamps (oldest → newest). */
+  remarks_history?: Array<{ text: string; at: string; by?: string | null }> | null;
   /** Post-call notes from the latest phone call (Follow up / Not interested / Did not receive). */
   call_remarks: string | null;
   assigned_to: string;
@@ -2138,4 +2140,118 @@ export const client = {
         template_variables: data.template_variables ?? [],
       }),
     }),
+
+  // ── AI Mode ────────────────────────────────────────────────────────────────
+  getAiModeSettings: () => request<AiModeSettings>("/ai-mode/settings"),
+  updateAiModeSettings: (data: Partial<AiModeSettingsUpdate>) =>
+    request<AiModeSettings>("/ai-mode/settings", {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  processAiModeEmails: () =>
+    request<AiModeProcessResult>("/ai-mode/process-emails", { method: "POST" }),
+  listAiModeAutoReplies: (limit = 50) =>
+    request<{ rows: AiModeAutoReplyLogRow[] }>(
+      `/ai-mode/auto-replies?limit=${limit}`,
+    ),
+  listAiModeLifecycle: (params: {
+    stage?: string;
+    search?: string;
+    limit?: number;
+    offset?: number;
+  } = {}) => {
+    const query = new URLSearchParams();
+    if (params.stage) query.set("stage", params.stage);
+    if (params.search) query.set("search", params.search);
+    if (params.limit) query.set("limit", String(params.limit));
+    if (params.offset) query.set("offset", String(params.offset));
+    const qs = query.toString();
+    return request<AiModeLifecycleListResponse>(
+      `/ai-mode/lifecycle${qs ? `?${qs}` : ""}`,
+    );
+  },
+  updateAiModeLifecycle: (
+    buyerId: number,
+    data: { stage: string; notes?: string | null },
+  ) =>
+    request<AiModeLifecycleRow>(`/ai-mode/lifecycle/${buyerId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  ensureAiModeLifecycle: (buyerId: number) =>
+    request<AiModeLifecycleRow>("/ai-mode/lifecycle/ensure", {
+      method: "POST",
+      body: JSON.stringify({ buyer_id: buyerId }),
+    }),
 };
+
+export interface AiModeSettings {
+  user_id: number;
+  enabled: boolean;
+  email_auto_reply_enabled: boolean;
+  whatsapp_auto_reply_enabled: boolean;
+  form_url: string | null;
+  email_subject_template: string;
+  email_body_template: string;
+  whatsapp_body_template: string;
+  query_keywords: string[];
+  last_email_processed_at: string | null;
+  updated_at: string | null;
+  lifecycle_stages: Array<{ key: string; label: string }>;
+}
+
+export interface AiModeSettingsUpdate {
+  enabled?: boolean;
+  email_auto_reply_enabled?: boolean;
+  whatsapp_auto_reply_enabled?: boolean;
+  form_url?: string | null;
+  email_subject_template?: string;
+  email_body_template?: string;
+  whatsapp_body_template?: string;
+  query_keywords?: string[] | string;
+}
+
+export interface AiModeProcessResult {
+  processed: number;
+  replied: number;
+  skipped: number;
+  enabled: boolean;
+  error?: string;
+  errors?: string[];
+}
+
+export interface AiModeAutoReplyLogRow {
+  id: number;
+  channel: string;
+  recipient: string | null;
+  subject: string | null;
+  preview: string | null;
+  status: string;
+  detail: string | null;
+  created_at: string | null;
+}
+
+export interface AiModeLifecycleRow {
+  id: number;
+  buyer_id: number;
+  company_name?: string | null;
+  country?: string | null;
+  stage: string;
+  stage_label: string;
+  stage_entered_at: string | null;
+  history: Array<{
+    stage: string;
+    at: string;
+    notes?: string | null;
+    by_user_id?: number | null;
+  }>;
+  notes: string | null;
+  updated_at: string | null;
+}
+
+export interface AiModeLifecycleListResponse {
+  total: number;
+  stages: Array<{ key: string; label: string }>;
+  pipeline: Record<string, number>;
+  rows: AiModeLifecycleRow[];
+}

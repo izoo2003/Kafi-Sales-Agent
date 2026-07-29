@@ -299,10 +299,24 @@ def create_contact(db: Session, data: dict, *, commit: bool = True, flush: bool 
     return contact
 
 
-def update_buyer(db: Session, buyer_id: int, data: dict) -> Buyer | None:
+def update_buyer(
+    db: Session,
+    buyer_id: int,
+    data: dict,
+    *,
+    remarks_by: str | None = None,
+) -> Buyer | None:
     buyer = get_buyer(db, buyer_id)
     if not buyer:
         return None
+    if "remarks" in data:
+        new_remarks = data.get("remarks")
+        old = (buyer.remarks or "").strip()
+        new = (new_remarks or "").strip() if new_remarks is not None else ""
+        if old and old != new:
+            from modules.ai_mode import append_remarks_history
+
+            append_remarks_history(buyer, previous_text=old, by_username=remarks_by)
     for key, value in data.items():
         if key in {
             "company_name",

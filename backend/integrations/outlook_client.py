@@ -136,14 +136,26 @@ _ARCHIVE_FOLDER_CANDIDATES = (
     "Archived",
 )
 
+_JUNK_FOLDER_CANDIDATES = (
+    "Junk",
+    "Junk E-mail",
+    "Junk Email",
+    "Spam",
+    "INBOX.spam",
+    "INBOX.Junk",
+    "INBOX/Junk",
+    "INBOX.Junk Email",
+)
+
 # Logical folder keys used by the API / UI.
-FOLDER_KEYS = ("inbox", "sent", "trash", "archive")
+FOLDER_KEYS = ("inbox", "sent", "trash", "archive", "junk")
 
 _FOLDER_CANDIDATES: dict[str, tuple[str, ...]] = {
     "inbox": ("INBOX",),
     "sent": _SENT_FOLDER_CANDIDATES,
     "trash": _TRASH_FOLDER_CANDIDATES,
     "archive": _ARCHIVE_FOLDER_CANDIDATES,
+    "junk": _JUNK_FOLDER_CANDIDATES,
 }
 
 

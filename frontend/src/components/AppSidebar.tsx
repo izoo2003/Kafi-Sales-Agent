@@ -12,6 +12,7 @@ export type Tab =
   | "calls"
   | "chatbot"
   | "kpi"
+  | "ai-mode"
   | "users";
 
 export type LeadsTableSection =

@@ -584,6 +584,7 @@ def _hydrate_lead_table_rows(
                 "city": buyer.city,
                 "address": buyer.address,
                 "remarks": buyer.remarks,
+                "remarks_history": buyer.remarks_history or [],
                 "call_remarks": call_notes_by_buyer.get(buyer.id),
                 "assigned_to": buyer.assigned_to or "unassigned",
                 "assigned_to_user_id": buyer.assigned_to_user_id,
@@ -1189,6 +1190,7 @@ def get_lead_table_row(db: Session, buyer_id: int) -> dict[str, object] | None:
         "city": buyer.city,
         "address": buyer.address,
         "remarks": buyer.remarks,
+        "remarks_history": buyer.remarks_history or [],
         "call_remarks": call_notes,
         "assigned_to": buyer.assigned_to or "unassigned",
         "assigned_to_user_id": buyer.assigned_to_user_id,
@@ -1218,7 +1220,13 @@ def get_lead_table_row(db: Session, buyer_id: int) -> dict[str, object] | None:
     }
 
 
-def update_lead_table_row(db: Session, buyer_id: int, data: dict) -> dict[str, object] | None:
+def update_lead_table_row(
+    db: Session,
+    buyer_id: int,
+    data: dict,
+    *,
+    remarks_by: str | None = None,
+) -> dict[str, object] | None:
     from modules.audit import log_action
 
     buyer = buyers_module.get_buyer(db, buyer_id)
@@ -1251,7 +1259,9 @@ def update_lead_table_row(db: Session, buyer_id: int, data: dict) -> dict[str, o
         if key in data
     }
     if buyer_fields:
-        if not buyers_module.update_buyer(db, buyer_id, buyer_fields):
+        if not buyers_module.update_buyer(
+            db, buyer_id, buyer_fields, remarks_by=remarks_by
+        ):
             return None
 
     contact_keys = (

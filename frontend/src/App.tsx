@@ -21,6 +21,7 @@ import { WhatsAppInboxPage } from "./pages/WhatsAppInboxPage";
 import { BuyerProfile } from "./pages/BuyerProfile";
 import { CallsPage } from "./pages/CallsPage";
 import { InboxPage } from "./pages/InboxPage";
+import { AiModePage } from "./pages/AiModePage";
 import { LeadsPage } from "./pages/LeadsPage";
 import { LeadsTablePage } from "./pages/LeadsTablePage";
 import { ChatbotPage } from "./pages/ChatbotPage";
@@ -627,6 +628,7 @@ function DashboardApp() {
       external: QUOTATION_AGENT_URL,
     },
     { id: "chatbot", label: "Brand assistant", count: 0 },
+    { id: "ai-mode", label: "AI Mode", count: 0 },
     { id: "kpi", label: "KPI Generation", count: 0 },
     ...(isAdmin ? [{ id: "users" as const, label: "Users", count: 0 }] : []),
   ];
@@ -822,6 +824,7 @@ function DashboardApp() {
               />
             )}
             {tab === "chatbot" && <ChatbotPage onError={setError} />}
+            {tab === "ai-mode" && <AiModePage onError={setError} />}
             {tab === "kpi" && <KpiPage onError={setError} />}
             {tab === "users" && isAdmin && (
               <UsersPage

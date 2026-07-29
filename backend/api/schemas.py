@@ -438,6 +438,7 @@ class LeadTableRowRead(BaseModel):
     city: Optional[str] = None
     address: Optional[str] = None
     remarks: Optional[str] = None
+    remarks_history: Optional[list] = None
     call_remarks: Optional[str] = None
     assigned_to: str = "unassigned"
     assigned_to_user_id: Optional[int] = None

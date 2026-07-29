@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { CountrySelect } from "../components/CountrySelect";
 import type {
   LeadsTableSection,
@@ -146,6 +147,107 @@ const TH = "py-3 px-3 text-left whitespace-nowrap align-middle";
 const TD = "py-3 px-3 align-middle";
 const TD_MUTED = `${TD} text-slate-400`;
 const TD_PRIMARY = `${TD} text-slate-200 font-medium`;
+
+/** Fixed column widths — company / website / email readable; calling time compact. */
+const COL_SERIAL = "w-[65px] max-w-[65px] min-w-[65px]";
+const COL_COMPANY = "w-[240px] max-w-[240px] min-w-[240px]";
+const COL_COMPANY_OLD = "w-[220px] max-w-[220px] min-w-[220px]";
+const COL_WEBSITE = "w-[160px] max-w-[160px] min-w-[160px]";
+const COL_EMAIL = "w-[180px] max-w-[180px] min-w-[180px]";
+const COL_EMAIL2 = "w-[160px] max-w-[160px] min-w-[160px]";
+const COL_CALLING = "w-[110px] max-w-[110px] min-w-[110px]";
+const COL_ROLE = "w-[133px] max-w-[133px] min-w-[133px]";
+const COL_FIXED = "overflow-hidden";
+
+function ExpandableCell({
+  text,
+  className,
+  detail,
+  empty = "—",
+  title = "Details",
+}: {
+  text: string | null | undefined;
+  className?: string;
+  detail?: ReactNode;
+  empty?: string;
+  title?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const value = (text ?? "").trim();
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [open]);
+
+  if (!value) {
+    return <span className="text-slate-500">{empty}</span>;
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen(true);
+        }}
+        className={`block w-full truncate text-left cursor-pointer ${
+          className ?? "text-slate-300 hover:text-slate-100"
+        }`}
+        title="Click to view full"
+      >
+        {value}
+      </button>
+      {open &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+            }}
+            role="presentation"
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label={title}
+              className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
+                <h3 className="text-sm font-medium text-slate-200">{title}</h3>
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="rounded-md px-2 py-1 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="px-4 py-4">
+                <p className="break-all whitespace-pre-wrap text-sm leading-relaxed text-slate-100">
+                  {value}
+                </p>
+                {detail ? <div className="mt-3">{detail}</div> : null}
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
 
 const MAX_BULK_ONBOARD = 25;
 const BULK_ONBOARD_DELAY_MS = 1000;
@@ -366,6 +468,49 @@ function FullscreenCollapseIcon() {
   );
 }
 
+function ZoomInIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="15"
+      height="15"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <path d="m21 21-4.3-4.3M11 8v6M8 11h6" />
+    </svg>
+  );
+}
+
+function ZoomOutIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="15"
+      height="15"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <path d="m21 21-4.3-4.3M8 11h6" />
+    </svg>
+  );
+}
+
+const TABLE_ZOOM_MIN = 0.6;
+const TABLE_ZOOM_MAX = 1.5;
+const TABLE_ZOOM_STEP = 0.1;
+const TABLE_ZOOM_DEFAULT = 1;
+
 export function LeadsTablePage({
   section,
   refreshToken = 0,
@@ -412,6 +557,58 @@ export function LeadsTablePage({
   const [bulkEmailNotice, setBulkEmailNotice] = useState<string | null>(null);
   const [deduping, setDeduping] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [tableZoom, setTableZoom] = useState(TABLE_ZOOM_DEFAULT);
+  const [topScrollWidth, setTopScrollWidth] = useState(0);
+  const topScrollRef = useRef<HTMLDivElement>(null);
+  const bodyScrollRef = useRef<HTMLDivElement>(null);
+  const tableZoomContentRef = useRef<HTMLDivElement>(null);
+  const scrollSyncLockRef = useRef(false);
+
+  const syncTopScrollWidth = useCallback(() => {
+    const body = bodyScrollRef.current;
+    if (!body) return;
+    setTopScrollWidth(body.scrollWidth);
+  }, []);
+
+  const onTopHorizontalScroll = useCallback(() => {
+    if (scrollSyncLockRef.current) return;
+    const top = topScrollRef.current;
+    const body = bodyScrollRef.current;
+    if (!top || !body) return;
+    scrollSyncLockRef.current = true;
+    body.scrollLeft = top.scrollLeft;
+    requestAnimationFrame(() => {
+      scrollSyncLockRef.current = false;
+    });
+  }, []);
+
+  const onBodyHorizontalScroll = useCallback(() => {
+    if (scrollSyncLockRef.current) return;
+    const top = topScrollRef.current;
+    const body = bodyScrollRef.current;
+    if (!top || !body) return;
+    scrollSyncLockRef.current = true;
+    top.scrollLeft = body.scrollLeft;
+    requestAnimationFrame(() => {
+      scrollSyncLockRef.current = false;
+    });
+  }, []);
+
+  const zoomIn = useCallback(() => {
+    setTableZoom((prev) =>
+      Math.min(TABLE_ZOOM_MAX, Math.round((prev + TABLE_ZOOM_STEP) * 10) / 10),
+    );
+  }, []);
+
+  const zoomOut = useCallback(() => {
+    setTableZoom((prev) =>
+      Math.max(TABLE_ZOOM_MIN, Math.round((prev - TABLE_ZOOM_STEP) * 10) / 10),
+    );
+  }, []);
+
+  const resetZoom = useCallback(() => {
+    setTableZoom(TABLE_ZOOM_DEFAULT);
+  }, []);
 
   const showEmailNotice = useCallback((message: string) => {
     setBulkEmailNotice(message);
@@ -543,6 +740,32 @@ export function LeadsTablePage({
   const canScheduleFollowUp =
     section === "interested_clients" || section === "not_received_call_clients";
   const callOutcomeEmptyMessage = sectionEmptyMessage(section);
+
+  useEffect(() => {
+    syncTopScrollWidth();
+    const content = tableZoomContentRef.current;
+    const body = bodyScrollRef.current;
+    if (!content && !body) return;
+
+    const observer = new ResizeObserver(() => {
+      syncTopScrollWidth();
+    });
+    if (content) observer.observe(content);
+    if (body) observer.observe(body);
+    window.addEventListener("resize", syncTopScrollWidth);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", syncTopScrollWidth);
+    };
+  }, [
+    syncTopScrollWidth,
+    rows,
+    tableZoom,
+    isOldClients,
+    isCallOutcomeSection,
+    isFullscreen,
+    canScheduleFollowUp,
+  ]);
 
   const tableQueryParams = useMemo(
     () => ({
@@ -2159,7 +2382,37 @@ export function LeadsTablePage({
         </div>
       ) : (
         <div className={tableOuterClass}>
-          <div className="flex justify-end px-2 py-1 border-b border-slate-800/80 bg-slate-950 shrink-0">
+          <div className="flex items-center justify-end gap-1 px-2 py-1 border-b border-slate-800/80 bg-slate-950 shrink-0">
+            <button
+              type="button"
+              onClick={zoomOut}
+              disabled={tableZoom <= TABLE_ZOOM_MIN}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:text-slate-200 hover:bg-slate-800 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+              title="Zoom out"
+              aria-label="Zoom out table"
+            >
+              <ZoomOutIcon />
+            </button>
+            <button
+              type="button"
+              onClick={resetZoom}
+              className="min-w-[2.75rem] h-7 px-1.5 rounded-md text-[11px] tabular-nums text-slate-500 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+              title="Reset zoom to 100%"
+              aria-label={`Table zoom ${Math.round(tableZoom * 100)} percent. Click to reset`}
+            >
+              {Math.round(tableZoom * 100)}%
+            </button>
+            <button
+              type="button"
+              onClick={zoomIn}
+              disabled={tableZoom >= TABLE_ZOOM_MAX}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:text-slate-200 hover:bg-slate-800 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+              title="Zoom in"
+              aria-label="Zoom in table"
+            >
+              <ZoomInIcon />
+            </button>
+            <span className="mx-1 h-4 w-px bg-slate-800" aria-hidden="true" />
             <button
               type="button"
               onClick={() => setIsFullscreen((prev) => !prev)}
@@ -2174,9 +2427,33 @@ export function LeadsTablePage({
               {isFullscreen ? <FullscreenCollapseIcon /> : <FullscreenExpandIcon />}
             </button>
           </div>
-          <div className={tableBodyScrollClass}>
-          {isOldClients ? (
-            <table className="w-full min-w-[2400px] text-sm border-collapse">
+          <div
+            ref={topScrollRef}
+            className="overflow-x-auto overflow-y-hidden shrink-0 border-b border-slate-800/80 bg-slate-950"
+            onScroll={onTopHorizontalScroll}
+            aria-label="Scroll table left and right"
+          >
+            <div
+              style={{ width: Math.max(topScrollWidth, 1), height: 1 }}
+              aria-hidden="true"
+            />
+          </div>
+          <div
+            ref={bodyScrollRef}
+            className={tableBodyScrollClass}
+            onScroll={onBodyHorizontalScroll}
+          >
+          <div
+            ref={tableZoomContentRef}
+            style={{ zoom: tableZoom }}
+            className="origin-top-left"
+          >
+          {isOldClients || isCallOutcomeSection ? (
+            <table
+              className={`w-full text-sm border-collapse ${
+                canScheduleFollowUp ? "min-w-[2800px]" : "min-w-[2600px]"
+              }`}
+            >
               <thead>
                 <tr className={`text-slate-500 border-b border-slate-800 bg-slate-950 ${theadStickyClass}`}>
                   <th
@@ -2195,37 +2472,47 @@ export function LeadsTablePage({
                       className="rounded border-slate-600 bg-slate-950"
                     />
                   </th>
-                  <th className={`${TH} min-w-[72px]`}>S. No</th>
-                  <th className={`${TH} min-w-[180px]`}>
+                  <th className={`${TH} ${COL_SERIAL}`}>S. No</th>
+                  <th className={`${TH} ${COL_COMPANY_OLD}`}>
                     <button type="button" onClick={() => toggleSort("company_name")} className="hover:text-slate-300">
-                      Company Name{sortIndicator("company_name")}
+                      Name{sortIndicator("company_name")}
                     </button>
                   </th>
+                  <th className={`${TH} min-w-[140px]`}>Business type</th>
+                  <th className={`${TH} min-w-[140px]`}>Product</th>
+                  <th className={`${TH} ${COL_WEBSITE}`}>Website</th>
+                  <th className={`${TH} min-w-[120px]`}>City</th>
+                  <th className={`${TH} min-w-[130px]`}>
+                    <button type="button" onClick={() => toggleSort("country")} className="hover:text-slate-300">
+                      Country{sortIndicator("country")}
+                    </button>
+                  </th>
+                  <th className={`${TH} min-w-[140px]`}>XLS grading</th>
+                  <th className={`${TH} min-w-[120px]`}>AI grading</th>
+                  <th className={`${TH} min-w-[150px]`}>Contact person</th>
+                  <th className={`${TH} min-w-[150px]`}>#1</th>
+                  <th className={`${TH} min-w-[150px]`}>#2</th>
+                  <th className={`${TH} min-w-[150px]`}>#3</th>
+                  <th className={`${TH} min-w-[150px]`}>#4</th>
+                  <th className={`${TH} ${COL_EMAIL}`}>Email 1</th>
+                  <th className={`${TH} ${COL_EMAIL2}`}>Email 2</th>
+                  <th className={`${TH} min-w-[200px]`}>Address</th>
+                  <th className={`${TH} min-w-[130px]`}>Designation</th>
                   <th className={`${TH} min-w-[120px]`}>
                     <button type="button" onClick={() => toggleSort("created_at")} className="hover:text-slate-300">
                       Added{sortIndicator("created_at")}
                     </button>
                   </th>
-                  <th className={`${TH} min-w-[140px]`}>Business Type</th>
-                  <th className={`${TH} min-w-[140px]`}>Excel grading</th>
-                  <th className={`${TH} min-w-[120px]`}>AI grading</th>
-                  <th className={`${TH} min-w-[130px]`}>Designation</th>
-                  <th className={`${TH} min-w-[150px]`}>Contact Person</th>
-                  <th className={`${TH} min-w-[170px]`}>Primary Mobile No.</th>
-                  <th className={`${TH} min-w-[170px]`}>Secondary Mobile No.</th>
-                  <th className={`${TH} min-w-[160px]`}>Primary Phone No.</th>
-                  <th className={`${TH} min-w-[160px]`}>Secondary Phone No.</th>
-                  <th className={`${TH} min-w-[200px]`}>Primary Email</th>
-                  <th className={`${TH} min-w-[180px]`}>Secondary Email</th>
-                  <th className={`${TH} min-w-[130px]`}>Country</th>
-                  <th className={`${TH} min-w-[130px]`}>Call?</th>
-                  <th className={`${TH} min-w-[140px]`}>Product</th>
-                  <th className={`${TH} min-w-[120px]`}>City</th>
-                  <th className={`${TH} min-w-[200px]`}>Address</th>
+                  <th className={`${TH} ${COL_CALLING}`}>Calling time</th>
                   <th className={`${TH} min-w-[180px]`}>Remarks</th>
                   <th className={`${TH} min-w-[150px]`}>Assigned To</th>
-                  <th className={`${TH} min-w-[160px]`}>Website</th>
                   <th className={`${TH} min-w-[120px]`}>Socials</th>
+                  {isCallOutcomeSection && (
+                    <th className={`${TH} min-w-[220px]`}>Call remarks</th>
+                  )}
+                  {canScheduleFollowUp && (
+                    <th className={`${TH} min-w-[190px]`}>Follow-up reminder</th>
+                  )}
                   {editMode && <th className={`${TH} min-w-[120px]`}>Edit</th>}
                   <th className={`${TH} min-w-[100px]`}>Actions</th>
                 </tr>
@@ -2279,33 +2566,78 @@ export function LeadsTablePage({
                           className="rounded border-slate-600 bg-slate-950"
                         />
                       </td>
-                      <td className={TD_MUTED}>
-                        {cell("legacy_serial_no", row.legacy_serial_no != null ? String(row.legacy_serial_no) : "")}
+                      <td className={`${TD_MUTED} ${COL_SERIAL} ${COL_FIXED}`}>
+                        {editMode ? (
+                          cell("legacy_serial_no", row.legacy_serial_no != null ? String(row.legacy_serial_no) : "")
+                        ) : (
+                          <ExpandableCell
+                            text={
+                              row.legacy_serial_no != null ? String(row.legacy_serial_no) : ""
+                            }
+                            title="Serial number"
+                          />
+                        )}
                       </td>
-                      <td className={TD_PRIMARY}>
-                        {cell("company_name", row.company_name)}
-                      </td>
-                      <td className={TD_MUTED} title={row.created_at || undefined}>
-                        {formatAddedAt(row.created_at)}
+                      <td className={`${TD_PRIMARY} ${COL_COMPANY_OLD} ${COL_FIXED}`}>
+                        {editMode ? (
+                          cell("company_name", row.company_name)
+                        ) : (
+                          <ExpandableCell
+                            text={row.company_name}
+                            title="Company name"
+                            className="text-slate-200 font-medium hover:text-white"
+                          />
+                        )}
                       </td>
                       <td className={TD_MUTED}>{cell("industry", row.industry ?? "")}</td>
+                      <td className={TD_MUTED}>
+                        {cell("product_interest", row.product_interest ?? "")}
+                      </td>
+                      <td className={`${TD_MUTED} ${COL_WEBSITE} ${COL_FIXED}`}>
+                        {editMode ? (
+                          cell("website_url", row.website_url ?? "")
+                        ) : row.website_url ? (
+                          <ExpandableCell
+                            text={row.website_url.replace(/^https?:\/\//i, "")}
+                            title="Website"
+                            className="text-emerald-400 hover:text-emerald-300"
+                            detail={
+                              <a
+                                href={row.website_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-block text-xs text-emerald-400 hover:text-emerald-300"
+                              >
+                                Open website
+                              </a>
+                            }
+                          />
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className={TD_MUTED}>{cell("city", row.city ?? "")}</td>
+                      <td className={TD_MUTED}>
+                        {editMode ? (
+                          <div onClick={(e) => e.stopPropagation()}>
+                            <CountrySelect
+                              value={draft.country ?? ""}
+                              onChange={(value) => updateDraft(row.id, "country", value)}
+                            />
+                          </div>
+                        ) : (
+                          <span className="truncate block">{formatCountryLabel(row.country)}</span>
+                        )}
+                      </td>
                       <td className={TD_MUTED}>
                         {cell("company_grading", row.company_grading ?? "")}
                       </td>
                       <td className={TD}>
                         {row.latest_score ? (
-                          <div className="space-y-0.5">
-                            <ScoreBadge score={scoreLabel(row.latest_score)} />
-                            <p className="text-[10px] uppercase tracking-wide text-slate-500">
-                              AI grading
-                            </p>
-                          </div>
+                          <ScoreBadge score={scoreLabel(row.latest_score)} />
                         ) : (
                           <span className="text-slate-500 text-sm">Not scored</span>
                         )}
-                      </td>
-                      <td className={TD_MUTED}>
-                        {cell("contact_designation", row.contact_designation ?? "")}
                       </td>
                       <td className={TD_MUTED}>
                         {cell("contact_name", row.contact_name ?? "")}
@@ -2332,7 +2664,25 @@ export function LeadsTablePage({
                         )}
                       </td>
                       <td className={TD_MUTED}>
-                        {cell("contact_secondary_mobile", row.contact_secondary_mobile ?? "")}
+                        {editMode ? (
+                          cell("contact_secondary_mobile", row.contact_secondary_mobile ?? "")
+                        ) : row.contact_secondary_mobile ? (
+                          <span className="flex items-center gap-2 min-w-0">
+                            <DialpadPhoneText
+                              phone={row.contact_secondary_mobile}
+                              contactName={row.contact_name}
+                              countryHint={row.country}
+                            />
+                            <CallLeadButton
+                              leadId={row.id}
+                              phone={row.contact_secondary_mobile}
+                              onError={onError}
+                              compact
+                            />
+                          </span>
+                        ) : (
+                          "—"
+                        )}
                       </td>
                       <td className={TD_MUTED}>
                         {editMode ? (
@@ -2356,82 +2706,119 @@ export function LeadsTablePage({
                         )}
                       </td>
                       <td className={TD_MUTED}>
-                        {cell("contact_secondary_phone", row.contact_secondary_phone ?? "")}
-                      </td>
-                      <td
-                        className={TD_MUTED}
-                        onClick={(e) => e.stopPropagation()}
-                      >
                         {editMode ? (
-                          cell("contact_email", row.contact_email ?? "", { type: "email" })
-                        ) : row.contact_email ? (
-                          <EmailComposeButton
-                            row={row}
-                            email={row.contact_email}
-                            onError={onError}
-                            onDraftCreated={showEmailNotice}
-                          />
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-                      <td className={TD_MUTED}>
-                        {editMode ? (
-                          cell("contact_secondary_email", row.contact_secondary_email ?? "", {
-                            type: "email",
-                          })
-                        ) : row.contact_secondary_email ? (
-                          <span className="truncate block text-slate-300">
-                            {row.contact_secondary_email}
+                          cell("contact_secondary_phone", row.contact_secondary_phone ?? "")
+                        ) : row.contact_secondary_phone ? (
+                          <span className="flex items-center gap-2 min-w-0">
+                            <DialpadPhoneText
+                              phone={row.contact_secondary_phone}
+                              contactName={row.contact_name}
+                              countryHint={row.country}
+                            />
+                            <CallLeadButton
+                              leadId={row.id}
+                              phone={row.contact_secondary_phone}
+                              onError={onError}
+                              compact
+                            />
                           </span>
                         ) : (
                           "—"
                         )}
                       </td>
-                      <td className={TD_MUTED}>
+                      <td
+                        className={`${TD_MUTED} ${COL_EMAIL} ${COL_FIXED}`}
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         {editMode ? (
-                          <div onClick={(e) => e.stopPropagation()}>
-                            <CountrySelect
-                              value={draft.country ?? ""}
-                              onChange={(value) => updateDraft(row.id, "country", value)}
-                            />
-                          </div>
+                          cell("contact_email", row.contact_email ?? "", { type: "email" })
+                        ) : row.contact_email ? (
+                          <ExpandableCell
+                            text={row.contact_email}
+                            title="Email"
+                            detail={
+                              <div className="pt-2 border-t border-slate-700">
+                                <EmailComposeButton
+                                  row={row}
+                                  email={row.contact_email}
+                                  onError={onError}
+                                  onDraftCreated={showEmailNotice}
+                                />
+                              </div>
+                            }
+                          />
                         ) : (
-                          <span className="truncate block">{formatCountryLabel(row.country)}</span>
+                          "—"
                         )}
                       </td>
-                      <td className={TD}>
+                      <td className={`${TD_MUTED} ${COL_EMAIL2} ${COL_FIXED}`}>
+                        {editMode ? (
+                          cell("contact_secondary_email", row.contact_secondary_email ?? "", {
+                            type: "email",
+                          })
+                        ) : (
+                          <ExpandableCell text={row.contact_secondary_email} title="Email 2" />
+                        )}
+                      </td>
+                      <td className={TD_MUTED}>{cell("address", row.address ?? "")}</td>
+                      <td className={TD_MUTED}>
+                        {cell("contact_designation", row.contact_designation ?? "")}
+                      </td>
+                      <td className={TD_MUTED} title={row.created_at || undefined}>
+                        {formatAddedAt(row.created_at)}
+                      </td>
+                      <td className={`${TD} ${COL_CALLING}`}>
                         <CallRecommendationBadge
                           recommended={row.call_recommended}
                           localTime={row.call_local_time}
                           reason={row.call_reason}
+                          wrap
                         />
                       </td>
                       <td className={TD_MUTED}>
-                        {cell("product_interest", row.product_interest ?? "")}
+                        {editMode ? (
+                          cell("remarks", row.remarks ?? "")
+                        ) : (
+                          <ExpandableCell
+                            text={row.remarks}
+                            title="Remarks history"
+                            detail={
+                              (row.remarks_history?.length ?? 0) > 0 ? (
+                                <div className="mt-3 space-y-2 border-t border-slate-700 pt-3">
+                                  <p className="text-xs uppercase tracking-wide text-slate-500">
+                                    Previous entries
+                                  </p>
+                                  {[...(row.remarks_history || [])]
+                                    .slice()
+                                    .reverse()
+                                    .map((entry, idx) => (
+                                      <div
+                                        key={`${entry.at}-${idx}`}
+                                        className="rounded-md border border-slate-800 bg-slate-950/80 px-2.5 py-2"
+                                      >
+                                        <p className="text-[11px] text-slate-500 mb-1">
+                                          {entry.at
+                                            ? new Date(entry.at).toLocaleString()
+                                            : "—"}
+                                          {entry.by ? ` · ${entry.by}` : ""}
+                                        </p>
+                                        <p className="text-sm text-slate-300 whitespace-pre-wrap break-words">
+                                          {entry.text}
+                                        </p>
+                                      </div>
+                                    ))}
+                                </div>
+                              ) : (
+                                <p className="mt-2 text-xs text-slate-500">
+                                  No earlier remarks yet. Edits are kept with timestamps.
+                                </p>
+                              )
+                            }
+                          />
+                        )}
                       </td>
-                      <td className={TD_MUTED}>{cell("city", row.city ?? "")}</td>
-                      <td className={TD_MUTED}>{cell("address", row.address ?? "")}</td>
-                      <td className={TD_MUTED}>{cell("remarks", row.remarks ?? "")}</td>
                       <td className={TD_MUTED} onClick={(e) => e.stopPropagation()}>
                         {renderAssignedToCell(row, draft)}
-                      </td>
-                      <td className={TD_MUTED}>
-                        {editMode ? (
-                          cell("website_url", row.website_url ?? "")
-                        ) : row.website_url ? (
-                          <a
-                            href={row.website_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-emerald-400 hover:text-emerald-300 truncate block"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            {row.website_url.replace(/^https?:\/\//i, "")}
-                          </a>
-                        ) : (
-                          "—"
-                        )}
                       </td>
                       <td className={TD} onClick={(e) => e.stopPropagation()}>
                         {editMode ? (
@@ -2464,6 +2851,28 @@ export function LeadsTablePage({
                           />
                         )}
                       </td>
+                      {isCallOutcomeSection && (
+                        <td className={TD_MUTED}>
+                          {row.call_remarks ? (
+                            <span
+                              className="block whitespace-pre-wrap text-slate-300 text-xs leading-relaxed max-w-[280px]"
+                              title={row.call_remarks}
+                            >
+                              {row.call_remarks}
+                            </span>
+                          ) : (
+                            <span className="text-slate-600">—</span>
+                          )}
+                        </td>
+                      )}
+                      {canScheduleFollowUp && (
+                        <td className={TD_MUTED} onClick={(e) => e.stopPropagation()}>
+                          <FollowUpScheduleControl
+                            value={row.follow_up_at}
+                            onChange={(next) => saveFollowUpAt(row.id, next)}
+                          />
+                        </td>
+                      )}
                       {editMode && (
                         <td className={`${TD} whitespace-nowrap`}>
                           <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
@@ -2503,15 +2912,7 @@ export function LeadsTablePage({
               </tbody>
             </table>
           ) : (
-          <table
-            className={`w-full text-sm border-collapse ${
-              canScheduleFollowUp
-                ? "min-w-[1900px]"
-                : isCallOutcomeSection
-                  ? "min-w-[1720px]"
-                  : "min-w-[1500px]"
-            }`}
-          >
+          <table className="w-full text-sm border-collapse min-w-[1400px]">
             <thead>
               <tr className={`text-slate-500 border-b border-slate-800 bg-slate-950 ${theadStickyClass}`}>
                 <th className={`${TH} w-12`}>
@@ -2526,14 +2927,20 @@ export function LeadsTablePage({
                     className="rounded border-slate-600 bg-slate-950"
                   />
                 </th>
-                <th className={`${TH} min-w-[200px]`}>
+                <th className={`${TH} ${COL_SERIAL}`}>#</th>
+                <th className={`${TH} ${COL_COMPANY}`}>
                   <button type="button" onClick={() => toggleSort("company_name")} className="hover:text-slate-300">
-                    Company{sortIndicator("company_name")}
+                    Company name{sortIndicator("company_name")}
                   </button>
                 </th>
-                <th className={`${TH} min-w-[120px]`}>
-                  <button type="button" onClick={() => toggleSort("created_at")} className="hover:text-slate-300">
-                    Added{sortIndicator("created_at")}
+                <th className={`${TH} ${COL_WEBSITE}`}>Website</th>
+                <th className={`${TH} ${COL_EMAIL}`}>Email</th>
+                <th className={`${TH} min-w-[160px]`}>Ph#1</th>
+                <th className={`${TH} min-w-[160px]`}>Ph#2</th>
+                <th className={`${TH} ${COL_CALLING}`}>Calling time</th>
+                <th className={`${TH} ${COL_ROLE}`}>
+                  <button type="button" onClick={() => toggleSort("market_role")} className="hover:text-slate-300">
+                    Role{sortIndicator("market_role")}
                   </button>
                 </th>
                 <th className={`${TH} min-w-[110px]`}>
@@ -2541,9 +2948,10 @@ export function LeadsTablePage({
                     AI grading{sortIndicator("latest_score")}
                   </button>
                 </th>
-                <th className={`${TH} min-w-[140px]`}>
-                  <button type="button" onClick={() => toggleSort("market_role")} className="hover:text-slate-300">
-                    Role{sortIndicator("market_role")}
+                <th className={`${TH} min-w-[120px]`}>Socials</th>
+                <th className={`${TH} min-w-[120px]`}>
+                  <button type="button" onClick={() => toggleSort("created_at")} className="hover:text-slate-300">
+                    Added{sortIndicator("created_at")}
                   </button>
                 </th>
                 <th className={`${TH} min-w-[130px]`}>
@@ -2551,19 +2959,7 @@ export function LeadsTablePage({
                     Country{sortIndicator("country")}
                   </button>
                 </th>
-                <th className={`${TH} min-w-[130px]`}>Call?</th>
-                <th className={`${TH} min-w-[130px]`}>Contact</th>
-                <th className={`${TH} min-w-[200px]`}>Email</th>
-                <th className={`${TH} min-w-[160px]`}>Phone</th>
                 <th className={`${TH} min-w-[150px]`}>Assigned To</th>
-                {isCallOutcomeSection && (
-                  <th className={`${TH} min-w-[220px]`}>Call remarks</th>
-                )}
-                {canScheduleFollowUp && (
-                  <th className={`${TH} min-w-[190px]`}>Follow-up reminder</th>
-                )}
-                <th className={`${TH} min-w-[160px]`}>Website</th>
-                <th className={`${TH} min-w-[120px]`}>Socials</th>
                 {editMode && <th className={`${TH} min-w-[120px]`}>Edit</th>}
                 <th className={`${TH} min-w-[100px]`}>Actions</th>
               </tr>
@@ -2592,7 +2988,26 @@ export function LeadsTablePage({
                         className="rounded border-slate-600 bg-slate-950"
                       />
                     </td>
-                    <td className={TD_PRIMARY}>
+                    <td className={`${TD_MUTED} ${COL_SERIAL} ${COL_FIXED}`}>
+                      {editMode ? (
+                        <input
+                          value={
+                            draft.legacy_serial_no != null ? String(draft.legacy_serial_no) : ""
+                          }
+                          onChange={(e) => updateDraft(row.id, "legacy_serial_no", e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          className={EDIT_INPUT}
+                        />
+                      ) : (
+                        <ExpandableCell
+                          text={
+                            row.legacy_serial_no != null ? String(row.legacy_serial_no) : ""
+                          }
+                          title="Serial number"
+                        />
+                      )}
+                    </td>
+                    <td className={`${TD_PRIMARY} ${COL_COMPANY} ${COL_FIXED}`}>
                       {editMode ? (
                         <input
                           value={draft.company_name}
@@ -2601,79 +3016,51 @@ export function LeadsTablePage({
                           className={EDIT_INPUT}
                         />
                       ) : (
-                        <>
-                          <div className="truncate">{row.company_name}</div>
-                          {row.score_reasoning && (
-                            <p className="text-xs text-slate-500 mt-1 line-clamp-1">{row.score_reasoning}</p>
-                          )}
-                        </>
+                        <ExpandableCell
+                          text={row.company_name}
+                          title="Company name"
+                          className="text-slate-200 font-medium hover:text-white"
+                          detail={
+                            row.score_reasoning ? (
+                              <p className="text-xs text-slate-400 border-t border-slate-700 pt-2">
+                                {row.score_reasoning}
+                              </p>
+                            ) : undefined
+                          }
+                        />
                       )}
                     </td>
-                    <td className={TD_MUTED} title={row.created_at || undefined}>
-                      {formatAddedAt(row.created_at)}
-                    </td>
-                    <td className={TD}>
-                      {row.latest_score ? (
-                        <div className="space-y-0.5">
-                          <ScoreBadge score={scoreLabel(row.latest_score)} />
-                          <p className="text-[10px] uppercase tracking-wide text-slate-500">
-                            AI grading
-                          </p>
-                        </div>
-                      ) : (
-                        <span className="text-slate-500 text-sm">Not scored</span>
-                      )}
-                    </td>
-                    <td className={TD}>
-                      <div className="flex flex-col gap-1">
-                        <MarketRoleBadge role={row.market_role ?? "unknown"} />
-                        {(row.market_role === "producer" || row.market_role === "hybrid") && (
-                          <ProducerTierBadge
-                            tier={row.producer_tier}
-                            conversionPct={row.producer_conversion_pct}
-                            compact
-                          />
-                        )}
-                      </div>
-                      {(row.producer_tier_reasoning || row.market_role_reasoning) && !editMode && (
-                        <p className="text-xs text-slate-500 mt-1 line-clamp-2">
-                          {row.producer_tier_reasoning ?? row.market_role_reasoning}
-                        </p>
-                      )}
-                    </td>
-                    <td className={TD_MUTED}>
-                      {editMode ? (
-                        <div onClick={(e) => e.stopPropagation()}>
-                          <CountrySelect
-                            value={draft.country ?? ""}
-                            onChange={(value) => updateDraft(row.id, "country", value)}
-                          />
-                        </div>
-                      ) : (
-                        <span className="truncate block">{formatCountryLabel(row.country)}</span>
-                      )}
-                    </td>
-                    <td className={TD}>
-                      <CallRecommendationBadge
-                        recommended={row.call_recommended}
-                        localTime={row.call_local_time}
-                        reason={row.call_reason}
-                      />
-                    </td>
-                    <td className={TD_MUTED}>
+                    <td className={`${TD_MUTED} ${COL_WEBSITE} ${COL_FIXED}`}>
                       {editMode ? (
                         <input
-                          value={draft.contact_name ?? ""}
-                          onChange={(e) => updateDraft(row.id, "contact_name", e.target.value)}
+                          value={draft.website_url ?? ""}
+                          onChange={(e) => updateDraft(row.id, "website_url", e.target.value)}
                           onClick={(e) => e.stopPropagation()}
+                          placeholder="https://..."
                           className={EDIT_INPUT}
                         />
+                      ) : row.website_url ? (
+                        <ExpandableCell
+                          text={row.website_url.replace(/^https?:\/\//, "")}
+                          title="Website"
+                          className="text-emerald-400 hover:text-emerald-300"
+                          detail={
+                            <a
+                              href={row.website_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-block text-xs text-emerald-400 hover:text-emerald-300"
+                            >
+                              Open website
+                            </a>
+                          }
+                        />
                       ) : (
-                        <span className="truncate block">{row.contact_name || "—"}</span>
+                        "—"
                       )}
                     </td>
                     <td
-                      className={TD_MUTED}
+                      className={`${TD_MUTED} ${COL_EMAIL} ${COL_FIXED}`}
                       onClick={(e) => e.stopPropagation()}
                     >
                       {editMode ? (
@@ -2685,11 +3072,19 @@ export function LeadsTablePage({
                           className={EDIT_INPUT}
                         />
                       ) : row.contact_email ? (
-                        <EmailComposeButton
-                          row={row}
-                          email={row.contact_email}
-                          onError={onError}
-                          onDraftCreated={showEmailNotice}
+                        <ExpandableCell
+                          text={row.contact_email}
+                          title="Email"
+                          detail={
+                            <div className="pt-2 border-t border-slate-700">
+                              <EmailComposeButton
+                                row={row}
+                                email={row.contact_email}
+                                onError={onError}
+                                onDraftCreated={showEmailNotice}
+                              />
+                            </div>
+                          }
                         />
                       ) : (
                         "—"
@@ -2721,52 +3116,70 @@ export function LeadsTablePage({
                         "—"
                       )}
                     </td>
-                    <td className={TD_MUTED} onClick={(e) => e.stopPropagation()}>
-                      {renderAssignedToCell(row, draft)}
-                    </td>
-                    {isCallOutcomeSection && (
-                      <td className={TD_MUTED}>
-                        {row.call_remarks ? (
-                          <span
-                            className="block whitespace-pre-wrap text-slate-300 text-xs leading-relaxed max-w-[280px]"
-                            title={row.call_remarks}
-                          >
-                            {row.call_remarks}
-                          </span>
-                        ) : (
-                          <span className="text-slate-600">—</span>
-                        )}
-                      </td>
-                    )}
-                    {canScheduleFollowUp && (
-                      <td className={TD_MUTED} onClick={(e) => e.stopPropagation()}>
-                        <FollowUpScheduleControl
-                          value={row.follow_up_at}
-                          onChange={(next) => saveFollowUpAt(row.id, next)}
-                        />
-                      </td>
-                    )}
                     <td className={TD_MUTED}>
                       {editMode ? (
                         <input
-                          value={draft.website_url ?? ""}
-                          onChange={(e) => updateDraft(row.id, "website_url", e.target.value)}
+                          value={draft.contact_secondary_mobile ?? draft.contact_secondary_phone ?? ""}
+                          onChange={(e) =>
+                            updateDraft(row.id, "contact_secondary_mobile", e.target.value)
+                          }
                           onClick={(e) => e.stopPropagation()}
-                          placeholder="https://..."
                           className={EDIT_INPUT}
                         />
-                      ) : row.website_url ? (
-                        <a
-                          href={row.website_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-emerald-400 hover:text-emerald-300 truncate block"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {row.website_url.replace(/^https?:\/\//, "")}
-                        </a>
+                      ) : (row.contact_secondary_mobile || row.contact_secondary_phone) ? (
+                        <span className="flex items-center gap-2 min-w-0">
+                          <DialpadPhoneText
+                            phone={
+                              (row.contact_secondary_mobile ||
+                                row.contact_secondary_phone) as string
+                            }
+                            contactName={row.contact_name}
+                            countryHint={row.country}
+                          />
+                          <CallLeadButton
+                            leadId={row.id}
+                            phone={
+                              (row.contact_secondary_mobile ||
+                                row.contact_secondary_phone) as string
+                            }
+                            onError={onError}
+                            compact
+                          />
+                        </span>
                       ) : (
                         "—"
+                      )}
+                    </td>
+                    <td className={`${TD} ${COL_CALLING}`}>
+                      <CallRecommendationBadge
+                        recommended={row.call_recommended}
+                        localTime={row.call_local_time}
+                        reason={row.call_reason}
+                        wrap
+                      />
+                    </td>
+                    <td className={`${TD} ${COL_ROLE} ${COL_FIXED}`}>
+                      <div className="flex flex-col gap-1 min-w-0">
+                        <MarketRoleBadge role={row.market_role ?? "unknown"} />
+                        {(row.market_role === "producer" || row.market_role === "hybrid") && (
+                          <ProducerTierBadge
+                            tier={row.producer_tier}
+                            conversionPct={row.producer_conversion_pct}
+                            compact
+                          />
+                        )}
+                      </div>
+                      {(row.producer_tier_reasoning || row.market_role_reasoning) && !editMode && (
+                        <p className="text-xs text-slate-500 mt-1 line-clamp-2 break-words">
+                          {row.producer_tier_reasoning ?? row.market_role_reasoning}
+                        </p>
+                      )}
+                    </td>
+                    <td className={TD}>
+                      {row.latest_score ? (
+                        <ScoreBadge score={scoreLabel(row.latest_score)} />
+                      ) : (
+                        <span className="text-slate-500 text-sm">Not scored</span>
                       )}
                     </td>
                     <td className={TD}>
@@ -2778,6 +3191,24 @@ export function LeadsTablePage({
                         editMode={editMode}
                         onFieldChange={(field, value) => updateDraft(row.id, field, value)}
                       />
+                    </td>
+                    <td className={TD_MUTED} title={row.created_at || undefined}>
+                      {formatAddedAt(row.created_at)}
+                    </td>
+                    <td className={TD_MUTED}>
+                      {editMode ? (
+                        <div onClick={(e) => e.stopPropagation()}>
+                          <CountrySelect
+                            value={draft.country ?? ""}
+                            onChange={(value) => updateDraft(row.id, "country", value)}
+                          />
+                        </div>
+                      ) : (
+                        <span className="truncate block">{formatCountryLabel(row.country)}</span>
+                      )}
+                    </td>
+                    <td className={TD_MUTED} onClick={(e) => e.stopPropagation()}>
+                      {renderAssignedToCell(row, draft)}
                     </td>
                     {editMode && (
                       <td className={`${TD} whitespace-nowrap`}>
@@ -2818,6 +3249,7 @@ export function LeadsTablePage({
             </tbody>
           </table>
           )}
+          </div>
           </div>
         </div>
       )}

@@ -138,6 +138,7 @@ class Buyer(Base):
     city: Mapped[Optional[str]] = mapped_column(String(255))
     address: Mapped[Optional[str]] = mapped_column(Text)
     remarks: Mapped[Optional[str]] = mapped_column(Text)
+    remarks_history: Mapped[Optional[list]] = mapped_column(JSONB)
     assigned_to: Mapped[str] = mapped_column(String(50), nullable=False, server_default="unassigned")
     assigned_to_user_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("app_users.id", ondelete="SET NULL"),
@@ -561,6 +562,72 @@ class MailComposeDraft(Base):
     subject: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     body: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AiModeSettings(Base):
+    """Per-user after-hours AI Mode toggle and auto-reply templates."""
+
+    __tablename__ = "ai_mode_settings"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="CASCADE"), primary_key=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    email_auto_reply_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    whatsapp_auto_reply_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    form_url: Mapped[Optional[str]] = mapped_column(String(512))
+    email_subject_template: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    email_body_template: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    whatsapp_body_template: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    query_keywords: Mapped[Optional[list]] = mapped_column(JSONB)
+    last_email_processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AiModeAutoReplyLog(Base):
+    """Deduped log of AI Mode auto-replies (email / WhatsApp)."""
+
+    __tablename__ = "ai_mode_auto_reply_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    channel: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    message_key: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
+    recipient: Mapped[Optional[str]] = mapped_column(String(255))
+    subject: Mapped[Optional[str]] = mapped_column(String(500))
+    preview: Mapped[Optional[str]] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="sent")
+    detail: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class AiCompanyLifecycle(Base):
+    """AISOS Module 3 — company lifecycle stage with timestamped history."""
+
+    __tablename__ = "ai_company_lifecycle"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    buyer_id: Mapped[int] = mapped_column(
+        ForeignKey("buyers.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
+    )
+    stage: Mapped[str] = mapped_column(String(50), nullable=False, default="new_lead", index=True)
+    stage_entered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    history: Mapped[Optional[list]] = mapped_column(JSONB)
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    updated_by_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL")
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
