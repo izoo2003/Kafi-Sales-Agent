@@ -20,7 +20,9 @@ _LEAD_PHONE_RE = re.compile(r"(?:Outbound call(?:\s+initiated)?\s+to|to)\s+(\+\d
 _DURATION_RE = re.compile(r"duration\s+(\d+)m\s+(\d+)s|duration\s+(\d+)s")
 _NOTES_MARKER = "\n\nNOTES:"
 _OUTCOME_MARKER = "\n\nOUTCOME:"
-_VALID_CALL_OUTCOMES = frozenset({"interested", "not_interested", "not_received_call"})
+_VALID_CALL_OUTCOMES = frozenset(
+    {"interested", "follow_up", "not_interested", "not_received_call"}
+)
 # Recent Calls keeps ~1 rolling month of logs, then they may be purged.
 CALL_HISTORY_RETENTION_DAYS = 30
 
@@ -699,6 +701,25 @@ def update_call_followup(
                     "company_name": company,
                 },
             )
+            if new_outcome == "follow_up" and buyer:
+                from modules import ai_mode as ai_mode_module
+
+                ai_mode_module.record_follow_up_activity(
+                    db,
+                    user_id=app_user_id,
+                    company_name=company,
+                    buyer_id=buyer.id,
+                    event_type="placed",
+                )
+            elif new_outcome == "interested" and buyer:
+                from modules import ai_mode as ai_mode_module
+
+                ai_mode_module.mark_buyer_interested_stage(
+                    db,
+                    buyer.id,
+                    user_id=app_user_id,
+                    note=f"Call outcome: Client is Interested",
+                )
         if notes_changed and (new_notes or "").strip():
             preview = (new_notes or "").strip()
             if len(preview) > 160:
@@ -756,14 +777,19 @@ def delete_call_log(db: Session, *, interaction_id: int) -> bool:
     db.delete(interaction)
     db.commit()
 
-    if buyer_id and (deleted_outcome or "").strip().lower() == "interested":
+    if buyer_id and (deleted_outcome or "").strip().lower() in {
+        "interested",
+        "follow_up",
+        "not_received_call",
+        "not_interested",
+    }:
         from modules.interested_follow_ups import sync_buyer_interested_status
 
         sync_buyer_interested_status(
             db,
             buyer_id=buyer_id,
             new_outcome=_latest_call_outcome_for_buyer(db, buyer_id),
-            previous_outcome="interested",
+            previous_outcome=(deleted_outcome or "").strip().lower(),
         )
 
     return True

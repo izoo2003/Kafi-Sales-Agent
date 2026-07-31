@@ -24,6 +24,7 @@ import {
   type BulkActionProgress,
 } from "../components/BulkActionProgressPanel";
 import { CallLeadButton } from "../components/CallLeadButton";
+import { WhatsAppLeadButton } from "../components/WhatsAppLeadButton";
 import { DialpadPhoneText } from "../components/DialpadPhoneText";
 import { EmailComposeButton } from "../components/EmailComposeLink";
 import { Pagination } from "../components/Pagination";
@@ -290,12 +291,14 @@ function sectionTableParams(
   source?: string;
   exclude_source?: string;
   call_outcome?: string;
+  in_interested_clients?: boolean;
   assigned_to_user_id?: number;
   master?: boolean;
 } {
   if (section === "master") return { master: true };
   if (section === "old_clients") return { source: "old_clients" };
-  if (section === "interested_clients") return { call_outcome: "interested" };
+    if (section === "interested_clients") return { call_outcome: "follow_up" };
+  if (section === "sales_interested_clients") return { in_interested_clients: true };
   if (section === "not_interested_clients") return { call_outcome: "not_interested" };
   if (section === "not_received_call_clients") return { call_outcome: "not_received_call" };
   if (isAssignedLeadsSection(section)) {
@@ -313,6 +316,7 @@ function sectionTitle(
   if (section === "master") return "Master table";
   if (section === "old_clients") return isAdmin ? "Old clients" : "Clients";
   if (section === "interested_clients") return "Follow up clients";
+  if (section === "sales_interested_clients") return "Interested Clients";
   if (section === "not_interested_clients") return "Not interested";
   if (section === "not_received_call_clients") return "Did not receive call";
   if (isAssignedLeadsSection(section)) {
@@ -335,7 +339,10 @@ function sectionDescription(
       : "Your client list from imports and past relationships. Import a spreadsheet to add clients — only you can see rows assigned to you.";
   }
   if (section === "interested_clients") {
-    return "Clients moved here after a call is labeled Interested. Use the calendar on each row to set when you want a follow-up reminder — you are only notified on that date.";
+    return "Clients moved here after a call is labeled Follow up — schedule the next call. This does not mean the client is interested.";
+  }
+  if (section === "sales_interested_clients") {
+    return "Clients moved here when a call is labeled Client is Interested. You can also move leads here manually. They no longer appear in Scrapped Leads or Old clients.";
   }
   if (section === "not_interested_clients") {
     return "Clients moved here after a call is labeled Not interested. They no longer appear in Scrapped Leads or Old clients.";
@@ -344,7 +351,7 @@ function sectionDescription(
     return "Clients moved here when a call is labeled Did not receive call. Use the calendar on each row to set when you want a reminder to try again.";
   }
   if (isAssignedLeadsSection(section)) {
-    return `All leads transferred to ${assigneeUsername || "this user"}. These no longer appear in Scrapped Leads or Old clients.`;
+    return `Only leads an admin sent to ${assigneeUsername || "this user"}. Their own spreadsheet imports stay on their account and do not appear here.`;
   }
   return "New discoveries from Discover Leads (and spreadsheet imports into this section). Does not include Old clients — companies already in Old clients are blocked from being added here.";
 }
@@ -354,7 +361,10 @@ function sectionEmptyMessage(section: LeadsTableSection): string | null {
     return "No leads in the system yet.";
   }
   if (section === "interested_clients") {
-    return "No follow up clients yet. After a call, label the client as Interested in post-call remarks, then set a follow-up date in this table.";
+    return "No follow up clients yet. After a call, label the client as Follow up, then set the next call date with the calendar.";
+  }
+  if (section === "sales_interested_clients") {
+    return "No Interested Clients yet. After a call, label the client as Client is Interested, or select leads and click Move to Interested Clients.";
   }
   if (section === "not_interested_clients") {
     return "No not interested clients yet. After a call, label the client as Not interested in post-call remarks.";
@@ -363,7 +373,7 @@ function sectionEmptyMessage(section: LeadsTableSection): string | null {
     return "No clients listed yet. After a call, label the client as Did not receive call, then set a reminder date with the calendar.";
   }
   if (isAssignedLeadsSection(section)) {
-    return "No leads transferred to this user yet. Assign a lead from Scrapped Leads or Old clients to move it here.";
+    return "No leads sent by an admin to this user yet. Assign leads from Scrapped Leads or Old clients to move them here.";
   }
   return null;
 }
@@ -552,6 +562,7 @@ export function LeadsTablePage({
   const [showBulkEmail, setShowBulkEmail] = useState(false);
   const [openingMailer, setOpeningMailer] = useState(false);
   const [showBulkWhatsApp, setShowBulkWhatsApp] = useState(false);
+  const [whatsappTargetIds, setWhatsappTargetIds] = useState<number[] | null>(null);
   const [bulkWhatsAppNotice, setBulkWhatsAppNotice] = useState<string | null>(null);
   const [showCsvImport, setShowCsvImport] = useState(false);
   const [bulkEmailNotice, setBulkEmailNotice] = useState<string | null>(null);
@@ -735,10 +746,17 @@ export function LeadsTablePage({
   const importSource = isOldClients ? "old_clients" : "csv";
   const isCallOutcomeSection =
     section === "interested_clients" ||
+    section === "sales_interested_clients" ||
     section === "not_interested_clients" ||
     section === "not_received_call_clients";
   const canScheduleFollowUp =
-    section === "interested_clients" || section === "not_received_call_clients";
+    section === "interested_clients" ||
+    section === "sales_interested_clients" ||
+    section === "not_received_call_clients";
+  const canMoveToInterestedClients =
+    section !== "sales_interested_clients" &&
+    section !== "not_interested_clients" &&
+    !isAssignedLeadsSection(section);
   const callOutcomeEmptyMessage = sectionEmptyMessage(section);
 
   useEffect(() => {
@@ -1124,7 +1142,8 @@ export function LeadsTablePage({
       setSaveNotice(
         assignedToUserId == null
           ? `Unassigned ${result.assigned_count} lead${result.assigned_count === 1 ? "" : "s"}.`
-          : `Assigned ${result.assigned_count} lead${result.assigned_count === 1 ? "" : "s"} to ${result.assigned_to}.`,
+          : result.transfer_message ||
+              `Assigned ${result.assigned_count} lead${result.assigned_count === 1 ? "" : "s"} to ${result.assigned_to}.`,
       );
       setTimeout(() => setSaveNotice(null), 4000);
     } catch (e) {
@@ -1132,6 +1151,50 @@ export function LeadsTablePage({
     } finally {
       setBulkAssignValue("");
       setBulkAssigning(false);
+    }
+  }
+
+  async function moveSelectedToInterestedClients(inList: boolean) {
+    if (selected.size === 0) return;
+    const count = selected.size;
+    const confirmed = window.confirm(
+      inList
+        ? `Move ${count} selected lead${count === 1 ? "" : "s"} to Interested Clients?`
+        : `Remove ${count} selected lead${count === 1 ? "" : "s"} from Interested Clients?`,
+    );
+    if (!confirmed) return;
+
+    setSaveNotice(null);
+    try {
+      const result = await client.setInterestedClientsMembership([...selected], inList);
+      const movedIds = new Set(result.updated_ids);
+      if (movedIds.size > 0) {
+        setRows((prev) => prev.filter((row) => !movedIds.has(row.id)));
+        setDrafts((prev) => {
+          const next = { ...prev };
+          for (const id of movedIds) delete next[id];
+          return next;
+        });
+        setOriginalKeys((prev) => {
+          const next = { ...prev };
+          for (const id of movedIds) delete next[id];
+          return next;
+        });
+        setTotal((prev) => Math.max(0, prev - movedIds.size));
+        setFilteredCount((prev) => Math.max(0, prev - movedIds.size));
+      }
+      clearSelection();
+      await loadSectionCounts();
+      setSaveNotice(
+        inList
+          ? `Moved ${result.updated_count} lead${result.updated_count === 1 ? "" : "s"} to Interested Clients.`
+          : `Removed ${result.updated_count} lead${result.updated_count === 1 ? "" : "s"} from Interested Clients.`,
+      );
+      setTimeout(() => setSaveNotice(null), 4000);
+    } catch (e) {
+      onError(
+        e instanceof Error ? e.message : "Failed to update Interested Clients membership",
+      );
     }
   }
 
@@ -1795,7 +1858,10 @@ export function LeadsTablePage({
           </button>
           <button
             type="button"
-            onClick={() => setShowBulkWhatsApp(true)}
+            onClick={() => {
+              setWhatsappTargetIds([...selected]);
+              setShowBulkWhatsApp(true);
+            }}
             disabled={
               selected.size === 0 ||
               bulkOnboarding ||
@@ -1803,10 +1869,42 @@ export function LeadsTablePage({
               deletingId !== null ||
               editMode
             }
-            className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 border border-emerald-600/50 text-sm font-medium disabled:opacity-50"
+            className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 border border-emerald-600/50 text-sm font-medium disabled:opacity-50 inline-flex items-center gap-1.5"
           >
             Send WhatsApp ({selected.size})
           </button>
+          {canMoveToInterestedClients && (
+            <button
+              type="button"
+              onClick={() => void moveSelectedToInterestedClients(true)}
+              disabled={
+                selected.size === 0 ||
+                bulkOnboarding ||
+                deletingSelected ||
+                deletingId !== null ||
+                editMode
+              }
+              className="px-3 py-1.5 rounded-lg bg-violet-700 hover:bg-violet-600 border border-violet-600/50 text-sm font-medium disabled:opacity-50"
+            >
+              Move to Interested Clients ({selected.size})
+            </button>
+          )}
+          {section === "sales_interested_clients" && (
+            <button
+              type="button"
+              onClick={() => void moveSelectedToInterestedClients(false)}
+              disabled={
+                selected.size === 0 ||
+                bulkOnboarding ||
+                deletingSelected ||
+                deletingId !== null ||
+                editMode
+              }
+              className="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 border border-slate-600/50 text-sm font-medium disabled:opacity-50"
+            >
+              Remove from Interested Clients ({selected.size})
+            </button>
+          )}
           <button
             type="button"
             onClick={() => void bulkResearchAndScore()}
@@ -2658,6 +2756,14 @@ export function LeadsTablePage({
                               onError={onError}
                               compact
                             />
+                            <WhatsAppLeadButton
+                              phone={row.contact_phone}
+                              compact
+                              onClick={() => {
+                                setWhatsappTargetIds([row.id]);
+                                setShowBulkWhatsApp(true);
+                              }}
+                            />
                           </span>
                         ) : (
                           "—"
@@ -2678,6 +2784,14 @@ export function LeadsTablePage({
                               phone={row.contact_secondary_mobile}
                               onError={onError}
                               compact
+                            />
+                            <WhatsAppLeadButton
+                              phone={row.contact_secondary_mobile}
+                              compact
+                              onClick={() => {
+                                setWhatsappTargetIds([row.id]);
+                                setShowBulkWhatsApp(true);
+                              }}
                             />
                           </span>
                         ) : (
@@ -2700,6 +2814,14 @@ export function LeadsTablePage({
                               onError={onError}
                               compact
                             />
+                            <WhatsAppLeadButton
+                              phone={row.contact_primary_phone}
+                              compact
+                              onClick={() => {
+                                setWhatsappTargetIds([row.id]);
+                                setShowBulkWhatsApp(true);
+                              }}
+                            />
                           </span>
                         ) : (
                           "—"
@@ -2720,6 +2842,14 @@ export function LeadsTablePage({
                               phone={row.contact_secondary_phone}
                               onError={onError}
                               compact
+                            />
+                            <WhatsAppLeadButton
+                              phone={row.contact_secondary_phone}
+                              compact
+                              onClick={() => {
+                                setWhatsappTargetIds([row.id]);
+                                setShowBulkWhatsApp(true);
+                              }}
                             />
                           </span>
                         ) : (
@@ -3111,6 +3241,14 @@ export function LeadsTablePage({
                             onError={onError}
                             compact
                           />
+                          <WhatsAppLeadButton
+                            phone={row.contact_phone}
+                            compact
+                            onClick={() => {
+                              setWhatsappTargetIds([row.id]);
+                              setShowBulkWhatsApp(true);
+                            }}
+                          />
                         </span>
                       ) : (
                         "—"
@@ -3144,6 +3282,17 @@ export function LeadsTablePage({
                             }
                             onError={onError}
                             compact
+                          />
+                          <WhatsAppLeadButton
+                            phone={
+                              (row.contact_secondary_mobile ||
+                                row.contact_secondary_phone) as string
+                            }
+                            compact
+                            onClick={() => {
+                              setWhatsappTargetIds([row.id]);
+                              setShowBulkWhatsApp(true);
+                            }}
                           />
                         </span>
                       ) : (
@@ -3325,21 +3474,36 @@ export function LeadsTablePage({
         />
       )}
 
-      {showBulkWhatsApp && (
+      {showBulkWhatsApp && whatsappTargetIds && whatsappTargetIds.length > 0 && (
         <BulkWhatsAppModal
-          buyerIds={[...selected]}
-          onClose={() => setShowBulkWhatsApp(false)}
+          buyerIds={whatsappTargetIds}
+          onClose={() => {
+            setShowBulkWhatsApp(false);
+            setWhatsappTargetIds(null);
+          }}
           onError={onError}
           onCreated={(result) => {
+            const skipReasons = (result.skipped || [])
+              .map((s) => s.reason)
+              .filter(Boolean)
+              .slice(0, 2);
+            const skipHint =
+              skipReasons.length > 0
+                ? ` Reason: ${skipReasons.join("; ")}.`
+                : result.skipped_count > 0
+                  ? " Usually missing phone, or marketing opt-in was required."
+                  : "";
             setBulkWhatsAppNotice(
               `Sent ${result.sent_count ?? 0} WhatsApp message(s). ` +
                 ((result.failed_count ?? 0) > 0 ? `${result.failed_count} failed. ` : "") +
                 (result.skipped_count > 0
-                  ? `${result.skipped_count} skipped (no phone or opt-in). `
+                  ? `${result.skipped_count} skipped.${skipHint} `
                   : "") +
-                "Check Email Activity for delivery updates.",
+                "Open WhatsApp inbox to see the thread.",
             );
             clearSelection();
+            setShowBulkWhatsApp(false);
+            setWhatsappTargetIds(null);
           }}
         />
       )}

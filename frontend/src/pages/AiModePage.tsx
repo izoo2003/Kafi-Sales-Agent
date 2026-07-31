@@ -1,16 +1,30 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   client,
+  type AiModeAssignmentRow,
   type AiModeAutoReplyLogRow,
+  type AiModeCallActivityRow,
+  type AiModeFollowUpActivityRow,
+  type AiModeInterestedLeadRow,
   type AiModeLifecycleRow,
+  type AiModeQueryRow,
   type AiModeSettings,
 } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
+import {
+  AssignedToSelect,
+  type AssigneeOption,
+} from "../components/AssignedToSelect";
 
 interface AiModePageProps {
   onError: (message: string) => void;
+  /** Refresh sidebar “Leads Sent To” counts + open leads tables after an assign. */
+  onLeadsAssigned?: () => void;
 }
 
 type Panel = "auto-reply" | "lifecycle";
+
+type PotentialClientRow = AiModeInterestedLeadRow;
 
 interface DraftFields {
   form_url: string;
@@ -37,7 +51,8 @@ function parseKeywords(text: string): string[] {
     .filter(Boolean);
 }
 
-export function AiModePage({ onError }: AiModePageProps) {
+export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
+  const { isAdmin } = useAuth();
   const [panel, setPanel] = useState<Panel>("auto-reply");
   const [settings, setSettings] = useState<AiModeSettings | null>(null);
   const [draft, setDraft] = useState<DraftFields | null>(null);
@@ -46,6 +61,26 @@ export function AiModePage({ onError }: AiModePageProps) {
   const [processing, setProcessing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [logs, setLogs] = useState<AiModeAutoReplyLogRow[]>([]);
+  const [assigneeOptions, setAssigneeOptions] = useState<AssigneeOption[]>([]);
+  const [assigningBuyerId, setAssigningBuyerId] = useState<number | null>(null);
+
+  const [queryCount, setQueryCount] = useState(0);
+  const [queryRows, setQueryRows] = useState<AiModeQueryRow[]>([]);
+  const [queriesLoading, setQueriesLoading] = useState(false);
+  const [selectedQuery, setSelectedQuery] = useState<AiModeQueryRow | null>(null);
+  const [queryMessage, setQueryMessage] = useState<{
+    uid?: string;
+    folder?: string | null;
+    subject?: string | null;
+    from_email?: string | null;
+    from_name?: string | null;
+    body?: string | null;
+    preview?: string | null;
+    date?: string | null;
+  } | null>(null);
+  const [queryMessageLoading, setQueryMessageLoading] = useState(false);
+  const [replyBody, setReplyBody] = useState("");
+  const [replySending, setReplySending] = useState(false);
 
   const [lifecycleRows, setLifecycleRows] = useState<AiModeLifecycleRow[]>([]);
   const [pipeline, setPipeline] = useState<Record<string, number>>({});
@@ -53,6 +88,18 @@ export function AiModePage({ onError }: AiModePageProps) {
   const [stageFilter, setStageFilter] = useState("");
   const [lifecycleSearch, setLifecycleSearch] = useState("");
   const [lifecycleLoading, setLifecycleLoading] = useState(false);
+  const [assignmentRows, setAssignmentRows] = useState<AiModeAssignmentRow[]>([]);
+  const [assignedLeadCount, setAssignedLeadCount] = useState(0);
+  const [callActivityRows, setCallActivityRows] = useState<AiModeCallActivityRow[]>(
+    [],
+  );
+  const [callingCount, setCallingCount] = useState(0);
+  const [followUpActivityRows, setFollowUpActivityRows] = useState<
+    AiModeFollowUpActivityRow[]
+  >([]);
+  const [followUpCount, setFollowUpCount] = useState(0);
+  const [potentialRows, setPotentialRows] = useState<PotentialClientRow[]>([]);
+  const [potentialCount, setPotentialCount] = useState(0);
 
   const loadSettings = useCallback(async () => {
     setLoading(true);
@@ -61,8 +108,13 @@ export function AiModePage({ onError }: AiModePageProps) {
       setSettings(data);
       setDraft(draftFromSettings(data));
       setStages(data.lifecycle_stages || []);
-      const logResult = await client.listAiModeAutoReplies(40);
+      const [logResult, queryResult] = await Promise.all([
+        client.listAiModeAutoReplies(40),
+        client.listAiModeQueries({ limit: 100 }),
+      ]);
       setLogs(logResult.rows || []);
+      setQueryCount(queryResult.count || 0);
+      setQueryRows(queryResult.rows || []);
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to load AI Mode");
     } finally {
@@ -70,17 +122,97 @@ export function AiModePage({ onError }: AiModePageProps) {
     }
   }, [onError]);
 
+  const loadQueries = useCallback(
+    async (refresh = true) => {
+      setQueriesLoading(true);
+      try {
+        const data = refresh
+          ? await client.scanAiModeQueries()
+          : await client.listAiModeQueries({ limit: 100 });
+        setQueryCount(data.count || 0);
+        setQueryRows(data.rows || []);
+        if (refresh && data.scan) {
+          const s = data.scan;
+          if (s.error) {
+            onError(`Mailbox scan failed: ${s.error}`);
+          } else {
+            setNotice(
+              `Inbox scan complete — checked ${s.scanned} message${s.scanned === 1 ? "" : "s"}, ` +
+                `${s.matched} quer${s.matched === 1 ? "y" : "ies"}, ` +
+                `${s.created} new.`,
+            );
+            window.setTimeout(() => setNotice(null), 6000);
+          }
+        }
+      } catch (e) {
+        onError(e instanceof Error ? e.message : "Failed to load query emails");
+      } finally {
+        setQueriesLoading(false);
+      }
+    },
+    [onError],
+  );
+
   const loadLifecycle = useCallback(async () => {
     setLifecycleLoading(true);
     try {
-      const data = await client.listAiModeLifecycle({
-        stage: stageFilter || undefined,
-        search: lifecycleSearch.trim() || undefined,
-        limit: 100,
-      });
-      setLifecycleRows(data.rows || []);
+      const skipCompanyRows =
+        stageFilter === "new_lead" ||
+        stageFilter === "potential_clients" ||
+        stageFilter === "assigned" ||
+        stageFilter === "calling" ||
+        stageFilter === "follow_up";
+      const [data] = await Promise.all([
+        client.listAiModeLifecycle({
+          // Activity / grade feeds — other stages list companies.
+          stage:
+            stageFilter && !skipCompanyRows ? stageFilter : undefined,
+          search:
+            skipCompanyRows && stageFilter !== "potential_clients"
+              ? undefined
+              : lifecycleSearch.trim() || undefined,
+          limit: 100,
+        }),
+        // Always refresh this user's query count for the New Lead chip.
+        client.listAiModeQueries({ limit: 100 }).then((q) => {
+          setQueryCount(q.count || 0);
+          setQueryRows(q.rows || []);
+        }),
+      ]);
+      setLifecycleRows(
+        (data.rows || []).filter(
+          (r) =>
+            r.stage !== "new_lead" &&
+            r.stage !== "potential_clients" &&
+            r.stage !== "assigned" &&
+            r.stage !== "calling" &&
+            r.stage !== "follow_up",
+        ),
+      );
       setPipeline(data.pipeline || {});
       setStages(data.stages || []);
+      const assignments =
+        data.assignments || (await client.listAiModeAssignments(100));
+      setAssignmentRows(assignments.rows || []);
+      setAssignedLeadCount(assignments.total_leads || 0);
+      const calls =
+        data.call_activities || (await client.listAiModeCallActivities(100));
+      setCallActivityRows(calls.rows || []);
+      setCallingCount(calls.total_calls || 0);
+      const followUps =
+        data.follow_up_activities ||
+        (await client.listAiModeFollowUpActivities(100));
+      setFollowUpActivityRows(followUps.rows || []);
+      setFollowUpCount(followUps.total_events || 0);
+      const potential =
+        data.potential_clients ||
+        data.interested_leads ||
+        (await client.listAiModePotentialClients({
+          search: lifecycleSearch.trim() || undefined,
+          limit: 100,
+        }));
+      setPotentialRows(potential.rows || []);
+      setPotentialCount(potential.total || 0);
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to load lifecycle");
     } finally {
@@ -89,12 +221,183 @@ export function AiModePage({ onError }: AiModePageProps) {
   }, [lifecycleSearch, onError, stageFilter]);
 
   useEffect(() => {
+    if (!isAdmin) {
+      setAssigneeOptions([]);
+      return;
+    }
+    client
+      .listAssignees()
+      .then((users) =>
+        setAssigneeOptions(
+          users.map((u) => ({
+            value: String(u.id),
+            label: u.full_name || u.username,
+            username: u.username,
+          })),
+        ),
+      )
+      .catch(() => setAssigneeOptions([]));
+  }, [isAdmin]);
+
+  async function assignPotentialClient(
+    buyerId: number,
+    assignedToUserId: number | null,
+  ) {
+    if (!isAdmin) {
+      onError("Only an admin can assign leads to users.");
+      return;
+    }
+    const previous =
+      potentialRows.find((r) => r.buyer_id === buyerId)?.assigned_to_user_id ??
+      null;
+    if (previous === assignedToUserId) return;
+
+    const label =
+      assignedToUserId == null
+        ? "Unassigned"
+        : assigneeOptions.find((o) => o.value === String(assignedToUserId))
+            ?.label ||
+          assigneeOptions.find((o) => o.value === String(assignedToUserId))
+            ?.username ||
+          "selected user";
+
+    setAssigningBuyerId(buyerId);
+    setNotice(null);
+    try {
+      const updated = await client.updateLeadTableRow(buyerId, {
+        assigned_to_user_id: assignedToUserId,
+      });
+      setPotentialRows((prev) =>
+        prev.map((row) =>
+          row.buyer_id === buyerId
+            ? {
+                ...row,
+                assigned_to: updated.assigned_to,
+                assigned_to_user_id: updated.assigned_to_user_id,
+              }
+            : row,
+        ),
+      );
+      // Refresh Assigned activity feed + chip so transfer notifications appear immediately.
+      const assignments = await client.listAiModeAssignments(100);
+      setAssignmentRows(assignments.rows || []);
+      setAssignedLeadCount(assignments.total_leads || 0);
+      onLeadsAssigned?.();
+      setNotice(
+        assignedToUserId == null
+          ? `Unassigned ${updated.company_name}.`
+          : `1 lead transferred to ${label}`,
+      );
+      window.setTimeout(() => setNotice(null), 4000);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to update assignee");
+    } finally {
+      setAssigningBuyerId(null);
+    }
+  }
+
+  useEffect(() => {
     void loadSettings();
   }, [loadSettings]);
 
   useEffect(() => {
-    if (panel === "lifecycle") void loadLifecycle();
-  }, [panel, loadLifecycle]);
+    if (panel !== "lifecycle") return;
+    void loadLifecycle();
+    // Scan mailbox so New Lead (+query) stays up to date.
+    void loadQueries(true);
+  }, [panel, loadLifecycle, loadQueries]);
+
+  useEffect(() => {
+    if (panel === "lifecycle" && stageFilter === "new_lead") {
+      setSelectedQuery(null);
+      setQueryMessage(null);
+      setReplyBody("");
+    }
+  }, [panel, stageFilter]);
+
+  function buildReplyDraft(row: AiModeQueryRow): string {
+    const name =
+      (row.from_name || "").trim() ||
+      (row.from_email || "").split("@")[0] ||
+      "Sir/Madam";
+    const formUrl = (settings?.form_url || "").trim();
+    const formClause = formUrl
+      ? `: ${formUrl}`
+      : " (link will be shared by our team)";
+    const template =
+      settings?.email_body_template ||
+      "Dear {name},\n\nThank you for showing interest in Kafi Commodities.\n\nWe would like you to fill out this form{form_clause}, or please provide a suitable date/time for a virtual meeting/call and our team will get back to you.\n\nBest regards,\nKafi Commodities Export Team";
+    return template
+      .replaceAll("{name}", name)
+      .replaceAll("{form_clause}", formClause)
+      .replaceAll("{form_url}", formUrl || "(form link)")
+      .replaceAll("{subject}", row.subject || "");
+  }
+
+  async function openQuery(row: AiModeQueryRow) {
+    setSelectedQuery(row);
+    setQueryMessage(null);
+    setReplyBody(buildReplyDraft(row));
+    setQueryMessageLoading(true);
+    try {
+      const data = await client.getAiModeQueryMessage(row.id);
+      setQueryMessage(data.message || null);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to open query email");
+      setSelectedQuery(null);
+      setReplyBody("");
+    } finally {
+      setQueryMessageLoading(false);
+    }
+  }
+
+  async function sendQueryReply() {
+    if (!selectedQuery) return;
+    const body = replyBody.trim();
+    if (!body) {
+      onError("Reply body cannot be empty");
+      return;
+    }
+    const uid = String(queryMessage?.uid || selectedQuery.uid || "").trim();
+    const folder = String(
+      queryMessage?.folder || selectedQuery.folder || "INBOX",
+    ).trim();
+    const to = (
+      queryMessage?.from_email ||
+      selectedQuery.from_email ||
+      ""
+    ).trim();
+    if (!uid || !to) {
+      onError("Missing message id or recipient — cannot send reply");
+      return;
+    }
+    setReplySending(true);
+    setNotice(null);
+    try {
+      const subject = (queryMessage?.subject || selectedQuery.subject || "").trim();
+      const replySubject = subject.toLowerCase().startsWith("re:")
+        ? subject
+        : subject
+          ? `Re: ${subject}`
+          : settings?.email_subject_template || "Thank you for your interest in Kafi Commodities";
+      const result = await client.replyInboxMessage(uid, {
+        body,
+        to,
+        subject: replySubject,
+        folder,
+      });
+      setNotice(
+        result.status === "sent"
+          ? `Reply sent to ${to}`
+          : result.message || "Reply finished",
+      );
+      setReplyBody("");
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to send reply");
+    } finally {
+      setReplySending(false);
+    }
+  }
 
   const draftDirty =
     !!settings &&
@@ -174,6 +477,9 @@ export function AiModePage({ onError }: AiModePageProps) {
       );
       const logResult = await client.listAiModeAutoReplies(40);
       setLogs(logResult.rows || []);
+      const queryResult = await client.listAiModeQueries({ limit: 100 });
+      setQueryCount(queryResult.count || 0);
+      setQueryRows(queryResult.rows || []);
       await loadSettings();
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to process emails");
@@ -205,9 +511,10 @@ export function AiModePage({ onError }: AiModePageProps) {
         <div>
           <h2 className="text-lg font-medium text-slate-100">AI Mode</h2>
           <p className="text-sm text-slate-500 mt-1 max-w-2xl">
-            Turn this on when you leave for the day. While enabled, query emails in Inbox/Junk
+            Turn this on when you leave for the day. While enabled, query emails in your inbox
             and WhatsApp inquiries get the auto-reply drafted below. Company lifecycle tracks
-            each lead from New Lead through Won/Lost.
+            each lead — <span className="text-slate-400">New Lead</span> is each user’s query
+            inbox (keyword-matched mail on that user’s mailbox only).
           </p>
         </div>
         <button
@@ -309,7 +616,9 @@ export function AiModePage({ onError }: AiModePageProps) {
                 className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
               />
               <p className="mt-1 text-[11px] text-slate-500">
-                Only messages matching these keywords get an auto-reply.
+                Inquiry keywords apply to your mailbox only. Matching emails show under
+                Company lifecycle → New Lead (Queries) for every user the same way. Auto-reply
+                still requires AI Mode on.
               </p>
             </div>
             <div className="flex flex-wrap gap-2 pt-1">
@@ -459,95 +768,487 @@ export function AiModePage({ onError }: AiModePageProps) {
       {panel === "lifecycle" && (
         <div className="space-y-4">
           <div className="flex flex-wrap gap-2">
-            {stages.map((s) => (
-              <button
-                key={s.key}
-                type="button"
-                onClick={() => setStageFilter((prev) => (prev === s.key ? "" : s.key))}
-                className={`rounded-lg border px-2.5 py-1 text-xs ${
-                  stageFilter === s.key
-                    ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300"
-                    : "border-slate-700 text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                {s.label}
-                <span className="ml-1 text-slate-500">{pipeline[s.key] ?? 0}</span>
-              </button>
-            ))}
+            {stages.map((s) => {
+              const count =
+                s.key === "new_lead"
+                  ? queryCount
+                  : s.key === "potential_clients"
+                    ? potentialCount
+                    : s.key === "assigned"
+                      ? assignedLeadCount
+                      : s.key === "calling"
+                        ? callingCount
+                        : s.key === "follow_up"
+                          ? followUpCount
+                          : (pipeline[s.key] ?? 0);
+              return (
+                <button
+                  key={s.key}
+                  type="button"
+                  onClick={() =>
+                    setStageFilter((prev) => (prev === s.key ? "" : s.key))
+                  }
+                  className={`rounded-lg border px-2.5 py-1 text-xs ${
+                    stageFilter === s.key
+                      ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300"
+                      : "border-slate-700 text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  {s.key === "new_lead"
+                    ? "New Lead (Queries)"
+                    : s.key === "potential_clients"
+                      ? "Potential Clients"
+                      : s.label}
+                  <span className="ml-1 text-slate-500">{count}</span>
+                </button>
+              );
+            })}
           </div>
-          <div className="flex gap-2">
-            <input
-              value={lifecycleSearch}
-              onChange={(e) => setLifecycleSearch(e.target.value)}
-              placeholder="Search company…"
-              className="flex-1 rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
-            />
-            <button
-              type="button"
-              onClick={() => void loadLifecycle()}
-              className="rounded-lg bg-slate-800 hover:bg-slate-700 px-3 py-2 text-sm"
-            >
-              Refresh
-            </button>
-          </div>
-          {lifecycleLoading ? (
-            <p className="text-sm text-slate-500">Loading…</p>
-          ) : lifecycleRows.length === 0 ? (
-            <p className="text-sm text-slate-500">
-              No lifecycle rows yet. Stages are created when you update a company here, or as
-              leads move through the pipeline.
-            </p>
-          ) : (
-            <div className="overflow-x-auto rounded-xl border border-slate-800">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-slate-500 border-b border-slate-800 bg-slate-950">
-                    <th className="py-2 px-3">Company</th>
-                    <th className="py-2 px-3">Stage</th>
-                    <th className="py-2 px-3">Since</th>
-                    <th className="py-2 px-3">History</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {lifecycleRows.map((row) => (
-                    <tr key={row.id} className="border-b border-slate-800/60">
-                      <td className="py-2 px-3 text-slate-200">
-                        <div>{row.company_name}</div>
-                        <div className="text-xs text-slate-500">{row.country || "—"}</div>
-                      </td>
-                      <td className="py-2 px-3">
-                        <select
-                          value={row.stage}
-                          onChange={(e) => void changeStage(row, e.target.value)}
-                          className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-slate-200"
+
+          {stageFilter === "new_lead" ? (
+            <div className="grid gap-5 lg:grid-cols-2">
+              <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-medium text-slate-200">
+                      Query emails{" "}
+                      <span className="text-emerald-400/90">({queryCount})</span>
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Scan mailbox checks your latest{" "}
+                      <span className="text-slate-400">10 inbox emails</span> (read or
+                      unread) for real buyer inquiries. Each account only sees its own
+                      mailbox.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={queriesLoading}
+                    onClick={() => void loadQueries(true)}
+                    className="rounded-lg bg-violet-700 hover:bg-violet-600 disabled:opacity-50 px-3 py-1.5 text-sm"
+                  >
+                    {queriesLoading ? "Scanning…" : "Scan mailbox"}
+                  </button>
+                </div>
+                {queriesLoading && queryRows.length === 0 ? (
+                  <p className="text-sm text-slate-500">Scanning mailbox…</p>
+                ) : queryRows.length === 0 ? (
+                  <p className="text-sm text-slate-500">
+                    No query emails yet. Press Scan mailbox to check your latest 10 inbox
+                    emails (read or unread).
+                  </p>
+                ) : (
+                  <ul className="divide-y divide-slate-800 max-h-[28rem] overflow-y-auto">
+                    {queryRows.map((row) => (
+                      <li key={row.id}>
+                        <button
+                          type="button"
+                          onClick={() => void openQuery(row)}
+                          className={`w-full text-left py-2.5 px-1 hover:bg-slate-800/50 rounded-md ${
+                            selectedQuery?.id === row.id ? "bg-slate-800/70" : ""
+                          }`}
                         >
-                          {stages.map((s) => (
-                            <option key={s.key} value={s.key}>
-                              {s.label}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="py-2 px-3 text-slate-500 whitespace-nowrap">
-                        {row.stage_entered_at
-                          ? new Date(row.stage_entered_at).toLocaleString()
-                          : "—"}
-                      </td>
-                      <td className="py-2 px-3 text-xs text-slate-500 max-w-sm">
-                        {(row.history || [])
-                          .slice(-4)
-                          .map((h) => {
-                            const label =
-                              stages.find((s) => s.key === h.stage)?.label || h.stage;
-                            return `${label} · ${new Date(h.at).toLocaleDateString()}`;
-                          })
-                          .join(" → ") || "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                          <p className="text-sm text-slate-200 truncate">
+                            {row.subject || "(no subject)"}
+                          </p>
+                          <p className="text-xs text-slate-500 mt-0.5 truncate">
+                            {row.from_name || row.from_email || "—"}
+                            {row.received_at
+                              ? ` · ${new Date(row.received_at).toLocaleString()}`
+                              : ""}
+                          </p>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+
+              <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 min-h-[16rem]">
+                <h3 className="text-sm font-medium text-slate-200 mb-3">Email & reply</h3>
+                {!selectedQuery ? (
+                  <p className="text-sm text-slate-500">
+                    Select a query to open the email and reply.
+                  </p>
+                ) : queryMessageLoading ? (
+                  <p className="text-sm text-slate-500">Loading email…</p>
+                ) : !queryMessage ? (
+                  <p className="text-sm text-slate-500">Could not load this email.</p>
+                ) : (
+                  <div className="space-y-3">
+                    <div>
+                      <p className="text-sm font-medium text-slate-100">
+                        {queryMessage.subject || "(no subject)"}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        From: {queryMessage.from_name || queryMessage.from_email || "—"}
+                        {queryMessage.date
+                          ? ` · ${new Date(queryMessage.date).toLocaleString()}`
+                          : ""}
+                      </p>
+                    </div>
+                    <pre className="whitespace-pre-wrap text-sm text-slate-300 font-sans max-h-[12rem] overflow-y-auto rounded-md border border-slate-800 bg-slate-950/50 p-3">
+                      {queryMessage.body || queryMessage.preview || "(empty body)"}
+                    </pre>
+
+                    <div className="border-t border-slate-800 pt-3 space-y-2">
+                      <label className="block text-xs text-slate-500">
+                        Your reply (from your mailbox)
+                      </label>
+                      <textarea
+                        value={replyBody}
+                        onChange={(e) => setReplyBody(e.target.value)}
+                        rows={8}
+                        placeholder="Write your reply…"
+                        className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 font-mono"
+                      />
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={replySending || !replyBody.trim()}
+                          onClick={() => void sendQueryReply()}
+                          className="rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 px-3 py-2 text-sm font-medium"
+                        >
+                          {replySending ? "Sending…" : "Send reply"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={replySending || !selectedQuery}
+                          onClick={() =>
+                            selectedQuery && setReplyBody(buildReplyDraft(selectedQuery))
+                          }
+                          className="rounded-lg border border-slate-700 hover:bg-slate-800 px-3 py-2 text-sm text-slate-300"
+                        >
+                          Reset to template
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-slate-500">
+                        Sends via your company mailbox (Vercel mailer when configured).
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </section>
             </div>
+          ) : stageFilter === "assigned" ? (
+            <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-medium text-slate-200">
+                    Lead transfers{" "}
+                    <span className="text-emerald-400/90">
+                      ({assignedLeadCount})
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    When an admin assigns leads to sales users, each batch is logged here
+                    (e.g. “50 leads transferred to Usman”). The Assigned count is the total
+                    leads transferred across all users.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={lifecycleLoading}
+                  onClick={() => void loadLifecycle()}
+                  className="rounded-lg bg-violet-700 hover:bg-violet-600 disabled:opacity-50 px-3 py-1.5 text-sm"
+                >
+                  {lifecycleLoading ? "Refreshing…" : "Refresh"}
+                </button>
+              </div>
+              {lifecycleLoading && assignmentRows.length === 0 ? (
+                <p className="text-sm text-slate-500">Loading transfers…</p>
+              ) : assignmentRows.length === 0 ? (
+                <p className="text-sm text-slate-500">
+                  No lead transfers yet. Assign leads from Scrapped Leads / Old clients
+                  (admin) and they will appear here.
+                </p>
+              ) : (
+                <ul className="divide-y divide-slate-800 max-h-[32rem] overflow-y-auto">
+                  {assignmentRows.map((row) => (
+                    <li key={row.id} className="py-3 px-1">
+                      <p className="text-sm text-slate-100">{row.message}</p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        To {row.to_label}
+                        {row.created_at
+                          ? ` · ${new Date(row.created_at).toLocaleString()}`
+                          : ""}
+                        {` · ${row.lead_count} lead${row.lead_count === 1 ? "" : "s"}`}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          ) : stageFilter === "calling" ? (
+            <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-medium text-slate-200">
+                    Call activity{" "}
+                    <span className="text-emerald-400/90">({callingCount})</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Simple statements when anyone places a call — e.g. “Usman called Acme
+                    Trading”. Includes admin and every sales user. The Calling count is the
+                    total across all accounts.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={lifecycleLoading}
+                  onClick={() => void loadLifecycle()}
+                  className="rounded-lg bg-violet-700 hover:bg-violet-600 disabled:opacity-50 px-3 py-1.5 text-sm"
+                >
+                  {lifecycleLoading ? "Refreshing…" : "Refresh"}
+                </button>
+              </div>
+              {lifecycleLoading && callActivityRows.length === 0 ? (
+                <p className="text-sm text-slate-500">Loading call activity…</p>
+              ) : callActivityRows.length === 0 ? (
+                <p className="text-sm text-slate-500">
+                  No calls logged yet. When a user dials a lead, it appears here for
+                  admin tracking.
+                </p>
+              ) : (
+                <ul className="divide-y divide-slate-800 max-h-[32rem] overflow-y-auto">
+                  {callActivityRows.map((row) => (
+                    <li key={row.id} className="py-3 px-1">
+                      <p className="text-sm text-slate-100">{row.message}</p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        {row.user_label}
+                        {row.company_name ? ` · ${row.company_name}` : ""}
+                        {row.created_at
+                          ? ` · ${new Date(row.created_at).toLocaleString()}`
+                          : ""}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          ) : stageFilter === "follow_up" ? (
+            <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-medium text-slate-200">
+                    Follow up clients activity{" "}
+                    <span className="text-emerald-400/90">({followUpCount})</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Tracks when anyone (admin or sales) moves a lead into Follow up clients
+                    or schedules a reminder — e.g. “Usman put Acme Trading in Follow up
+                    clients”.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={lifecycleLoading}
+                  onClick={() => void loadLifecycle()}
+                  className="rounded-lg bg-violet-700 hover:bg-violet-600 disabled:opacity-50 px-3 py-1.5 text-sm"
+                >
+                  {lifecycleLoading ? "Refreshing…" : "Refresh"}
+                </button>
+              </div>
+              {lifecycleLoading && followUpActivityRows.length === 0 ? (
+                <p className="text-sm text-slate-500">Loading follow-up activity…</p>
+              ) : followUpActivityRows.length === 0 ? (
+                <p className="text-sm text-slate-500">
+                  No follow-up activity yet. Mark a call as Interested (Follow up clients)
+                  or set a follow-up date and it will appear here.
+                </p>
+              ) : (
+                <ul className="divide-y divide-slate-800 max-h-[32rem] overflow-y-auto">
+                  {followUpActivityRows.map((row) => (
+                    <li key={row.id} className="py-3 px-1">
+                      <p className="text-sm text-slate-100">{row.message}</p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        {row.user_label}
+                        {row.company_name ? ` · ${row.company_name}` : ""}
+                        {row.created_at
+                          ? ` · ${new Date(row.created_at).toLocaleString()}`
+                          : ""}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          ) : stageFilter === "potential_clients" ? (
+            <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-medium text-slate-200">
+                    Potential clients{" "}
+                    <span className="text-emerald-400/90">({potentialCount})</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Scrapped Leads where both Excel company grading and AI grade are AA or
+                    AAA.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={lifecycleLoading}
+                  onClick={() => void loadLifecycle()}
+                  className="rounded-lg bg-violet-700 hover:bg-violet-600 disabled:opacity-50 px-3 py-1.5 text-sm"
+                >
+                  {lifecycleLoading ? "Refreshing…" : "Refresh"}
+                </button>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  value={lifecycleSearch}
+                  onChange={(e) => setLifecycleSearch(e.target.value)}
+                  placeholder="Search company or country…"
+                  className="flex-1 rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
+                />
+                <button
+                  type="button"
+                  onClick={() => void loadLifecycle()}
+                  className="rounded-lg bg-slate-800 hover:bg-slate-700 px-3 py-2 text-sm"
+                >
+                  Search
+                </button>
+              </div>
+              {lifecycleLoading && potentialRows.length === 0 ? (
+                <p className="text-sm text-slate-500">Loading potential clients…</p>
+              ) : potentialRows.length === 0 ? (
+                <p className="text-sm text-slate-500">
+                  No Scrapped Leads currently match AA/AAA on both company grading and AI
+                  grade.
+                </p>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-slate-800">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-slate-500 border-b border-slate-800 bg-slate-950">
+                        <th className="py-2 px-3">Company</th>
+                        <th className="py-2 px-3">Company grade</th>
+                        <th className="py-2 px-3">AI grade</th>
+                        <th className="py-2 px-3 min-w-[11rem]">Assigned</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {potentialRows.map((row) => (
+                        <tr
+                          key={row.buyer_id}
+                          className="border-b border-slate-800/60"
+                        >
+                          <td className="py-2 px-3 text-slate-200">
+                            <div>{row.company_name}</div>
+                            <div className="text-xs text-slate-500">
+                              {row.country || "—"}
+                            </div>
+                          </td>
+                          <td className="py-2 px-3 text-emerald-300/90">
+                            {row.company_grade || row.company_grading || "—"}
+                          </td>
+                          <td className="py-2 px-3 text-emerald-300/90">
+                            {row.ai_grade}
+                          </td>
+                          <td className="py-2 px-3">
+                            <AssignedToSelect
+                              value={row.assigned_to_user_id}
+                              options={assigneeOptions}
+                              disabled={
+                                !isAdmin || assigningBuyerId === row.buyer_id
+                              }
+                              onChange={(userId) => {
+                                void assignPotentialClient(row.buyer_id, userId);
+                              }}
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          ) : (
+            <>
+              <div className="flex gap-2">
+                <input
+                  value={lifecycleSearch}
+                  onChange={(e) => setLifecycleSearch(e.target.value)}
+                  placeholder="Search company…"
+                  className="flex-1 rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    void loadLifecycle();
+                    void loadQueries(true);
+                  }}
+                  className="rounded-lg bg-slate-800 hover:bg-slate-700 px-3 py-2 text-sm"
+                >
+                  Refresh
+                </button>
+              </div>
+              {lifecycleLoading ? (
+                <p className="text-sm text-slate-500">Loading…</p>
+              ) : lifecycleRows.length === 0 ? (
+                <p className="text-sm text-slate-500">
+                  {stageFilter === "interested"
+                    ? "No interested companies yet. When a call is labeled Client is Interested, the company moves here."
+                    : "No companies in this stage yet. Use New Lead, Potential Clients, Assigned, Calling, or Follow-up for the activity / grade feeds — or move a company into this stage from the pipeline."}
+                </p>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-slate-800">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-slate-500 border-b border-slate-800 bg-slate-950">
+                        <th className="py-2 px-3">Company</th>
+                        <th className="py-2 px-3">Stage</th>
+                        <th className="py-2 px-3">Since</th>
+                        <th className="py-2 px-3">History</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {lifecycleRows.map((row) => (
+                        <tr key={row.id} className="border-b border-slate-800/60">
+                          <td className="py-2 px-3 text-slate-200">
+                            <div>{row.company_name}</div>
+                            <div className="text-xs text-slate-500">
+                              {row.country || "—"}
+                            </div>
+                          </td>
+                          <td className="py-2 px-3">
+                            <select
+                              value={row.stage}
+                              onChange={(e) => void changeStage(row, e.target.value)}
+                              className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-slate-200"
+                            >
+                              {stages.map((s) => (
+                                <option key={s.key} value={s.key}>
+                                  {s.label}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="py-2 px-3 text-slate-500 whitespace-nowrap">
+                            {row.stage_entered_at
+                              ? new Date(row.stage_entered_at).toLocaleString()
+                              : "—"}
+                          </td>
+                          <td className="py-2 px-3 text-xs text-slate-500 max-w-sm">
+                            {(row.history || [])
+                              .slice(-4)
+                              .map((h) => {
+                                const label =
+                                  stages.find((s) => s.key === h.stage)?.label ||
+                                  h.stage;
+                                return `${label} · ${new Date(h.at).toLocaleDateString()}`;
+                              })
+                              .join(" → ") || "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

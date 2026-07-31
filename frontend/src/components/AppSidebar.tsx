@@ -20,6 +20,7 @@ export type LeadsTableSection =
   | "master"
   | "old_clients"
   | "interested_clients"
+  | "sales_interested_clients"
   | "not_interested_clients"
   | "not_received_call_clients"
   | `assigned:${number}`;

@@ -84,6 +84,7 @@ function DashboardApp() {
     all: 0,
     old_clients: 0,
     interested_clients: 0,
+    sales_interested_clients: 0,
     not_interested_clients: 0,
     not_received_call_clients: 0,
     master: 0,
@@ -541,6 +542,11 @@ function DashboardApp() {
       count: tableCounts.interested_clients,
     },
     {
+      id: "sales_interested_clients" as const,
+      label: "Interested Clients",
+      count: tableCounts.sales_interested_clients ?? 0,
+    },
+    {
       id: "not_interested_clients" as const,
       label: "Not interested",
       count: tableCounts.not_interested_clients,
@@ -555,6 +561,7 @@ function DashboardApp() {
   const clientsTableCount =
     tableCounts.old_clients +
     tableCounts.interested_clients +
+    (tableCounts.sales_interested_clients ?? 0) +
     tableCounts.not_interested_clients +
     tableCounts.not_received_call_clients;
 
@@ -824,7 +831,15 @@ function DashboardApp() {
               />
             )}
             {tab === "chatbot" && <ChatbotPage onError={setError} />}
-            {tab === "ai-mode" && <AiModePage onError={setError} />}
+            {tab === "ai-mode" && (
+              <AiModePage
+                onError={setError}
+                onLeadsAssigned={() => {
+                  void loadTableCounts();
+                  setLeadsTableRefreshToken((token) => token + 1);
+                }}
+              />
+            )}
             {tab === "kpi" && <KpiPage onError={setError} />}
             {tab === "users" && isAdmin && (
               <UsersPage

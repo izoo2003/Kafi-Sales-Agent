@@ -9,10 +9,10 @@ from sqlalchemy.orm import Session
 from db.models import Buyer, Channel, Contact, Interaction
 from modules.calls import buyer_ids_with_latest_call_outcome, parse_call_fields
 
-_FOLLOW_UP_SCHEDULE_OUTCOMES = frozenset({"interested", "not_received_call"})
+_FOLLOW_UP_SCHEDULE_OUTCOMES = frozenset({"follow_up", "not_received_call"})
 
 _SECTION_BY_OUTCOME = {
-    "interested": "interested_clients",
+    "follow_up": "interested_clients",
     "not_received_call": "not_received_call_clients",
 }
 
@@ -43,7 +43,7 @@ def _latest_outcome_for_buyer(db: Session, buyer_id: int) -> str | None:
 
 
 def _placement_date_for_buyer(db: Session, buyer_id: int) -> datetime | None:
-    """Latest phone call with an interested/not-received outcome."""
+    """Latest phone call with a follow-up / not-received outcome."""
     rows = (
         db.query(Interaction)
         .join(Contact, Interaction.contact_id == Contact.id)
@@ -72,7 +72,14 @@ def _schedule_eligible_buyer_ids(db: Session) -> set[int]:
     ids: set[int] = set()
     for outcome in _FOLLOW_UP_SCHEDULE_OUTCOMES:
         ids |= buyer_ids_with_latest_call_outcome(db, outcome)
-    return ids
+    # Interested Clients can also schedule a next-call reminder.
+    listed = {
+        row[0]
+        for row in db.query(Buyer.id)
+        .filter(Buyer.interested_clients_list_at.isnot(None))
+        .all()
+    }
+    return ids | listed
 
 
 def sync_buyer_interested_status(
@@ -90,19 +97,66 @@ def sync_buyer_interested_status(
     new = (new_outcome or "").strip().lower() or None
 
     if new == "interested":
+        # Client is Interested → Interested Clients table (not Follow up).
         buyer.interested_at = _utcnow()
         buyer.interested_follow_up_ack_at = None
+        if buyer.interested_clients_list_at is None:
+            buyer.interested_clients_list_at = _utcnow()
+    elif new == "follow_up":
+        # Next call scheduled — Follow up clients only; does not imply interest.
+        if prev == "interested":
+            # Keep Interested Clients membership if they were already interested.
+            pass
         buyer.follow_up_at = None
     elif new == "not_received_call":
         if prev == "interested":
+            # Keep Interested Clients membership; clear interested_at placement only.
             buyer.interested_at = None
             buyer.interested_follow_up_ack_at = None
         buyer.follow_up_at = None
-    elif prev in _FOLLOW_UP_SCHEDULE_OUTCOMES and new not in _FOLLOW_UP_SCHEDULE_OUTCOMES:
+    elif new == "not_interested":
+        buyer.interested_at = None
+        buyer.interested_follow_up_ack_at = None
+        buyer.follow_up_at = None
+        buyer.interested_clients_list_at = None
+    elif prev in {"interested", "follow_up", "not_received_call"} and new not in {
+        "interested",
+        "follow_up",
+        "not_received_call",
+        "not_interested",
+    }:
         if prev == "interested":
             buyer.interested_at = None
             buyer.interested_follow_up_ack_at = None
         buyer.follow_up_at = None
+
+
+def set_interested_clients_list_membership(
+    db: Session,
+    *,
+    buyer_ids: list[int],
+    in_list: bool,
+) -> dict[str, object]:
+    """Add/remove buyers from the Interested Clients leads-table section."""
+    now = _utcnow()
+    updated_ids: list[int] = []
+    for buyer_id in buyer_ids:
+        buyer = db.get(Buyer, buyer_id)
+        if not buyer:
+            continue
+        if in_list:
+            if buyer.interested_clients_list_at is None:
+                buyer.interested_clients_list_at = now
+                updated_ids.append(buyer_id)
+        elif buyer.interested_clients_list_at is not None:
+            buyer.interested_clients_list_at = None
+            updated_ids.append(buyer_id)
+    if updated_ids:
+        db.commit()
+        from modules.leads import invalidate_section_counts_cache
+
+        invalidate_section_counts_cache()
+    return {"updated_count": len(updated_ids), "updated_ids": updated_ids}
 
 
 def _ensure_placement_at(db: Session, buyer: Buyer) -> datetime:
@@ -141,8 +195,11 @@ def list_due_follow_ups(
         if now < due_at:
             continue
 
-        outcome = _latest_outcome_for_buyer(db, buyer.id) or "interested"
-        section = _SECTION_BY_OUTCOME.get(outcome, "interested_clients")
+        outcome = _latest_outcome_for_buyer(db, buyer.id) or "follow_up"
+        if buyer.interested_clients_list_at and outcome == "interested":
+            section = "sales_interested_clients"
+        else:
+            section = _SECTION_BY_OUTCOME.get(outcome, "interested_clients")
         placement = _ensure_placement_at(db, buyer)
         placement_utc = _as_utc(placement)
         days_since = max(0, (now - placement_utc).days)
@@ -173,13 +230,16 @@ def set_follow_up_at(
     *,
     buyer_id: int,
     follow_up_at: datetime | None,
+    by_user_id: int | None = None,
+    by_username: str | None = None,
 ) -> dict:
     buyer = db.get(Buyer, buyer_id)
     if not buyer:
         raise ValueError("Lead not found")
     if buyer_id not in _schedule_eligible_buyer_ids(db):
         raise ValueError(
-            "Client must be on Follow up clients or Did not receive call to schedule a reminder"
+            "Client must be on Follow up clients, Interested Clients, or Did not receive call "
+            "to schedule a reminder"
         )
 
     if follow_up_at is not None:
@@ -189,6 +249,20 @@ def set_follow_up_at(
     buyer.interested_follow_up_ack_at = None
     db.commit()
     db.refresh(buyer)
+
+    if follow_up_at is not None and by_user_id is not None:
+        from modules import ai_mode as ai_mode_module
+
+        ai_mode_module.record_follow_up_activity(
+            db,
+            user_id=by_user_id,
+            company_name=buyer.company_name,
+            buyer_id=buyer.id,
+            event_type="scheduled",
+            follow_up_at=follow_up_at,
+            user_label=by_username,
+        )
+
     return {
         "buyer_id": buyer.id,
         "follow_up_at": buyer.follow_up_at.isoformat() if buyer.follow_up_at else None,
@@ -202,7 +276,7 @@ def acknowledge_follow_up(db: Session, *, buyer_id: int) -> dict:
         raise ValueError("Lead not found")
     if buyer_id not in _schedule_eligible_buyer_ids(db):
         raise ValueError(
-            "Client must be on Follow up clients or Did not receive call"
+            "Client must be on Follow up clients, Interested Clients, or Did not receive call"
         )
 
     buyer.follow_up_at = None

@@ -174,6 +174,16 @@ def list_messages(
         return [{**message, "provider": _mailbox_provider()} for message in messages]
 
 
+def list_inbox_for_query_scan(user: AppUser, *, limit: int = 10) -> list[dict[str, Any]]:
+    """Force a live IMAP inbox scan with message bodies (for AI Mode New Lead)."""
+    account = resolve_user_mailbox(user)
+    if not account:
+        return []
+    with use_mailbox(account, user_id=user.id):
+        messages = outlook_client.list_inbox_for_query_scan(limit=limit)
+        return [{**message, "provider": _mailbox_provider()} for message in messages]
+
+
 def get_message(user: AppUser, uid: str, *, folder: str = "INBOX") -> dict[str, Any] | None:
     account = resolve_user_mailbox(user)
     if not account:

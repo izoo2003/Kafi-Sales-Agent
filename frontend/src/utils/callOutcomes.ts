@@ -1,5 +1,6 @@
 export const CALL_OUTCOMES = [
-  { value: "interested", label: "Interested" },
+  { value: "interested", label: "Client is Interested" },
+  { value: "follow_up", label: "Follow up" },
   { value: "not_interested", label: "Not interested" },
   { value: "not_received_call", label: "Did not receive call" },
 ] as const;
@@ -207,6 +208,9 @@ export function callOutcomeBadge(value: string | null | undefined): string {
   if (value === "interested") {
     return "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
   }
+  if (value === "follow_up") {
+    return "bg-sky-500/15 text-sky-300 border-sky-500/30";
+  }
   if (value === "not_interested") {
     return "bg-red-500/15 text-red-300 border-red-500/30";
   }
@@ -217,7 +221,8 @@ export function callOutcomeBadge(value: string | null | undefined): string {
 }
 
 export function callOutcomeListNotice(value: string | null | undefined): string | null {
-  if (value === "interested") return "Client moved to Follow up clients.";
+  if (value === "interested") return "Client moved to Interested Clients.";
+  if (value === "follow_up") return "Client moved to Follow up clients.";
   if (value === "not_interested") return "Client moved to Not interested.";
   if (value === "not_received_call") return "Client moved to Did not receive call.";
   return null;
@@ -225,7 +230,10 @@ export function callOutcomeListNotice(value: string | null | undefined): string 
 
 export function callOutcomeSectionHint(value: CallOutcome | ""): string | null {
   if (value === "interested") {
-    return "Client moves from Leads table or Old clients to Follow up clients.";
+    return "Client moves to Interested Clients — they want to buy / continue.";
+  }
+  if (value === "follow_up") {
+    return "Client moves to Follow up clients — schedule the next call (does not mean they are interested).";
   }
   if (value === "not_interested") {
     return "Client moves from Leads table or Old clients to Not interested.";

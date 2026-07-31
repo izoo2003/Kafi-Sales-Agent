@@ -44,7 +44,8 @@ const PERIOD_OPTIONS: { value: KpiPeriod; label: string }[] = [
 
 const COUNT_CARDS: { key: keyof KpiCounts; label: string }[] = [
   { key: "calls_logged", label: "Calls" },
-  { key: "outcomes_interested", label: "Interested" },
+  { key: "outcomes_interested", label: "Client interested" },
+  { key: "outcomes_follow_up", label: "Follow up" },
   { key: "outcomes_not_interested", label: "Not interested" },
   { key: "outcomes_not_received_call", label: "No answer" },
   { key: "call_remarks", label: "Call remarks" },
@@ -340,6 +341,7 @@ export function KpiPage({ onError }: KpiPageProps) {
                     {report.per_user.map((row) => {
                       const outcomes =
                         row.counts.outcomes_interested +
+                        (row.counts.outcomes_follow_up ?? 0) +
                         row.counts.outcomes_not_interested +
                         row.counts.outcomes_not_received_call;
                       return (

@@ -145,6 +145,13 @@ class Buyer(Base):
         nullable=True,
         index=True,
     )
+    # Set only when an admin sends/assigns the lead. Self-imports leave this NULL
+    # so "Leads Sent To {user}" never includes a user's own spreadsheet imports.
+    assigned_by_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     market_role: Mapped[MarketRole] = mapped_column(
         Enum(MarketRole), default=MarketRole.unknown, nullable=False, index=True
     )
@@ -156,6 +163,10 @@ class Buyer(Base):
     interested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     interested_follow_up_ack_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     follow_up_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # Membership in the dedicated "Interested Clients" leads-table section.
+    interested_clients_list_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
@@ -610,6 +621,28 @@ class AiModeAutoReplyLog(Base):
     )
 
 
+class AiModeQueryLog(Base):
+    """Per-user inbound emails that matched AI Mode query keywords."""
+
+    __tablename__ = "ai_mode_query_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    message_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    folder: Mapped[str] = mapped_column(String(64), nullable=False, default="inbox")
+    uid: Mapped[str] = mapped_column(String(128), nullable=False)
+    from_email: Mapped[Optional[str]] = mapped_column(String(255))
+    from_name: Mapped[Optional[str]] = mapped_column(String(255))
+    subject: Mapped[Optional[str]] = mapped_column(String(500))
+    preview: Mapped[Optional[str]] = mapped_column(Text)
+    received_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
 class AiCompanyLifecycle(Base):
     """AISOS Module 3 — company lifecycle stage with timestamped history."""
 
@@ -630,4 +663,82 @@ class AiCompanyLifecycle(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AiLeadTransferLog(Base):
+    """Admin lead-assignment events for Company lifecycle → Assigned.
+
+    Each row is one transfer batch (e.g. \"50 leads transferred to Usman\").
+    Assigned chip count = sum of lead_count across all rows.
+    """
+
+    __tablename__ = "ai_lead_transfer_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    by_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL"), index=True
+    )
+    to_user_id: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    to_label: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    lead_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    buyer_ids: Mapped[Optional[list]] = mapped_column(JSONB)
+    message: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class AiCallActivityLog(Base):
+    """Per-user call activity for Company lifecycle → Calling.
+
+    Each row is one call statement (e.g. \"Usman called Acme Trading\").
+    Calling chip count = total rows. Includes admin and sales users alike.
+    """
+
+    __tablename__ = "ai_call_activity_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_label: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    buyer_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("buyers.id", ondelete="SET NULL"), index=True
+    )
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    interaction_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("interactions.id", ondelete="SET NULL"), index=True
+    )
+    message: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class AiFollowUpActivityLog(Base):
+    """Per-user Follow up clients activity for Company lifecycle → Follow-up.
+
+    Each row is one statement (e.g. \"Usman put Acme Trading in Follow up clients\").
+    Includes admin and sales users alike.
+    """
+
+    __tablename__ = "ai_follow_up_activity_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_label: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    buyer_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("buyers.id", ondelete="SET NULL"), index=True
+    )
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False, default="placed")
+    follow_up_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    message: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
     )

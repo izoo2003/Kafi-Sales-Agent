@@ -37,7 +37,7 @@ export function BulkWhatsAppModal({
   const [loadingTemplates, setLoadingTemplates] = useState(true);
   const [templateId, setTemplateId] = useState("");
   const [variables, setVariables] = useState<string[]>([]);
-  const [requireOptIn, setRequireOptIn] = useState(true);
+  const [requireOptIn, setRequireOptIn] = useState(buyerIds.length > 1);
 
   const refreshTemplates = useCallback(async () => {
     setLoadingTemplates(true);
@@ -193,15 +193,22 @@ export function BulkWhatsAppModal({
             </div>
           )}
 
-          {isMarketing && (
-            <label className="flex items-center gap-2 text-sm text-slate-300">
+          {(isMarketing || buyerIds.length === 1) && (
+            <label className="flex items-start gap-2 text-sm text-slate-300">
               <input
                 type="checkbox"
                 checked={requireOptIn}
                 onChange={(e) => setRequireOptIn(e.target.checked)}
-                className="rounded border-slate-600 bg-slate-950"
+                className="rounded border-slate-600 bg-slate-950 mt-0.5"
               />
-              Only send to contacts who opted in to WhatsApp marketing (recommended)
+              <span>
+                Only send to contacts who opted in to WhatsApp marketing
+                {buyerIds.length === 1 ? (
+                  <span className="block text-xs text-slate-500 mt-0.5">
+                    Unchecked for single/test sends — turn on for real marketing campaigns.
+                  </span>
+                ) : null}
+              </span>
             </label>
           )}
         </div>

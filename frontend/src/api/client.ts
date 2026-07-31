@@ -322,6 +322,7 @@ export interface AppUser {
 export interface KpiCounts {
   calls_logged: number;
   outcomes_interested: number;
+  outcomes_follow_up?: number;
   outcomes_not_interested: number;
   outcomes_not_received_call: number;
   call_remarks: number;
@@ -1035,6 +1036,7 @@ export interface LeadTableSectionCountsResponse {
   all: number;
   old_clients: number;
   interested_clients: number;
+  sales_interested_clients?: number;
   not_interested_clients: number;
   not_received_call_clients: number;
   master?: number;
@@ -1051,6 +1053,7 @@ export interface LeadTableBulkAssignResponse {
   assigned_ids: number[];
   assigned_to_user_id: number | null;
   assigned_to: string;
+  transfer_message?: string | null;
 }
 
 export interface LeadTableRow {
@@ -1171,6 +1174,7 @@ export interface LeadTableQuery {
   source?: string;
   exclude_source?: string;
   call_outcome?: string;
+  in_interested_clients?: boolean;
   market_role?: string;
   q?: string;
   sort_by?: string;
@@ -1191,7 +1195,16 @@ export interface WhatsAppConfig {
   webhook_configured: boolean;
   phone_number_id_set: boolean;
   business_account_id_set: boolean;
+  app_secret_set?: boolean;
+  display_number?: string | null;
   missing_env: string[];
+}
+
+export interface WhatsAppTestSendResult {
+  status: string;
+  message: string;
+  to?: string | null;
+  provider_message_id?: string | null;
 }
 
 export interface WhatsAppTemplate {
@@ -1347,6 +1360,7 @@ export const client = {
     if (params.source) search.set("source", params.source);
     if (params.exclude_source) search.set("exclude_source", params.exclude_source);
     if (params.call_outcome) search.set("call_outcome", params.call_outcome);
+    if (params.in_interested_clients) search.set("in_interested_clients", "true");
     if (params.market_role) search.set("market_role", params.market_role);
     if (params.q) search.set("q", params.q);
     if (params.sort_by) search.set("sort_by", params.sort_by);
@@ -1372,6 +1386,7 @@ export const client = {
     if (params.source) search.set("source", params.source);
     if (params.exclude_source) search.set("exclude_source", params.exclude_source);
     if (params.call_outcome) search.set("call_outcome", params.call_outcome);
+    if (params.in_interested_clients) search.set("in_interested_clients", "true");
     if (params.market_role) search.set("market_role", params.market_role);
     if (params.q) search.set("q", params.q);
     if (params.sort_by) search.set("sort_by", params.sort_by);
@@ -1403,6 +1418,14 @@ export const client = {
         assigned_to_user_id: assignedToUserId,
       }),
     }),
+  setInterestedClientsMembership: (leadIds: number[], inList: boolean) =>
+    request<{ updated_count: number; updated_ids: number[] }>(
+      "/leads/table/interested-clients-membership",
+      {
+        method: "POST",
+        body: JSON.stringify({ lead_ids: leadIds, in_list: inList }),
+      },
+    ),
   getLeadsTableSectionCounts: () =>
     request<LeadTableSectionCountsResponse>("/leads/table/section-counts"),
   dedupeLeadsTable: (params: LeadTableSectionScope = {}) => {
@@ -2081,6 +2104,16 @@ export const client = {
     }),
 
   getWhatsAppConfig: () => request<WhatsAppConfig>("/whatsapp/config"),
+  testWhatsAppSend: (data: {
+    phone: string;
+    message?: string;
+    template_name?: string;
+    template_language?: string;
+  }) =>
+    request<WhatsAppTestSendResult>("/whatsapp/test-send", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
   listWhatsAppTemplates: (approvedOnly = false) =>
     request<WhatsAppTemplate[]>(
       `/whatsapp/templates${approvedOnly ? "?approved_only=true" : ""}`,
@@ -2154,6 +2187,19 @@ export const client = {
     request<{ rows: AiModeAutoReplyLogRow[] }>(
       `/ai-mode/auto-replies?limit=${limit}`,
     ),
+  listAiModeQueries: (params: { limit?: number; refresh?: boolean } = {}) => {
+    const query = new URLSearchParams();
+    if (params.limit) query.set("limit", String(params.limit));
+    if (params.refresh) query.set("refresh", "true");
+    const qs = query.toString();
+    return request<AiModeQueriesResponse>(
+      `/ai-mode/queries${qs ? `?${qs}` : ""}`,
+    );
+  },
+  scanAiModeQueries: () =>
+    request<AiModeQueriesResponse>("/ai-mode/queries/scan", { method: "POST" }),
+  getAiModeQueryMessage: (queryId: number) =>
+    request<AiModeQueryMessageResponse>(`/ai-mode/queries/${queryId}`),
   listAiModeLifecycle: (params: {
     stage?: string;
     search?: string;
@@ -2168,6 +2214,35 @@ export const client = {
     const qs = query.toString();
     return request<AiModeLifecycleListResponse>(
       `/ai-mode/lifecycle${qs ? `?${qs}` : ""}`,
+    );
+  },
+  listAiModeAssignments: (limit = 100) =>
+    request<AiModeAssignmentsResponse>(`/ai-mode/assignments?limit=${limit}`),
+  listAiModeCallActivities: (limit = 100) =>
+    request<AiModeCallActivitiesResponse>(
+      `/ai-mode/call-activities?limit=${limit}`,
+    ),
+  listAiModeFollowUpActivities: (limit = 100) =>
+    request<AiModeFollowUpActivitiesResponse>(
+      `/ai-mode/follow-up-activities?limit=${limit}`,
+    ),
+  listAiModePotentialClients: (params: { search?: string; limit?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.search) query.set("search", params.search);
+    if (params.limit) query.set("limit", String(params.limit));
+    const qs = query.toString();
+    return request<AiModeInterestedLeadsResponse>(
+      `/ai-mode/potential-clients${qs ? `?${qs}` : ""}`,
+    );
+  },
+  /** @deprecated Use listAiModePotentialClients — same AA/AAA Scrapped Leads list. */
+  listAiModeInterestedLeads: (params: { search?: string; limit?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.search) query.set("search", params.search);
+    if (params.limit) query.set("limit", String(params.limit));
+    const qs = query.toString();
+    return request<AiModeInterestedLeadsResponse>(
+      `/ai-mode/interested-leads${qs ? `?${qs}` : ""}`,
     );
   },
   updateAiModeLifecycle: (
@@ -2237,6 +2312,49 @@ export interface AiModeAutoReplyLogRow {
   created_at: string | null;
 }
 
+export interface AiModeQueryRow {
+  id: number;
+  folder: string;
+  uid: string;
+  from_email: string | null;
+  from_name: string | null;
+  subject: string | null;
+  preview: string | null;
+  received_at: string | null;
+  created_at: string | null;
+}
+
+export interface AiModeQueriesResponse {
+  count: number;
+  rows: AiModeQueryRow[];
+  scan?: {
+    scanned: number;
+    matched: number;
+    created: number;
+    purged?: number;
+    deepened?: number;
+    deep?: boolean;
+    error?: string;
+    errors?: string[];
+  };
+}
+
+export interface AiModeQueryMessageResponse {
+  query: AiModeQueryRow;
+  message: {
+    uid?: string;
+    subject?: string | null;
+    from_email?: string | null;
+    from_name?: string | null;
+    preview?: string | null;
+    body?: string | null;
+    date?: string | null;
+    folder?: string | null;
+    to?: string[] | null;
+    [key: string]: unknown;
+  };
+}
+
 export interface AiModeLifecycleRow {
   id: number;
   buyer_id: number;
@@ -2260,4 +2378,77 @@ export interface AiModeLifecycleListResponse {
   stages: Array<{ key: string; label: string }>;
   pipeline: Record<string, number>;
   rows: AiModeLifecycleRow[];
+  assignments?: AiModeAssignmentsResponse;
+  call_activities?: AiModeCallActivitiesResponse;
+  follow_up_activities?: AiModeFollowUpActivitiesResponse;
+  interested_leads?: AiModeInterestedLeadsResponse;
+  potential_clients?: AiModeInterestedLeadsResponse;
+}
+
+export interface AiModeAssignmentRow {
+  id: number;
+  by_user_id: number | null;
+  to_user_id: number;
+  to_label: string;
+  lead_count: number;
+  message: string;
+  created_at: string | null;
+}
+
+export interface AiModeAssignmentsResponse {
+  total_leads: number;
+  total_events: number;
+  rows: AiModeAssignmentRow[];
+}
+
+export interface AiModeCallActivityRow {
+  id: number;
+  user_id: number;
+  user_label: string;
+  buyer_id: number | null;
+  company_name: string;
+  interaction_id: number | null;
+  message: string;
+  created_at: string | null;
+}
+
+export interface AiModeCallActivitiesResponse {
+  total_calls: number;
+  rows: AiModeCallActivityRow[];
+}
+
+export interface AiModeFollowUpActivityRow {
+  id: number;
+  user_id: number;
+  user_label: string;
+  buyer_id: number | null;
+  company_name: string;
+  event_type: string;
+  follow_up_at: string | null;
+  message: string;
+  created_at: string | null;
+}
+
+export interface AiModeFollowUpActivitiesResponse {
+  total_events: number;
+  rows: AiModeFollowUpActivityRow[];
+}
+
+export interface AiModeInterestedLeadRow {
+  buyer_id: number;
+  company_name: string;
+  country: string | null;
+  source: string | null;
+  company_grading: string | null;
+  company_grade: string | null;
+  ai_grade: string;
+  score_reasoning: string | null;
+  scored_at: string | null;
+  assigned_to: string | null;
+  assigned_to_user_id: number | null;
+}
+
+export interface AiModeInterestedLeadsResponse {
+  total: number;
+  rows: AiModeInterestedLeadRow[];
 }

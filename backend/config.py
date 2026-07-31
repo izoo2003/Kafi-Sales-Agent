@@ -152,6 +152,8 @@ class Settings(BaseSettings):
     whatsapp_api_version: str = "v21.0"
     # Verify X-Hub-Signature-256 on webhooks (set false only for local debugging).
     whatsapp_validate_webhooks: bool = True
+    # Human-readable business number (E.164), e.g. +923078206633 — not the Phone Number ID.
+    whatsapp_display_number: str | None = None
     # Bulk WhatsApp throttling — Meta's messaging tier limits unique conversations/24h.
     bulk_whatsapp_message_delay_seconds: float = 2.0
     bulk_whatsapp_max_per_request: int = 250

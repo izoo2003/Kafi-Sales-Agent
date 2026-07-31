@@ -8,7 +8,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from api.deps import get_current_user, get_db
+from api.deps import get_current_user, get_db, require_admin
 from api.schemas import (
     BulkWhatsAppOptInUpdate,
     InteractionRead,
@@ -21,9 +21,12 @@ from api.schemas import (
     WhatsAppReplyResponse,
     WhatsAppTemplateRead,
     WhatsAppTemplateSyncResponse,
+    WhatsAppTestSendRequest,
+    WhatsAppTestSendResponse,
 )
 from config import settings
 from db.models import AppUser, InteractionStatus
+from integrations.voice_client import normalize_e164
 from integrations.whatsapp_client import whatsapp_client
 from modules.audit import log_action
 from modules.comms_generator import get_comms
@@ -47,12 +50,62 @@ def get_whatsapp_config():
         missing.append("WHATSAPP_BUSINESS_ACCOUNT_ID")
     if not settings.whatsapp_webhook_verify_token:
         missing.append("WHATSAPP_WEBHOOK_VERIFY_TOKEN")
+    if not settings.whatsapp_app_secret:
+        missing.append("WHATSAPP_APP_SECRET")
     return WhatsAppConfigRead(
         configured=whatsapp_client.is_configured,
         webhook_configured=whatsapp_client.webhook_configured,
         phone_number_id_set=bool(settings.whatsapp_phone_number_id),
         business_account_id_set=bool(settings.whatsapp_business_account_id),
+        app_secret_set=bool(settings.whatsapp_app_secret),
+        display_number=settings.whatsapp_display_number,
         missing_env=missing,
+    )
+
+
+@router.post("/test-send", response_model=WhatsAppTestSendResponse)
+def whatsapp_test_send(
+    payload: WhatsAppTestSendRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(require_admin),
+):
+    """Admin-only smoke test against Meta Cloud API.
+
+    Free-form text only works inside the 24h customer-service window (recipient
+    messaged you first). Outside that window, pass an approved ``template_name``
+    (e.g. Meta's ``hello_world`` on a fresh WABA).
+    """
+    to = normalize_e164(payload.phone)
+    if not to:
+        raise HTTPException(400, f"Invalid phone number: {payload.phone!r}")
+
+    if payload.template_name:
+        result = whatsapp_client.send_template(
+            phone=to,
+            template_name=payload.template_name,
+            language=payload.template_language or "en_US",
+        )
+    else:
+        result = whatsapp_client.send_text(phone=to, message=payload.message)
+
+    log_action(
+        db,
+        entity_type="whatsapp",
+        entity_id=0,
+        action="test_send",
+        actor=user.username,
+        details={
+            "to": to,
+            "status": result.get("status"),
+            "template_name": payload.template_name,
+            "provider_message_id": result.get("provider_message_id"),
+        },
+    )
+    return WhatsAppTestSendResponse(
+        status=str(result.get("status") or "error"),
+        message=str(result.get("message") or ""),
+        to=to,
+        provider_message_id=result.get("provider_message_id"),
     )
 
 

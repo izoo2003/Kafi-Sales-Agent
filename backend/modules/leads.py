@@ -53,16 +53,28 @@ def resolve_assignee_user(db: Session, user_id: int | None) -> AppUser | None:
     return user
 
 
-def apply_buyer_assignee(db: Session, buyer: Buyer, user_id: int | None) -> None:
-    """Set assigned_to_user_id and sync display label. user_id None = unassigned."""
+def apply_buyer_assignee(
+    db: Session,
+    buyer: Buyer,
+    user_id: int | None,
+    *,
+    assigned_by_user_id: int | None = None,
+) -> None:
+    """Set assigned_to_user_id and sync display label.
+
+    assigned_by_user_id: admin who sent the lead (required for \"Leads Sent To\").
+    Leave None for self-imports / sales-owned rows so they stay off that admin nav.
+    """
     if user_id is None:
         buyer.assigned_to_user_id = None
         buyer.assigned_to = "unassigned"
+        buyer.assigned_by_user_id = None
         return
     user = resolve_assignee_user(db, user_id)
     assert user is not None
     buyer.assigned_to_user_id = user.id
     buyer.assigned_to = _assignee_label(user)
+    buyer.assigned_by_user_id = assigned_by_user_id
 
 
 def user_can_access_buyer(db: Session, *, user: AppUser, buyer_id: int) -> bool:
@@ -81,6 +93,7 @@ def clear_assignments_for_user(db: Session, user_id: int) -> None:
     for buyer in buyers:
         buyer.assigned_to_user_id = None
         buyer.assigned_to = "unassigned"
+        buyer.assigned_by_user_id = None
 
 
 def unassign_spreadsheet_imports(db: Session) -> dict[str, int]:
@@ -444,11 +457,15 @@ def _apply_lead_table_scope(
     assigned_to_user_id: int | None,
     unassigned_only: bool,
     pool_for_user_id: int | None = None,
+    admin_sent_only: bool = False,
 ):
     from sqlalchemy import or_
 
     if assigned_to_user_id is not None:
         buyer_query = buyer_query.filter(Buyer.assigned_to_user_id == assigned_to_user_id)
+        if admin_sent_only:
+            # Admin "Leads Sent To {user}" — exclude that user's self-imports.
+            buyer_query = buyer_query.filter(Buyer.assigned_by_user_id.isnot(None))
     elif pool_for_user_id is not None:
         # Legacy: shared unassigned pool + leads assigned to this user.
         buyer_query = buyer_query.filter(
@@ -484,12 +501,20 @@ def _apply_call_outcome_scope(
     *,
     call_outcome: str | None,
     include_placed_outcomes: bool,
+    in_interested_clients: bool = False,
 ):
     scoped_buyer_ids = {
         row[0] for row in buyer_query.with_entities(Buyer.id).all()
     }
     if not scoped_buyer_ids:
         return buyer_query.filter(Buyer.id == -1), set()
+
+    if in_interested_clients:
+        buyer_query = buyer_query.filter(Buyer.interested_clients_list_at.isnot(None))
+        matched = {row[0] for row in buyer_query.with_entities(Buyer.id).all()}
+        if not matched:
+            return buyer_query.filter(Buyer.id == -1), set()
+        return buyer_query, matched
 
     if call_outcome:
         from modules.calls import buyer_ids_with_latest_call_outcome
@@ -507,9 +532,19 @@ def _apply_call_outcome_scope(
         placed_buyer_ids = buyer_ids_with_placed_call_outcome(
             db, buyer_ids=scoped_buyer_ids
         )
-        if placed_buyer_ids:
-            buyer_query = buyer_query.filter(~Buyer.id.in_(placed_buyer_ids))
-            scoped_buyer_ids -= placed_buyer_ids
+        listed = {
+            row[0]
+            for row in db.query(Buyer.id)
+            .filter(
+                Buyer.id.in_(scoped_buyer_ids),
+                Buyer.interested_clients_list_at.isnot(None),
+            )
+            .all()
+        }
+        exclude_ids = placed_buyer_ids | listed
+        if exclude_ids:
+            buyer_query = buyer_query.filter(~Buyer.id.in_(exclude_ids))
+            scoped_buyer_ids -= exclude_ids
     return buyer_query, scoped_buyer_ids
 
 
@@ -629,6 +664,7 @@ def _filtered_lead_table_rows(
     source: str | None = None,
     exclude_source: str | None = None,
     call_outcome: str | None = None,
+    in_interested_clients: bool = False,
     market_role: str | None = None,
     q: str | None = None,
     sort_by: str = "created_at",
@@ -637,6 +673,7 @@ def _filtered_lead_table_rows(
     unassigned_only: bool = False,
     pool_for_user_id: int | None = None,
     include_placed_outcomes: bool = False,
+    admin_sent_only: bool = False,
     page: int | None = None,
     page_size: int | None = None,
     ids_only: bool = False,
@@ -655,12 +692,14 @@ def _filtered_lead_table_rows(
         assigned_to_user_id=assigned_to_user_id,
         unassigned_only=unassigned_only,
         pool_for_user_id=pool_for_user_id,
+        admin_sent_only=admin_sent_only,
     )
     buyer_query, _ = _apply_call_outcome_scope(
         db,
         buyer_query,
         call_outcome=call_outcome,
         include_placed_outcomes=include_placed_outcomes,
+        in_interested_clients=in_interested_clients,
     )
     section_total = buyer_query.with_entities(sa_func.count(Buyer.id)).scalar() or 0
     if section_total == 0:
@@ -934,6 +973,7 @@ def list_leads_table_ids(
     source: str | None = None,
     exclude_source: str | None = None,
     call_outcome: str | None = None,
+    in_interested_clients: bool = False,
     market_role: str | None = None,
     q: str | None = None,
     sort_by: str = "created_at",
@@ -942,6 +982,7 @@ def list_leads_table_ids(
     unassigned_only: bool = False,
     pool_for_user_id: int | None = None,
     include_placed_outcomes: bool = False,
+    admin_sent_only: bool = False,
 ) -> dict[str, object]:
     rows, _section_total, filtered_count = _filtered_lead_table_rows(
         db,
@@ -955,6 +996,7 @@ def list_leads_table_ids(
         source=source,
         exclude_source=exclude_source,
         call_outcome=call_outcome,
+        in_interested_clients=in_interested_clients,
         market_role=market_role,
         q=q,
         sort_by=sort_by,
@@ -963,6 +1005,7 @@ def list_leads_table_ids(
         unassigned_only=unassigned_only,
         pool_for_user_id=pool_for_user_id,
         include_placed_outcomes=include_placed_outcomes,
+        admin_sent_only=admin_sent_only,
         ids_only=True,
     )
     return {
@@ -984,6 +1027,7 @@ def list_leads_table(
     source: str | None = None,
     exclude_source: str | None = None,
     call_outcome: str | None = None,
+    in_interested_clients: bool = False,
     market_role: str | None = None,
     q: str | None = None,
     sort_by: str = "created_at",
@@ -994,6 +1038,7 @@ def list_leads_table(
     unassigned_only: bool = False,
     pool_for_user_id: int | None = None,
     include_placed_outcomes: bool = False,
+    admin_sent_only: bool = False,
 ) -> dict[str, object]:
     page = max(1, page)
     page_size = min(max(1, page_size), 100)
@@ -1010,6 +1055,7 @@ def list_leads_table(
         source=source,
         exclude_source=exclude_source,
         call_outcome=call_outcome,
+        in_interested_clients=in_interested_clients,
         market_role=market_role,
         q=q,
         sort_by=sort_by,
@@ -1018,6 +1064,7 @@ def list_leads_table(
         unassigned_only=unassigned_only,
         pool_for_user_id=pool_for_user_id,
         include_placed_outcomes=include_placed_outcomes,
+        admin_sent_only=admin_sent_only,
         page=page,
         page_size=page_size,
     )
@@ -1088,7 +1135,9 @@ def _compute_section_counts(
 ) -> dict[str, object]:
     from modules.calls import latest_call_outcomes_by_buyer
 
-    buyer_query = db.query(Buyer.id, Buyer.source, Buyer.assigned_to_user_id)
+    buyer_query = db.query(
+        Buyer.id, Buyer.source, Buyer.assigned_to_user_id, Buyer.assigned_by_user_id
+    )
     if pool_for_user_id is not None:
         from sqlalchemy import or_
 
@@ -1108,7 +1157,7 @@ def _compute_section_counts(
     unassigned_other_ids: set[int] = set()
     by_assignee: dict[str, int] = {}
 
-    for buyer_id, source, assignee_id in buyer_query.all():
+    for buyer_id, source, assignee_id, assigned_by_id in buyer_query.all():
         is_old = (source or "").strip().lower() == "old_clients"
         if is_old:
             old_client_ids.add(buyer_id)
@@ -1120,8 +1169,8 @@ def _compute_section_counts(
                 unassigned_old_ids.add(buyer_id)
             else:
                 unassigned_other_ids.add(buyer_id)
-        elif pool_for_user_id is None:
-            # Only admins need per-user "Leads Sent To" badge counts.
+        elif pool_for_user_id is None and assigned_by_id is not None:
+            # Admin "Leads Sent To" badges — only admin-sent leads, not self-imports.
             key = str(assignee_id)
             by_assignee[key] = by_assignee.get(key, 0) + 1
 
@@ -1129,9 +1178,23 @@ def _compute_section_counts(
     outcomes = latest_call_outcomes_by_buyer(db, buyer_ids=all_ids)
 
     interested_ids = {bid for bid, v in outcomes.items() if v == "interested"}
+    follow_up_ids = {bid for bid, v in outcomes.items() if v == "follow_up"}
     not_interested_ids = {bid for bid, v in outcomes.items() if v == "not_interested"}
     not_received_ids = {bid for bid, v in outcomes.items() if v == "not_received_call"}
-    placed_ids = interested_ids | not_interested_ids | not_received_ids
+    placed_ids = interested_ids | follow_up_ids | not_interested_ids | not_received_ids
+
+    listed_interested_ids: set[int] = set()
+    if all_ids:
+        listed_interested_ids = {
+            row[0]
+            for row in db.query(Buyer.id)
+            .filter(
+                Buyer.id.in_(all_ids),
+                Buyer.interested_clients_list_at.isnot(None),
+            )
+            .all()
+        }
+    placed_ids |= listed_interested_ids
 
     if pool_for_user_id is not None:
         # Sales user scope already filtered to unassigned + own assignments.
@@ -1148,7 +1211,8 @@ def _compute_section_counts(
     return {
         "all": all_count,
         "old_clients": old_count,
-        "interested_clients": len(interested_ids),
+        "interested_clients": len(follow_up_ids),
+        "sales_interested_clients": len(listed_interested_ids),
         "not_interested_clients": len(not_interested_ids),
         "not_received_call_clients": len(not_received_ids),
         # Admin master table: every lead (assigned + unassigned, all sources).
@@ -1226,6 +1290,7 @@ def update_lead_table_row(
     data: dict,
     *,
     remarks_by: str | None = None,
+    by_user_id: int | None = None,
 ) -> dict[str, object] | None:
     from modules.audit import log_action
 
@@ -1234,7 +1299,31 @@ def update_lead_table_row(
         return None
 
     if "assigned_to_user_id" in data:
-        apply_buyer_assignee(db, buyer, data.get("assigned_to_user_id"))
+        previous_assignee_id = buyer.assigned_to_user_id
+        new_assignee_id = data.get("assigned_to_user_id")
+        apply_buyer_assignee(
+            db,
+            buyer,
+            new_assignee_id,
+            assigned_by_user_id=by_user_id if new_assignee_id is not None else None,
+        )
+        if (
+            new_assignee_id is not None
+            and previous_assignee_id != new_assignee_id
+            and by_user_id is not None
+        ):
+            from modules import ai_mode as ai_mode_module
+
+            ai_mode_module.record_lead_transfer(
+                db,
+                buyer_ids=[buyer_id],
+                to_user_id=int(new_assignee_id),
+                to_label=buyer.assigned_to or _assignee_label(
+                    resolve_assignee_user(db, int(new_assignee_id))
+                ),
+                by_user_id=by_user_id,
+                commit=False,
+            )
         db.commit()
         db.refresh(buyer)
         data = {k: v for k, v in data.items() if k not in {"assigned_to_user_id", "assigned_to"}}
@@ -1715,6 +1804,7 @@ def bulk_assign_lead_table_rows(
     buyer_ids: list[int],
     *,
     assigned_to_user_id: int | None,
+    by_user_id: int | None = None,
 ) -> dict[str, object]:
     """Assign many leads to one sales user (or unassign) in a single transaction."""
     from modules.audit import log_action
@@ -1733,9 +1823,27 @@ def bulk_assign_lead_table_rows(
         buyer = buyers_module.get_buyer(db, buyer_id)
         if not buyer:
             continue
-        apply_buyer_assignee(db, buyer, assigned_to_user_id)
+        apply_buyer_assignee(
+            db,
+            buyer,
+            assigned_to_user_id,
+            assigned_by_user_id=by_user_id if assigned_to_user_id is not None else None,
+        )
         assigned_ids.append(buyer_id)
         company_names.append(buyer.company_name)
+
+    transfer_event = None
+    if assigned_ids and assigned_to_user_id is not None:
+        from modules import ai_mode as ai_mode_module
+
+        transfer_event = ai_mode_module.record_lead_transfer(
+            db,
+            buyer_ids=assigned_ids,
+            to_user_id=assigned_to_user_id,
+            to_label=label,
+            by_user_id=by_user_id,
+            commit=False,
+        )
 
     db.commit()
 
@@ -1751,6 +1859,8 @@ def bulk_assign_lead_table_rows(
                 "company_names": company_names[:50],
                 "assigned_to_user_id": assigned_to_user_id,
                 "assigned_to": label,
+                "by_user_id": by_user_id,
+                "transfer_message": (transfer_event or {}).get("message"),
             },
         )
 
@@ -1759,4 +1869,5 @@ def bulk_assign_lead_table_rows(
         "assigned_ids": assigned_ids,
         "assigned_to_user_id": assigned_to_user_id,
         "assigned_to": label,
+        "transfer_message": (transfer_event or {}).get("message"),
     }

@@ -508,10 +508,21 @@ class LeadTableSectionCountsResponse(BaseModel):
     all: int
     old_clients: int
     interested_clients: int
+    sales_interested_clients: int = 0
     not_interested_clients: int
     not_received_call_clients: int
     master: int = 0
     by_assignee: dict[str, int] = Field(default_factory=dict)
+
+
+class LeadTableInterestedClientsMembershipRequest(BaseModel):
+    lead_ids: list[int]
+    in_list: bool = True
+
+
+class LeadTableInterestedClientsMembershipResponse(BaseModel):
+    updated_count: int
+    updated_ids: list[int] = Field(default_factory=list)
 
 
 class DraftListResponse(BaseModel):
@@ -777,6 +788,7 @@ class LeadTableBulkAssignResponse(BaseModel):
     assigned_ids: list[int]
     assigned_to_user_id: Optional[int] = None
     assigned_to: str = "unassigned"
+    transfer_message: Optional[str] = None
 
 
 class DiscoverImportResponse(BaseModel):
@@ -1126,6 +1138,7 @@ class KpiUserBrief(BaseModel):
 class KpiCounts(BaseModel):
     calls_logged: int = 0
     outcomes_interested: int = 0
+    outcomes_follow_up: int = 0
     outcomes_not_interested: int = 0
     outcomes_not_received_call: int = 0
     call_remarks: int = 0
@@ -1193,7 +1206,29 @@ class WhatsAppConfigRead(BaseModel):
     webhook_configured: bool
     phone_number_id_set: bool
     business_account_id_set: bool
+    app_secret_set: bool = False
+    display_number: Optional[str] = None
     missing_env: list[str] = Field(default_factory=list)
+
+
+class WhatsAppTestSendRequest(BaseModel):
+    """Send a one-off test message via Cloud API (admin)."""
+
+    phone: str = Field(..., min_length=8, max_length=32)
+    message: str = Field(
+        default="Hello from Kafi Sales Agent — WhatsApp Cloud API test.",
+        min_length=1,
+        max_length=4096,
+    )
+    template_name: Optional[str] = None
+    template_language: str = "en_US"
+
+
+class WhatsAppTestSendResponse(BaseModel):
+    status: str
+    message: str
+    to: Optional[str] = None
+    provider_message_id: Optional[str] = None
 
 
 class WhatsAppTemplateRead(BaseModel):

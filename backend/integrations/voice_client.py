@@ -9,21 +9,39 @@ from config import settings
 
 
 def normalize_e164(phone: str | None) -> str | None:
-    """Normalize a phone string to E.164 (+country + number)."""
+    """Normalize a phone string to E.164 (+country + number).
+
+    Handles common Pakistan local mobiles (03XXXXXXXXX / 3XXXXXXXXX → +923…).
+    """
     if not phone:
         return None
     raw = phone.strip()
     if not raw or raw.lower() in {"not found", "n/a", "na", "none", "-"}:
         return None
 
-    digits = re.sub(r"[^\d+]", "", raw)
-    if digits.startswith("00"):
-        digits = f"+{digits[2:]}"
-    elif not digits.startswith("+"):
-        digits = f"+{digits}"
+    cleaned = re.sub(r"[^\d+]", "", raw)
+    if cleaned.startswith("00"):
+        cleaned = f"+{cleaned[2:]}"
 
-    if re.fullmatch(r"\+\d{8,15}", digits):
-        return digits
+    # Digits only (no leading +) for regional heuristics.
+    bare = cleaned[1:] if cleaned.startswith("+") else cleaned
+
+    # Pakistan mobile: national 03XXXXXXXXX (11) or 3XXXXXXXXX (10) → +923…
+    if not cleaned.startswith("+"):
+        if re.fullmatch(r"03\d{9}", bare):
+            cleaned = f"+92{bare[1:]}"
+        elif re.fullmatch(r"3\d{9}", bare):
+            cleaned = f"+92{bare}"
+        elif re.fullmatch(r"92\d{10}", bare):
+            cleaned = f"+{bare}"
+        else:
+            cleaned = f"+{bare}"
+    elif cleaned.startswith("+0") and re.fullmatch(r"\+03\d{9}", cleaned):
+        # Accidental +0307… from naive prefixing
+        cleaned = f"+92{cleaned[2:]}"
+
+    if re.fullmatch(r"\+\d{8,15}", cleaned):
+        return cleaned
     return None
 
 

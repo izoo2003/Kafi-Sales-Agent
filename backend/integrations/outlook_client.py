@@ -726,7 +726,9 @@ class OutlookClient:
                 messages = _run(fallback)
             except Exception:  # noqa: BLE001
                 return []
-        return [self._summarize(m, folder=folder) for m in messages]
+        if headers_only:
+            return [self._summarize(m, folder=folder) for m in messages]
+        return [self._detail_from_msg(m, folder=folder) for m in messages]
 
     def list_messages(self, *, limit: int = 25, unread_only: bool = False) -> list[dict[str, Any]]:
         cache_key = f"list_messages:{limit}:{int(unread_only)}"
@@ -753,6 +755,28 @@ class OutlookClient:
         result = filtered[:limit]
         _list_cache_set(cache_key, result)
         return result
+
+    def list_inbox_for_query_scan(self, *, limit: int = 10) -> list[dict[str, Any]]:
+        """Fresh INBOX pull for New Lead scan — no cache, latest N read+unread, full bodies."""
+        _invalidate_mail_caches()
+        fetch_limit = max(1, min(int(limit or 10), 50))
+        with _imap_lock():
+            mailbox = self._mailbox("INBOX")
+            try:
+                rows = self._fetch_folder(
+                    mailbox,
+                    "INBOX",
+                    limit=fetch_limit,
+                    unread_only=False,
+                    headers_only=False,
+                )
+            finally:
+                try:
+                    mailbox.logout()
+                except Exception:  # noqa: BLE001
+                    pass
+        filtered = [m for m in rows if message_is_after_cutoff(m.get("date"))]
+        return filtered[:fetch_limit]
 
     def list_conversation_messages(
         self, *, limit: int = 50, unread_only: bool = False

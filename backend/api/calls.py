@@ -351,6 +351,16 @@ def initiate_lead_call(
         entity_id=result.get("id"),
         details={"buyer_id": lead_id, "company_name": company},
     )
+    from modules import ai_mode as ai_mode_module
+
+    ai_mode_module.record_call_activity(
+        db,
+        user_id=user.id,
+        company_name=company,
+        buyer_id=lead_id,
+        interaction_id=result.get("id"),
+        user_label=user.username,
+    )
     return CallInitiateResponse(**result)
 
 
@@ -384,6 +394,16 @@ def initiate_manual_call(
         entity_type="interaction",
         entity_id=result.get("id"),
         details={"buyer_id": result.get("buyer_id"), "company_name": company},
+    )
+    from modules import ai_mode as ai_mode_module
+
+    ai_mode_module.record_call_activity(
+        db,
+        user_id=user.id,
+        company_name=company,
+        buyer_id=result.get("buyer_id"),
+        interaction_id=result.get("id"),
+        user_label=user.username,
     )
     return CallInitiateResponse(**result)
 

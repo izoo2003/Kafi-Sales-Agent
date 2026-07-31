@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { client, type WhatsAppConfig, type WhatsAppTemplate } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
 
 interface WhatsAppTemplatesPageProps {
   onError: (message: string) => void;
@@ -25,11 +26,16 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTemplatesPageProps) {
+  const { isAdmin } = useAuth();
   const [config, setConfig] = useState<WhatsAppConfig | null>(null);
   const [templates, setTemplates] = useState<WhatsAppTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+
+  const [testPhone, setTestPhone] = useState("");
+  const [testTemplateId, setTestTemplateId] = useState("");
+  const [testSending, setTestSending] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -41,6 +47,12 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
       setConfig(cfg);
       setTemplates(rows);
       onCountChange?.(rows.filter((t) => t.status === "approved").length);
+      const approved = rows.filter((t) => t.status === "approved");
+      setTestTemplateId((current) => {
+        if (current && approved.some((t) => String(t.id) === current)) return current;
+        const hello = approved.find((t) => t.name === "hello_world");
+        return String((hello ?? approved[0])?.id ?? "");
+      });
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to load WhatsApp templates");
     } finally {
@@ -65,6 +77,46 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
       setSyncing(false);
     }
   }
+
+  async function handleTestSend() {
+    if (!isAdmin) {
+      onError("Only an admin can send a WhatsApp test message.");
+      return;
+    }
+    const phone = testPhone.trim();
+    if (!phone) {
+      onError("Enter a recipient phone number (e.g. 03XXXXXXXXX or +92…).");
+      return;
+    }
+    const template = templates.find((t) => String(t.id) === testTemplateId);
+    if (!template || template.status !== "approved") {
+      onError("Select an approved template first.");
+      return;
+    }
+    setTestSending(true);
+    setNotice(null);
+    try {
+      const result = await client.testWhatsAppSend({
+        phone,
+        template_name: template.name,
+        template_language: template.language || "en_US",
+      });
+      if (result.status === "sent") {
+        setNotice(
+          `Test sent to ${result.to || phone}` +
+            (result.provider_message_id ? ` · id ${result.provider_message_id}` : ""),
+        );
+      } else {
+        onError(result.message || `Send failed (${result.status})`);
+      }
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "WhatsApp test send failed");
+    } finally {
+      setTestSending(false);
+    }
+  }
+
+  const approvedTemplates = templates.filter((t) => t.status === "approved");
 
   return (
     <section className="space-y-6">
@@ -95,13 +147,72 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
             Set {config.missing_env.join(", ")} in <code>backend/.env</code>, then restart the
             backend.
           </p>
+          {config.display_number && (
+            <p className="mt-1 text-amber-200/70 text-xs">
+              Sender display number: {config.display_number}
+              {config.phone_number_id_set ? " · Phone Number ID is set" : ""}
+            </p>
+          )}
         </div>
+      )}
+
+      {config?.configured && config.display_number && (
+        <p className="text-xs text-slate-500">
+          Sending as {config.display_number}
+          {!config.business_account_id_set
+            ? " · set WHATSAPP_BUSINESS_ACCOUNT_ID to sync templates"
+            : ""}
+        </p>
       )}
 
       {notice && (
         <p className="text-sm text-emerald-300/90 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3">
           {notice}
         </p>
+      )}
+
+      {isAdmin && config?.configured && (
+        <div className="rounded-xl border border-emerald-800/40 bg-emerald-950/20 p-4 space-y-3">
+          <div>
+            <h3 className="text-sm font-medium text-slate-200">Send test WhatsApp</h3>
+            <p className="text-xs text-slate-500 mt-1">
+              Sends from your connected business number to any phone. Use a different WhatsApp than
+              the business line. First contact usually needs a template (try{" "}
+              <code className="text-slate-400">hello_world</code>).
+            </p>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <input
+              value={testPhone}
+              onChange={(e) => setTestPhone(e.target.value)}
+              placeholder="Recipient phone e.g. 03001234567"
+              className="flex-1 rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
+            />
+            <select
+              value={testTemplateId}
+              onChange={(e) => setTestTemplateId(e.target.value)}
+              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 min-w-[12rem]"
+            >
+              {approvedTemplates.length === 0 ? (
+                <option value="">No approved templates</option>
+              ) : (
+                approvedTemplates.map((t) => (
+                  <option key={t.id} value={String(t.id)}>
+                    {t.name} ({t.language})
+                  </option>
+                ))
+              )}
+            </select>
+            <button
+              type="button"
+              onClick={() => void handleTestSend()}
+              disabled={testSending || approvedTemplates.length === 0 || !testPhone.trim()}
+              className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium disabled:opacity-50 shrink-0"
+            >
+              {testSending ? "Sending…" : "Send test"}
+            </button>
+          </div>
+        </div>
       )}
 
       <div className="rounded-xl border border-slate-800 bg-slate-900/50 overflow-hidden">

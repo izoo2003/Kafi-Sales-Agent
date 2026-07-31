@@ -30,6 +30,8 @@ from api.schemas import (
     LeadTableBulkDeleteResponse,
     LeadTableBulkAssignRequest,
     LeadTableBulkAssignResponse,
+    LeadTableInterestedClientsMembershipRequest,
+    LeadTableInterestedClientsMembershipResponse,
     LeadTableFiltersRead,
     LeadTableIdsResponse,
     LeadTableResponse,
@@ -80,7 +82,8 @@ def _table_assignment_filters(
     source: str | None,
     exclude_source: str | None,
     master: bool = False,
-) -> tuple[int | None, bool, bool, int | None]:
+    in_interested_clients: bool = False,
+) -> tuple[int | None, bool, bool, int | None, bool]:
     """Resolve assignee scope for leads-table list/count queries.
 
     Returns
@@ -95,30 +98,35 @@ def _table_assignment_filters(
     pool_for_user_id
         Legacy shared-pool flag. Always None now — sales users no longer see
         unassigned admin leads.
+    admin_sent_only
+        True for admin "Leads Sent To" — exclude the user's self-imports.
     """
+    placed_section = bool(call_outcome) or in_interested_clients
+
     if master:
         if not _is_admin(user):
             raise HTTPException(403, "Master table is admin-only")
         # Every lead (assigned + unassigned, all sources).
-        return None, False, True, None
+        return None, False, True, None, False
 
     if _is_admin(user):
         if assigned_to_user_id is not None:
-            # Admin viewing "Leads Sent To {username}" — show every lead sent.
+            # Admin viewing "Leads Sent To {username}" — only admin-sent leads.
             return (
                 assigned_to_user_id,
                 False,
-                call_outcome is None and not source and not exclude_source,
+                (not placed_section) and not source and not exclude_source,
                 None,
+                True,
             )
         # Admin pool sections (Leads table / Old clients): hide assigned leads.
-        unassigned_only = call_outcome is None
-        return None, unassigned_only, False, None
+        unassigned_only = not placed_section
+        return None, unassigned_only, False, None, False
 
     # Sales users only see leads an admin (or themselves) assigned to them —
-    # never the shared admin/unassigned pool.
-    include_placed = call_outcome is None and not source and not exclude_source
-    return user.id, False, include_placed, None
+    # never the shared admin/unassigned pool. Their own imports stay visible.
+    include_placed = (not placed_section) and not source and not exclude_source
+    return user.id, False, include_placed, None, False
 
 
 def _require_buyer_access(db, user: AppUser, buyer_id: int) -> None:
@@ -334,6 +342,8 @@ def schedule_interested_follow_up(
             db,
             buyer_id=buyer_id,
             follow_up_at=payload.follow_up_at,
+            by_user_id=user.id,
+            by_username=user.username,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -367,6 +377,7 @@ def list_leads_table(
     source: str | None = None,
     exclude_source: str | None = None,
     call_outcome: str | None = None,
+    in_interested_clients: bool = False,
     market_role: str | None = None,
     q: str | None = None,
     sort_by: str = "created_at",
@@ -378,13 +389,16 @@ def list_leads_table(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
-    assignee_id, unassigned_only, include_placed, pool_for_user_id = _table_assignment_filters(
-        user,
-        assigned_to_user_id=assigned_to_user_id,
-        call_outcome=call_outcome,
-        source=source,
-        exclude_source=exclude_source,
-        master=master,
+    assignee_id, unassigned_only, include_placed, pool_for_user_id, admin_sent_only = (
+        _table_assignment_filters(
+            user,
+            assigned_to_user_id=assigned_to_user_id,
+            call_outcome=call_outcome,
+            source=source,
+            exclude_source=exclude_source,
+            master=master,
+            in_interested_clients=in_interested_clients,
+        )
     )
     result = leads_module.list_leads_table(
         db,
@@ -398,6 +412,7 @@ def list_leads_table(
         source=source,
         exclude_source=exclude_source,
         call_outcome=call_outcome,
+        in_interested_clients=in_interested_clients,
         market_role=market_role,
         q=q,
         sort_by=sort_by,
@@ -408,6 +423,7 @@ def list_leads_table(
         unassigned_only=unassigned_only,
         pool_for_user_id=pool_for_user_id,
         include_placed_outcomes=include_placed,
+        admin_sent_only=admin_sent_only,
     )
     return LeadTableResponse(**result)
 
@@ -424,6 +440,7 @@ def list_leads_table_ids(
     source: str | None = None,
     exclude_source: str | None = None,
     call_outcome: str | None = None,
+    in_interested_clients: bool = False,
     market_role: str | None = None,
     q: str | None = None,
     sort_by: str = "created_at",
@@ -433,13 +450,16 @@ def list_leads_table_ids(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
-    assignee_id, unassigned_only, include_placed, pool_for_user_id = _table_assignment_filters(
-        user,
-        assigned_to_user_id=assigned_to_user_id,
-        call_outcome=call_outcome,
-        source=source,
-        exclude_source=exclude_source,
-        master=master,
+    assignee_id, unassigned_only, include_placed, pool_for_user_id, admin_sent_only = (
+        _table_assignment_filters(
+            user,
+            assigned_to_user_id=assigned_to_user_id,
+            call_outcome=call_outcome,
+            source=source,
+            exclude_source=exclude_source,
+            master=master,
+            in_interested_clients=in_interested_clients,
+        )
     )
     result = leads_module.list_leads_table_ids(
         db,
@@ -453,6 +473,7 @@ def list_leads_table_ids(
         source=source,
         exclude_source=exclude_source,
         call_outcome=call_outcome,
+        in_interested_clients=in_interested_clients,
         market_role=market_role,
         q=q,
         sort_by=sort_by,
@@ -461,6 +482,7 @@ def list_leads_table_ids(
         unassigned_only=unassigned_only,
         pool_for_user_id=pool_for_user_id,
         include_placed_outcomes=include_placed,
+        admin_sent_only=admin_sent_only,
     )
     return LeadTableIdsResponse(**result)
 
@@ -509,7 +531,7 @@ def update_lead_table_row(
             data.pop("assigned_to", None)
     try:
         row = leads_module.update_lead_table_row(
-            db, lead_id, data, remarks_by=user.username
+            db, lead_id, data, remarks_by=user.username, by_user_id=user.id
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -574,7 +596,6 @@ def bulk_assign_lead_table_rows(
     db: Session = Depends(get_db),
     user: AppUser = Depends(require_admin),
 ):
-    del user
     if not payload.lead_ids:
         raise HTTPException(400, "Select at least one lead to assign")
     try:
@@ -582,10 +603,35 @@ def bulk_assign_lead_table_rows(
             db,
             payload.lead_ids,
             assigned_to_user_id=payload.assigned_to_user_id,
+            by_user_id=user.id,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return LeadTableBulkAssignResponse(**result)
+
+
+@router.post(
+    "/table/interested-clients-membership",
+    response_model=LeadTableInterestedClientsMembershipResponse,
+)
+def set_interested_clients_membership(
+    payload: LeadTableInterestedClientsMembershipRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    """Add or remove leads from the Interested Clients table."""
+    if not payload.lead_ids:
+        raise HTTPException(400, "Select at least one lead")
+    for lead_id in payload.lead_ids:
+        _require_buyer_access(db, user, lead_id)
+    from modules import interested_follow_ups as follow_ups_module
+
+    result = follow_ups_module.set_interested_clients_list_membership(
+        db,
+        buyer_ids=payload.lead_ids,
+        in_list=payload.in_list,
+    )
+    return LeadTableInterestedClientsMembershipResponse(**result)
 
 
 def _maintenance_assignee_scope(

@@ -57,10 +57,12 @@ def _run_ai_mode_email_job():
         from modules import ai_mode as ai_mode_module
 
         result = ai_mode_module.process_all_enabled_email_users(db)
-        if result.get("replied"):
+        q = result.get("queries") or {}
+        if q.get("created") or q.get("matched") or result.get("replied"):
             print(
-                f"AI Mode email auto-reply: users={result.get('users')} "
-                f"replied={result.get('replied')} processed={result.get('processed')}",
+                f"AI Mode job: mailbox_users={q.get('users')} "
+                f"queries_matched={q.get('matched')} created={q.get('created')} "
+                f"auto_reply_users={result.get('users')} replied={result.get('replied')}",
                 flush=True,
             )
     except Exception as exc:  # noqa: BLE001

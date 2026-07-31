@@ -24,7 +24,8 @@ INBOX_REPLIED = "inbox_replied"
 BRAND_ASSISTANT_SESSION = "brand_assistant_session"
 
 _OUTCOME_LABELS = {
-    "interested": "Interested",
+    "interested": "Client is Interested",
+    "follow_up": "Follow up",
     "not_interested": "Not interested",
     "not_received_call": "Did not receive call",
 }
@@ -32,6 +33,7 @@ _OUTCOME_LABELS = {
 _EMPTY_COUNTS = {
     "calls_logged": 0,
     "outcomes_interested": 0,
+    "outcomes_follow_up": 0,
     "outcomes_not_interested": 0,
     "outcomes_not_received_call": 0,
     "call_remarks": 0,
@@ -135,6 +137,8 @@ def _bump_counts(counts: dict[str, int], event: UserActivityEvent) -> None:
         outcome = (event.details or {}).get("outcome") or ""
         if outcome == "interested":
             counts["outcomes_interested"] += qty
+        elif outcome == "follow_up":
+            counts["outcomes_follow_up"] += qty
         elif outcome == "not_interested":
             counts["outcomes_not_interested"] += qty
         elif outcome == "not_received_call":
@@ -338,6 +342,7 @@ def _build_rule_based_summary(report: dict[str, Any]) -> str:
         return "\n".join(lines)
 
     interested = int(counts.get("outcomes_interested") or 0)
+    follow_up = int(counts.get("outcomes_follow_up") or 0)
     not_interested = int(counts.get("outcomes_not_interested") or 0)
     no_answer = int(counts.get("outcomes_not_received_call") or 0)
 
@@ -346,7 +351,8 @@ def _build_rule_based_summary(report: dict[str, Any]) -> str:
             "",
             "Key volumes:",
             f"- Calls placed: {counts.get('calls_logged', 0)}",
-            f"- Call outcomes: {interested} interested, {not_interested} not interested, {no_answer} did not receive call",
+            f"- Call outcomes: {interested} client interested, {follow_up} follow up, "
+            f"{not_interested} not interested, {no_answer} did not receive call",
             f"- Call remarks added: {counts.get('call_remarks', 0)}",
             f"- Leads imported: {counts.get('leads_imported', 0)}",
             f"- Lead table edits: {counts.get('table_edits', 0)}",
@@ -361,6 +367,8 @@ def _build_rule_based_summary(report: dict[str, Any]) -> str:
     highlights: list[str] = []
     if interested:
         highlights.append(f"{interested} interested outcome{'s' if interested != 1 else ''}")
+    if follow_up:
+        highlights.append(f"{follow_up} follow-up outcome{'s' if follow_up != 1 else ''}")
     if counts.get("bulk_emails_sent"):
         highlights.append(f"{counts['bulk_emails_sent']} bulk email{'s' if counts['bulk_emails_sent'] != 1 else ''} sent")
     if counts.get("leads_imported"):
