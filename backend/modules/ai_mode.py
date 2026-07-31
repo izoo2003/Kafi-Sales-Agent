@@ -210,12 +210,14 @@ def _message_key(*parts: str) -> str:
     return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:64]
 
 
-def _already_replied(db: Session, user_id: int, message_key: str) -> bool:
+def _already_sent(db: Session, user_id: int, message_key: str) -> bool:
+    """Only successful sends block retries — prior errors may be retried."""
     return (
         db.query(AiModeAutoReplyLog.id)
         .filter(
             AiModeAutoReplyLog.user_id == user_id,
             AiModeAutoReplyLog.message_key == message_key,
+            AiModeAutoReplyLog.status == "sent",
         )
         .first()
         is not None
@@ -234,7 +236,25 @@ def _log_reply(
     status: str,
     detail: str | None = None,
 ) -> None:
-    if _already_replied(db, user_id, message_key):
+    existing = (
+        db.query(AiModeAutoReplyLog)
+        .filter(
+            AiModeAutoReplyLog.user_id == user_id,
+            AiModeAutoReplyLog.message_key == message_key,
+        )
+        .order_by(AiModeAutoReplyLog.id.desc())
+        .first()
+    )
+    if existing:
+        if existing.status == "sent":
+            return
+        existing.recipient = recipient
+        existing.subject = subject
+        existing.preview = (preview or "")[:2000] or None
+        existing.status = status
+        existing.detail = detail
+        existing.channel = channel
+        db.commit()
         return
     db.add(
         AiModeAutoReplyLog(
@@ -275,12 +295,18 @@ def list_auto_reply_log(db: Session, user_id: int, *, limit: int = 50) -> list[d
 
 
 def process_email_auto_replies_for_user(db: Session, user: AppUser) -> dict[str, Any]:
-    """Scan inbox (+ junk if available) and auto-reply to query emails when AI Mode is on."""
+    """Auto-reply to the latest matching unread query email (one per run).
+
+    Scans inbox (+ junk), picks the newest inbound unread that matches keywords
+    and has not already been sent successfully, then sends a single reply via
+    the configured outbound path (Vercel mailer when set).
+    """
     settings = get_or_create_settings(db, user.id)
     if not settings.enabled or not settings.email_auto_reply_enabled:
         return {"processed": 0, "replied": 0, "skipped": 0, "enabled": False}
 
     from modules import inbox as inbox_module
+    from modules.inbox_cutoff import date_sort_key
     from modules.mailbox_accounts import hosts_enabled, resolve_user_mailbox
 
     if not hosts_enabled() or not resolve_user_mailbox(user):
@@ -293,11 +319,14 @@ def process_email_auto_replies_for_user(db: Session, user: AppUser) -> dict[str,
         }
 
     folders = ["inbox", "junk"]
-
-    replied = 0
-    processed = 0
-    skipped = 0
+    candidates: list[tuple[str, dict[str, Any]]] = []
     errors: list[str] = []
+    skip_reasons: dict[str, int] = {
+        "outbound": 0,
+        "missing_fields": 0,
+        "not_a_query": 0,
+        "already_sent": 0,
+    }
 
     for folder in folders:
         try:
@@ -310,85 +339,143 @@ def process_email_auto_replies_for_user(db: Session, user: AppUser) -> dict[str,
             continue
 
         for msg in messages:
-            processed += 1
             if msg.get("direction") == "outbound":
-                skipped += 1
+                skip_reasons["outbound"] += 1
                 continue
             subject = (msg.get("subject") or "").strip()
             preview = (msg.get("preview") or msg.get("body") or "").strip()
             from_email = (msg.get("from_email") or "").strip()
             uid = str(msg.get("uid") or "")
             if not from_email or not uid:
-                skipped += 1
+                skip_reasons["missing_fields"] += 1
                 continue
 
             blob = f"{subject}\n{preview}"
             if not looks_like_query(blob, settings.query_keywords):
-                skipped += 1
+                skip_reasons["not_a_query"] += 1
                 continue
 
             key = _message_key("email", folder, uid, from_email, subject)
-            if _already_replied(db, user.id, key):
-                skipped += 1
+            if _already_sent(db, user.id, key):
+                skip_reasons["already_sent"] += 1
                 continue
 
-            name = (msg.get("from_name") or "").strip() or from_email.split("@")[0]
-            body = render_template(
-                settings.email_body_template,
-                name=name,
-                form_url=settings.form_url,
-                subject=subject,
-            )
-            reply_subject = render_template(
-                settings.email_subject_template or DEFAULT_EMAIL_SUBJECT,
-                name=name,
-                form_url=settings.form_url,
-                subject=subject,
-            )
-            if subject and not reply_subject.lower().startswith("re:"):
-                # Keep thread association when original subject exists
-                if "{subject}" not in (settings.email_subject_template or ""):
-                    reply_subject = f"Re: {subject}" if subject else reply_subject
+            candidates.append((folder, {**msg, "_ai_key": key}))
 
-            try:
-                result = inbox_module.reply(
-                    user,
-                    uid,
-                    body,
-                    folder=msg.get("folder") or ("INBOX" if folder == "inbox" else folder),
-                    to=from_email,
-                    subject=reply_subject,
-                    include_quote=False,
-                )
-                status = result.get("status") or "error"
-                _log_reply(
-                    db,
-                    user_id=user.id,
-                    channel="email",
-                    message_key=key,
-                    recipient=from_email,
-                    subject=reply_subject,
-                    preview=preview[:400],
-                    status="sent" if status == "sent" else status,
-                    detail=result.get("message"),
-                )
-                if status == "sent":
-                    replied += 1
-                else:
-                    skipped += 1
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"{from_email}: {exc}")
-                skipped += 1
+    scanned = sum(skip_reasons.values()) + len(candidates)
+    # Newest first — one reply per process click / scheduled tick.
+    candidates.sort(
+        key=lambda item: date_sort_key(item[1].get("date")),
+        reverse=True,
+    )
 
     settings.last_email_processed_at = _utcnow()
     db.commit()
-    return {
-        "processed": processed,
-        "replied": replied,
-        "skipped": skipped,
-        "enabled": True,
-        "errors": errors[:5],
-    }
+
+    if not candidates:
+        return {
+            "processed": scanned,
+            "replied": 0,
+            "skipped": scanned,
+            "enabled": True,
+            "mode": "latest_one",
+            "message": (
+                "No matching unread query emails to reply to. "
+                f"Skipped: {skip_reasons}."
+            ),
+            "skip_reasons": skip_reasons,
+            "errors": errors[:5],
+        }
+
+    folder, msg = candidates[0]
+    subject = (msg.get("subject") or "").strip()
+    preview = (msg.get("preview") or msg.get("body") or "").strip()
+    from_email = (msg.get("from_email") or "").strip()
+    uid = str(msg.get("uid") or "")
+    key = str(msg.get("_ai_key") or "")
+    name = (msg.get("from_name") or "").strip() or from_email.split("@")[0]
+    body = render_template(
+        settings.email_body_template,
+        name=name,
+        form_url=settings.form_url,
+        subject=subject,
+    )
+    reply_subject = render_template(
+        settings.email_subject_template or DEFAULT_EMAIL_SUBJECT,
+        name=name,
+        form_url=settings.form_url,
+        subject=subject,
+    )
+    if subject and not reply_subject.lower().startswith("re:"):
+        if "{subject}" not in (settings.email_subject_template or ""):
+            reply_subject = f"Re: {subject}" if subject else reply_subject
+
+    remaining_skipped = scanned - 1  # others in the scan pool not attempted this run
+    try:
+        result = inbox_module.reply(
+            user,
+            uid,
+            body,
+            folder=msg.get("folder") or ("INBOX" if folder == "inbox" else folder),
+            to=from_email,
+            subject=reply_subject,
+            include_quote=False,
+        )
+        status = result.get("status") or "error"
+        detail = result.get("message")
+        _log_reply(
+            db,
+            user_id=user.id,
+            channel="email",
+            message_key=key,
+            recipient=from_email,
+            subject=reply_subject,
+            preview=preview[:400],
+            status="sent" if status == "sent" else status,
+            detail=detail,
+        )
+        if status == "sent":
+            return {
+                "processed": scanned,
+                "replied": 1,
+                "skipped": remaining_skipped,
+                "enabled": True,
+                "mode": "latest_one",
+                "message": f"Replied to latest match: {from_email} — {reply_subject[:80]}",
+                "recipient": from_email,
+                "subject": reply_subject,
+                "skip_reasons": skip_reasons,
+                "remaining_candidates": max(0, len(candidates) - 1),
+                "errors": errors[:5],
+            }
+        return {
+            "processed": scanned,
+            "replied": 0,
+            "skipped": remaining_skipped + 1,
+            "enabled": True,
+            "mode": "latest_one",
+            "message": f"Latest match failed ({from_email}): {detail}",
+            "recipient": from_email,
+            "subject": reply_subject,
+            "skip_reasons": skip_reasons,
+            "remaining_candidates": max(0, len(candidates) - 1),
+            "errors": errors[:5] + ([str(detail)] if detail else []),
+        }
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"{from_email}: {exc}")
+        return {
+            "processed": scanned,
+            "replied": 0,
+            "skipped": remaining_skipped + 1,
+            "enabled": True,
+            "mode": "latest_one",
+            "message": f"Latest match error ({from_email}): {exc}",
+            "recipient": from_email,
+            "subject": reply_subject,
+            "skip_reasons": skip_reasons,
+            "remaining_candidates": max(0, len(candidates) - 1),
+            "errors": errors[:5],
+        }
 
 
 def process_all_enabled_email_users(db: Session) -> dict[str, Any]:
@@ -455,7 +542,7 @@ def maybe_auto_reply_whatsapp(
         contact.wa_id or contact.phone or str(contact.id),
         message_text[:200],
     )
-    if _already_replied(db, user.id, key):
+    if _already_sent(db, user.id, key):
         return {"status": "skipped", "reason": "already_replied"}
 
     body = render_template(

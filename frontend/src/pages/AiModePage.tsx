@@ -162,9 +162,14 @@ export function AiModePage({ onError }: AiModePageProps) {
         if (!saved) return;
       }
       const result = await client.processAiModeEmails();
+      const detail =
+        typeof result.message === "string" && result.message.trim()
+          ? result.message.trim()
+          : null;
       setNotice(
         result.enabled
-          ? `Processed with saved templates · scanned ${result.processed} · replied ${result.replied} · skipped ${result.skipped}`
+          ? detail ||
+              `Processed · scanned ${result.processed} · replied ${result.replied} · skipped ${result.skipped}`
           : "Turn AI Mode on to process emails.",
       );
       const logResult = await client.listAiModeAutoReplies(40);

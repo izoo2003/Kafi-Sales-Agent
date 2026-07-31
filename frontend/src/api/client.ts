@@ -2216,6 +2216,12 @@ export interface AiModeProcessResult {
   replied: number;
   skipped: number;
   enabled: boolean;
+  mode?: string;
+  message?: string;
+  recipient?: string;
+  subject?: string;
+  remaining_candidates?: number;
+  skip_reasons?: Record<string, number>;
   error?: string;
   errors?: string[];
 }
