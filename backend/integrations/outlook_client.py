@@ -1106,9 +1106,9 @@ class OutlookClient:
                     "message": (
                         "SMTP send failed: timed out. "
                         "Railway Hobby blocks outbound SMTP (ports 25/465/587). "
-                        "Set RESEND_API_KEY (HTTPS send) after verifying kafi-group.com "
-                        "in Resend, or upgrade Railway to Pro for SMTP. "
-                        f"Detail: {err}"
+                        "Set MAILER_HANDOFF_SECRET + MAILER_PUBLIC_URL so sends go "
+                        "through the Vercel mailer, or set RESEND_API_KEY, or upgrade "
+                        f"Railway to Pro. Detail: {err}"
                     ),
                 }
             return {"status": "error", "message": f"SMTP send failed: {err}"}
@@ -1264,6 +1264,25 @@ class OutlookClient:
         if not to:
             return {"status": "error", "message": "Recipient email is missing"}
         if not self._use_oauth():
+            # Prefer Vercel mailer (SMTP off Railway Hobby) when configured.
+            from integrations.mailer_client import mailer_configured, send_via_mailer
+
+            if mailer_configured() and not attachments:
+                # Tracking pixels still applied when sending via mailer HTML body.
+                from modules.email_tracking import build_tracked_bodies
+
+                plain_body, html_body = build_tracked_bodies(
+                    body,
+                    interaction_id=interaction_id,
+                    send_mode=send_mode,
+                )
+                send_body = html_body or plain_body
+                return send_via_mailer(
+                    to=to,
+                    subject=subject,
+                    body=send_body,
+                    html=bool(html_body),
+                )
             if self._use_resend():
                 return self._send_resend(
                     to=to,

@@ -309,6 +309,11 @@ def health():
         "mailbox_credentials_key_set": bool((settings.mailbox_credentials_key or "").strip()),
         "mailbox_per_user_env": per_user,
         "resend_configured": bool((settings.resend_api_key or "").strip()),
+        "mailer_configured": bool(
+            (settings.mailer_handoff_secret or "").strip()
+            and (settings.mailer_public_url or "").strip()
+        ),
+        "mailer_public_url": (settings.mailer_public_url or "").strip() or None,
         "outlook_configured": outlook_client.is_configured,
         "mailbox_configured": hosts_enabled(),
         "outbound_email_configured": mail_client.is_configured,

@@ -412,7 +412,7 @@ export function AiModePage({ onError }: AiModePageProps) {
                   </thead>
                   <tbody>
                     {logs.map((row) => (
-                      <tr key={row.id} className="border-b border-slate-800/60 text-slate-300">
+                      <tr key={row.id} className="border-b border-slate-800/60 text-slate-300 align-top">
                         <td className="py-2 pr-3 whitespace-nowrap text-slate-500">
                           {row.created_at
                             ? new Date(row.created_at).toLocaleString()
@@ -420,7 +420,24 @@ export function AiModePage({ onError }: AiModePageProps) {
                         </td>
                         <td className="py-2 pr-3 capitalize">{row.channel}</td>
                         <td className="py-2 pr-3">{row.recipient || "—"}</td>
-                        <td className="py-2 pr-3">{row.status}</td>
+                        <td className="py-2 pr-3">
+                          <span
+                            className={
+                              row.status === "sent"
+                                ? "text-emerald-400"
+                                : row.status === "error"
+                                  ? "text-rose-400"
+                                  : undefined
+                            }
+                          >
+                            {row.status}
+                          </span>
+                          {row.status === "error" && row.detail ? (
+                            <p className="mt-1 max-w-xs text-[11px] leading-snug text-rose-300/80 whitespace-normal">
+                              {row.detail}
+                            </p>
+                          ) : null}
+                        </td>
                         <td className="py-2 truncate max-w-md">
                           {row.subject || row.preview || "—"}
                         </td>
