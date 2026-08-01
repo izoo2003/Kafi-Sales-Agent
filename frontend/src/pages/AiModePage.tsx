@@ -6,7 +6,10 @@ import {
   type AiModeCallActivityRow,
   type AiModeFollowUpActivityRow,
   type AiModeInterestedActivityRow,
+  type AiModeInterestedClientRow,
   type AiModeInterestedUserScore,
+  type AiModeNegotiationClientRow,
+  type AiModeQuotationSentClientRow,
   type AiModeNotInterestedActivityRow,
   type AiModeNotInterestedUserScore,
   type AiModeInterestedLeadRow,
@@ -183,6 +186,25 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
   const [interestedByUser, setInterestedByUser] = useState<
     AiModeInterestedUserScore[]
   >([]);
+  const [interestedClientRows, setInterestedClientRows] = useState<
+    AiModeInterestedClientRow[]
+  >([]);
+  const [interestedClientTotal, setInterestedClientTotal] = useState(0);
+  const [quotationUpdatingId, setQuotationUpdatingId] = useState<number | null>(
+    null,
+  );
+  const [quotationSentRows, setQuotationSentRows] = useState<
+    AiModeQuotationSentClientRow[]
+  >([]);
+  const [quotationSentTotal, setQuotationSentTotal] = useState(0);
+  const [meetingUpdatingId, setMeetingUpdatingId] = useState<number | null>(null);
+  const [negotiationRows, setNegotiationRows] = useState<AiModeNegotiationClientRow[]>(
+    [],
+  );
+  const [negotiationTotal, setNegotiationTotal] = useState(0);
+  const [negotiationUpdatingId, setNegotiationUpdatingId] = useState<number | null>(
+    null,
+  );
   const [notInterestedActivityRows, setNotInterestedActivityRows] = useState<
     AiModeNotInterestedActivityRow[]
   >([]);
@@ -256,14 +278,20 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
         stageFilter === "calling" ||
         stageFilter === "follow_up" ||
         stageFilter === "interested" ||
-        stageFilter === "not_interested";
+        stageFilter === "not_interested" ||
+        stageFilter === "quotation_sent" ||
+        stageFilter === "negotiation";
       const [data] = await Promise.all([
         client.listAiModeLifecycle({
           // Activity / grade feeds — other stages list companies.
           stage:
             stageFilter && !skipCompanyRows ? stageFilter : undefined,
           search:
-            skipCompanyRows && stageFilter !== "potential_clients"
+            skipCompanyRows &&
+            stageFilter !== "potential_clients" &&
+            stageFilter !== "interested" &&
+            stageFilter !== "quotation_sent" &&
+            stageFilter !== "negotiation"
               ? undefined
               : lifecycleSearch.trim() || undefined,
           limit: 100,
@@ -283,7 +311,9 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
             r.stage !== "calling" &&
             r.stage !== "follow_up" &&
             r.stage !== "interested" &&
-            r.stage !== "not_interested",
+            r.stage !== "not_interested" &&
+            r.stage !== "quotation_sent" &&
+            r.stage !== "negotiation",
         ),
       );
       setPipeline(data.pipeline || {});
@@ -308,6 +338,12 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
       setInterestedInListCount(interested.total_in_list || 0);
       setInterestedMyCount(interested.my_placed_count || 0);
       setInterestedByUser(interested.by_user || []);
+      setInterestedClientRows(data.interested_clients?.rows || []);
+      setInterestedClientTotal(data.interested_clients?.total || 0);
+      setQuotationSentRows(data.quotation_sent_clients?.rows || []);
+      setQuotationSentTotal(data.quotation_sent_clients?.total || 0);
+      setNegotiationRows(data.negotiation_clients?.rows || []);
+      setNegotiationTotal(data.negotiation_clients?.total || 0);
       const notInterested =
         data.not_interested_activities ||
         (await client.listAiModeNotInterestedActivities({ limit: 100 }));
@@ -647,6 +683,57 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
       await loadLifecycle();
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to update stage");
+    }
+  }
+
+  async function markQuotationSent(buyerId: number) {
+    setQuotationUpdatingId(buyerId);
+    try {
+      await client.updateAiModeLifecycle(buyerId, {
+        stage: "quotation_sent",
+        notes: "Quotation sent",
+      });
+      setNotice("Client moved to Quotation Sent.");
+      window.setTimeout(() => setNotice(null), 4000);
+      await loadLifecycle();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to update quotation status");
+    } finally {
+      setQuotationUpdatingId(null);
+    }
+  }
+
+  async function markMeetingDone(buyerId: number) {
+    setMeetingUpdatingId(buyerId);
+    try {
+      await client.updateAiModeLifecycle(buyerId, {
+        stage: "negotiation",
+        notes: "Meeting done",
+      });
+      setNotice("Client moved to Negotiation.");
+      window.setTimeout(() => setNotice(null), 4000);
+      await loadLifecycle();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to update meeting status");
+    } finally {
+      setMeetingUpdatingId(null);
+    }
+  }
+
+  async function markNegotiationOutcome(buyerId: number, outcome: "won" | "lost") {
+    setNegotiationUpdatingId(buyerId);
+    try {
+      await client.updateAiModeLifecycle(buyerId, {
+        stage: outcome,
+        notes: outcome === "won" ? "Deal won" : "Deal lost",
+      });
+      setNotice(outcome === "won" ? "Client marked as Won." : "Client marked as Lost.");
+      window.setTimeout(() => setNotice(null), 4000);
+      await loadLifecycle();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to update negotiation outcome");
+    } finally {
+      setNegotiationUpdatingId(null);
     }
   }
 
@@ -1268,7 +1355,104 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
               )}
             </section>
           ) : stageFilter === "interested" ? (
-            <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+            <div className="space-y-4">
+              <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-medium text-slate-200">
+                      Interested clients — quotation{" "}
+                      <span className="text-emerald-400/90">
+                        ({interestedClientTotal})
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Clients on the Interested Clients table. Default is{" "}
+                      <span className="text-slate-400">Quotation not send</span>. When
+                      quotation is sent, they move to the Quotation Sent tab.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={lifecycleLoading}
+                    onClick={() => void loadLifecycle()}
+                    className="rounded-lg bg-violet-700 hover:bg-violet-600 disabled:opacity-50 px-3 py-1.5 text-sm"
+                  >
+                    {lifecycleLoading ? "Refreshing…" : "Refresh"}
+                  </button>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    value={lifecycleSearch}
+                    onChange={(e) => setLifecycleSearch(e.target.value)}
+                    placeholder="Search company or country…"
+                    className="flex-1 rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void loadLifecycle()}
+                    className="rounded-lg bg-slate-800 hover:bg-slate-700 px-3 py-2 text-sm"
+                  >
+                    Search
+                  </button>
+                </div>
+                {lifecycleLoading && interestedClientRows.length === 0 ? (
+                  <p className="text-sm text-slate-500">Loading interested clients…</p>
+                ) : interestedClientRows.length === 0 ? (
+                  <p className="text-sm text-slate-500">
+                    No interested clients awaiting quotation. Add clients to Interested
+                    Clients from the leads table or mark a call as Client is Interested.
+                  </p>
+                ) : (
+                  <div className="overflow-x-auto rounded-xl border border-slate-800">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-left text-slate-500 border-b border-slate-800 bg-slate-950">
+                          <th className="py-2 px-3">Company</th>
+                          <th className="py-2 px-3">Added</th>
+                          <th className="py-2 px-3 min-w-[12rem]">Quotation</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {interestedClientRows.map((row) => (
+                          <tr
+                            key={row.buyer_id}
+                            className="border-b border-slate-800/60"
+                          >
+                            <td className="py-2 px-3 text-slate-200">
+                              <div>{row.company_name}</div>
+                              <div className="text-xs text-slate-500">
+                                {row.country || "—"}
+                              </div>
+                            </td>
+                            <td className="py-2 px-3 text-slate-500 whitespace-nowrap">
+                              {row.interested_at
+                                ? new Date(row.interested_at).toLocaleString()
+                                : "—"}
+                            </td>
+                            <td className="py-2 px-3">
+                              <select
+                                value={row.quotation_status}
+                                disabled={quotationUpdatingId === row.buyer_id}
+                                onChange={(e) => {
+                                  if (e.target.value === "sent") {
+                                    void markQuotationSent(row.buyer_id);
+                                  }
+                                }}
+                                className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-slate-200 disabled:opacity-50"
+                              >
+                                <option value="not_sent">Quotation not send</option>
+                                <option value="sent">Quotation send</option>
+                              </select>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+
+              <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h3 className="text-sm font-medium text-slate-200">
@@ -1336,7 +1520,8 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                   ))}
                 </ul>
               )}
-            </section>
+              </section>
+            </div>
           ) : stageFilter === "not_interested" ? (
             <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1405,6 +1590,202 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                     </li>
                   ))}
                 </ul>
+              )}
+            </section>
+          ) : stageFilter === "quotation_sent" ? (
+            <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-medium text-slate-200">
+                    Quotation sent — meeting{" "}
+                    <span className="text-emerald-400/90">({quotationSentTotal})</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Clients with quotation sent. Default is{" "}
+                    <span className="text-slate-400">Meeting not done</span>. When the
+                    meeting is complete, they move to Negotiation.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={lifecycleLoading}
+                  onClick={() => void loadLifecycle()}
+                  className="rounded-lg bg-violet-700 hover:bg-violet-600 disabled:opacity-50 px-3 py-1.5 text-sm"
+                >
+                  {lifecycleLoading ? "Refreshing…" : "Refresh"}
+                </button>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  value={lifecycleSearch}
+                  onChange={(e) => setLifecycleSearch(e.target.value)}
+                  placeholder="Search company or country…"
+                  className="flex-1 rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
+                />
+                <button
+                  type="button"
+                  onClick={() => void loadLifecycle()}
+                  className="rounded-lg bg-slate-800 hover:bg-slate-700 px-3 py-2 text-sm"
+                >
+                  Search
+                </button>
+              </div>
+              {lifecycleLoading && quotationSentRows.length === 0 ? (
+                <p className="text-sm text-slate-500">Loading quotation sent clients…</p>
+              ) : quotationSentRows.length === 0 ? (
+                <p className="text-sm text-slate-500">
+                  No clients in Quotation Sent yet. Mark quotation as sent from the
+                  Interested tab.
+                </p>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-slate-800">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-slate-500 border-b border-slate-800 bg-slate-950">
+                        <th className="py-2 px-3">Company</th>
+                        <th className="py-2 px-3">Since</th>
+                        <th className="py-2 px-3 min-w-[12rem]">Meeting</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {quotationSentRows.map((row) => (
+                        <tr
+                          key={row.buyer_id}
+                          className="border-b border-slate-800/60"
+                        >
+                          <td className="py-2 px-3 text-slate-200">
+                            <div>{row.company_name}</div>
+                            <div className="text-xs text-slate-500">
+                              {row.country || "—"}
+                            </div>
+                          </td>
+                          <td className="py-2 px-3 text-slate-500 whitespace-nowrap">
+                            {row.stage_entered_at
+                              ? new Date(row.stage_entered_at).toLocaleString()
+                              : "—"}
+                          </td>
+                          <td className="py-2 px-3">
+                            <select
+                              value={row.meeting_status}
+                              disabled={meetingUpdatingId === row.buyer_id}
+                              onChange={(e) => {
+                                if (e.target.value === "done") {
+                                  void markMeetingDone(row.buyer_id);
+                                }
+                              }}
+                              className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-slate-200 disabled:opacity-50"
+                            >
+                              <option value="not_done">Meeting not done</option>
+                              <option value="done">Meeting done</option>
+                            </select>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          ) : stageFilter === "negotiation" ? (
+            <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-medium text-slate-200">
+                    Negotiation{" "}
+                    <span className="text-emerald-400/90">({negotiationTotal})</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Clients in active negotiation. Use{" "}
+                    <span className="text-emerald-400">✓</span> for Won or{" "}
+                    <span className="text-rose-400">✕</span> for Lost to close the deal.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={lifecycleLoading}
+                  onClick={() => void loadLifecycle()}
+                  className="rounded-lg bg-violet-700 hover:bg-violet-600 disabled:opacity-50 px-3 py-1.5 text-sm"
+                >
+                  {lifecycleLoading ? "Refreshing…" : "Refresh"}
+                </button>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  value={lifecycleSearch}
+                  onChange={(e) => setLifecycleSearch(e.target.value)}
+                  placeholder="Search company or country…"
+                  className="flex-1 rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
+                />
+                <button
+                  type="button"
+                  onClick={() => void loadLifecycle()}
+                  className="rounded-lg bg-slate-800 hover:bg-slate-700 px-3 py-2 text-sm"
+                >
+                  Search
+                </button>
+              </div>
+              {lifecycleLoading && negotiationRows.length === 0 ? (
+                <p className="text-sm text-slate-500">Loading negotiation clients…</p>
+              ) : negotiationRows.length === 0 ? (
+                <p className="text-sm text-slate-500">
+                  No clients in Negotiation yet. Mark meeting as done from Quotation Sent.
+                </p>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-slate-800">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-slate-500 border-b border-slate-800 bg-slate-950">
+                        <th className="py-2 px-3">Company</th>
+                        <th className="py-2 px-3">Since</th>
+                        <th className="py-2 px-3 w-[8rem]">Outcome</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {negotiationRows.map((row) => (
+                        <tr
+                          key={row.buyer_id}
+                          className="border-b border-slate-800/60"
+                        >
+                          <td className="py-2 px-3 text-slate-200">
+                            <div>{row.company_name}</div>
+                            <div className="text-xs text-slate-500">
+                              {row.country || "—"}
+                            </div>
+                          </td>
+                          <td className="py-2 px-3 text-slate-500 whitespace-nowrap">
+                            {row.stage_entered_at
+                              ? new Date(row.stage_entered_at).toLocaleString()
+                              : "—"}
+                          </td>
+                          <td className="py-2 px-3">
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={negotiationUpdatingId === row.buyer_id}
+                                onClick={() => void markNegotiationOutcome(row.buyer_id, "won")}
+                                className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50"
+                                title="Mark as Won"
+                                aria-label={`Mark ${row.company_name} as Won`}
+                              >
+                                ✓
+                              </button>
+                              <button
+                                type="button"
+                                disabled={negotiationUpdatingId === row.buyer_id}
+                                onClick={() => void markNegotiationOutcome(row.buyer_id, "lost")}
+                                className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-rose-500/40 bg-rose-500/15 text-rose-300 hover:bg-rose-500/25 disabled:opacity-50"
+                                title="Mark as Lost"
+                                aria-label={`Mark ${row.company_name} as Lost`}
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </section>
           ) : stageFilter === "potential_clients" ? (
@@ -1527,7 +1908,11 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                     ? "Select the Interested tab above to see who added clients to Interested Clients."
                     : stageFilter === "not_interested"
                       ? "Select the Not Interested tab above to see who marked clients as not interested."
-                    : "No companies in this stage yet. Use New Lead, Potential Clients, Assigned, Calling, Follow-up, Interested, or Not Interested for the activity / grade feeds — or move a company into this stage from the pipeline."}
+                      : stageFilter === "quotation_sent"
+                        ? "Select Quotation Sent to track meetings after quotation."
+                        : stageFilter === "negotiation"
+                          ? "Select Negotiation to close deals as Won or Lost."
+                    : "No companies in this stage yet. Move clients through Interested → Quotation Sent → Negotiation → Won/Lost using the pipeline tabs above."}
                 </p>
               ) : (
                 <div className="overflow-x-auto rounded-xl border border-slate-800">

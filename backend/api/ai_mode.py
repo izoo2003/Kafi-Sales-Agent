@@ -197,6 +197,23 @@ def list_lifecycle(
     result["potential_clients"] = ai_mode_module.list_potential_clients(
         db, search=search if stage == "potential_clients" else None, limit=100
     )
+    result["interested_clients"] = ai_mode_module.list_interested_clients_for_lifecycle(
+        db,
+        search=search if stage == "interested" else None,
+        limit=100,
+    )
+    result["quotation_sent_clients"] = (
+        ai_mode_module.list_quotation_sent_clients_for_lifecycle(
+            db,
+            search=search if stage == "quotation_sent" else None,
+            limit=100,
+        )
+    )
+    result["negotiation_clients"] = ai_mode_module.list_negotiation_clients_for_lifecycle(
+        db,
+        search=search if stage == "negotiation" else None,
+        limit=100,
+    )
     # Back-compat for older frontends.
     result["interested_leads"] = result["potential_clients"]
     return result

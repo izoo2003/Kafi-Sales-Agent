@@ -338,7 +338,14 @@ def initiate_lead_call(
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    company = result.get("company_name") or f"Lead #{lead_id}"
+    from modules import ai_mode as ai_mode_module
+
+    company = ai_mode_module._resolve_call_company_name(
+        db,
+        company_name=result.get("company_name"),
+        buyer_id=lead_id,
+        interaction_id=result.get("id"),
+    )
     contact_name = result.get("contact_name") or "contact"
     phone = result.get("lead_phone") or ""
     activity_module.log_activity(
@@ -351,7 +358,6 @@ def initiate_lead_call(
         entity_id=result.get("id"),
         details={"buyer_id": lead_id, "company_name": company},
     )
-    from modules import ai_mode as ai_mode_module
 
     ai_mode_module.record_call_activity(
         db,
@@ -382,7 +388,14 @@ def initiate_manual_call(
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    company = result.get("company_name") or "Manual dial"
+    from modules import ai_mode as ai_mode_module
+
+    company = ai_mode_module._resolve_call_company_name(
+        db,
+        company_name=result.get("company_name"),
+        buyer_id=result.get("buyer_id"),
+        interaction_id=result.get("id"),
+    )
     contact_name = result.get("contact_name") or payload.contact_name or "contact"
     phone = result.get("lead_phone") or payload.phone
     activity_module.log_activity(
@@ -395,7 +408,6 @@ def initiate_manual_call(
         entity_id=result.get("id"),
         details={"buyer_id": result.get("buyer_id"), "company_name": company},
     )
-    from modules import ai_mode as ai_mode_module
 
     ai_mode_module.record_call_activity(
         db,

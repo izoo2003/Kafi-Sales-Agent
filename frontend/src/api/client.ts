@@ -2490,6 +2490,9 @@ export interface AiModeLifecycleListResponse {
   not_interested_activities?: AiModeNotInterestedActivitiesResponse;
   interested_leads?: AiModeInterestedLeadsResponse;
   potential_clients?: AiModeInterestedLeadsResponse;
+  interested_clients?: AiModeInterestedClientsResponse;
+  quotation_sent_clients?: AiModeQuotationSentClientsResponse;
+  negotiation_clients?: AiModeNegotiationClientsResponse;
 }
 
 export interface AiModeAssignmentRow {
@@ -2580,6 +2583,44 @@ export interface AiModeNotInterestedActivitiesResponse {
   latest_id: number;
   by_user: AiModeNotInterestedUserScore[];
   rows: AiModeNotInterestedActivityRow[];
+}
+
+export interface AiModeInterestedClientRow {
+  buyer_id: number;
+  company_name: string;
+  country: string | null;
+  interested_at: string | null;
+  lifecycle_stage: string;
+  quotation_status: "not_sent" | "sent";
+}
+
+export interface AiModeInterestedClientsResponse {
+  total: number;
+  rows: AiModeInterestedClientRow[];
+}
+
+export interface AiModeLifecycleClientRow {
+  buyer_id: number;
+  company_name: string;
+  country: string | null;
+  stage_entered_at: string | null;
+  lifecycle_stage: string;
+}
+
+export interface AiModeQuotationSentClientRow extends AiModeLifecycleClientRow {
+  meeting_status: "not_done" | "done";
+}
+
+export interface AiModeQuotationSentClientsResponse {
+  total: number;
+  rows: AiModeQuotationSentClientRow[];
+}
+
+export type AiModeNegotiationClientRow = AiModeLifecycleClientRow;
+
+export interface AiModeNegotiationClientsResponse {
+  total: number;
+  rows: AiModeNegotiationClientRow[];
 }
 
 export interface AiModeInterestedLeadRow {

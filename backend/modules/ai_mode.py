@@ -51,6 +51,11 @@ LIFECYCLE_STAGES: list[dict[str, str]] = [
 
 LIFECYCLE_STAGE_KEYS = {s["key"] for s in LIFECYCLE_STAGES}
 
+# Interested Clients table → move to Quotation Sent when quotation is marked sent.
+_POST_QUOTATION_LIFECYCLE_STAGES = frozenset(
+    {"quotation_sent", "negotiation", "won", "lost"}
+)
+
 LEAD_TRANSFER_BATCH_SIZE = 20
 
 DEFAULT_QUERY_KEYWORDS = [
@@ -2105,21 +2110,201 @@ def _mark_buyer_calling_stage(
     row.updated_at = now
 
 
+_LEAD_ID_PLACEHOLDER_RE = re.compile(r"^lead\s*#\s*\d+$", re.I)
+_WEAK_CALL_COMPANY_NAMES = frozenset(
+    {"", "a company", "unknown", "manual dial", "unknown client", "contact"}
+)
+_GENERIC_EMAIL_DOMAINS = frozenset(
+    {
+        "gmail.com",
+        "googlemail.com",
+        "yahoo.com",
+        "hotmail.com",
+        "outlook.com",
+        "live.com",
+        "icloud.com",
+        "aol.com",
+        "mail.com",
+        "protonmail.com",
+        "yandex.com",
+    }
+)
+_GENERIC_WEBSITE_HOSTS = frozenset(
+    {
+        "facebook.com",
+        "instagram.com",
+        "linkedin.com",
+        "twitter.com",
+        "x.com",
+        "youtube.com",
+        "tiktok.com",
+        "whatsapp.com",
+    }
+)
+
+
+def _norm_label_key(text: str | None) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _looks_like_location_label(name: str | None, *, buyer: Buyer | None = None) -> bool:
+    """True when ``name`` is a country/city/address — not a company."""
+    n = (name or "").strip()
+    if not n:
+        return True
+    from modules.buyer_name_repair import classify_location_name
+
+    if classify_location_name(n) is not None:
+        return True
+    if buyer:
+        country = (buyer.country or "").strip()
+        if country and _norm_label_key(n) == _norm_label_key(country):
+            return True
+        city = (buyer.city or "").strip()
+        if city and _norm_label_key(n) == _norm_label_key(city):
+            return True
+    return False
+
+
+def _brand_from_host(host: str | None) -> str | None:
+    h = (host or "").strip().lower()
+    if h.startswith("www."):
+        h = h[4:]
+    if not h or h in _GENERIC_WEBSITE_HOSTS:
+        return None
+    stem = h.split(".")[0]
+    if len(stem) < 3:
+        return None
+    label = stem.replace("-", " ").replace("_", " ").strip()
+    if not label or _is_weak_call_company_name(label):
+        return None
+    return label.title() if label.islower() else label
+
+
+def _display_name_from_website(url: str | None) -> str | None:
+    raw = (url or "").strip()
+    if not raw:
+        return None
+    try:
+        from urllib.parse import urlparse
+
+        if not raw.startswith(("http://", "https://")):
+            raw = f"https://{raw}"
+        return _brand_from_host(urlparse(raw).hostname)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _display_name_from_contact_email(email: str | None) -> str | None:
+    addr = (email or "").strip().lower()
+    if "@" not in addr:
+        return None
+    domain = addr.split("@", 1)[1].strip()
+    if not domain or domain in _GENERIC_EMAIL_DOMAINS:
+        return None
+    return _brand_from_host(domain)
+
+
+def _is_weak_call_company_name(name: str | None) -> bool:
+    n = (name or "").strip()
+    if not n:
+        return True
+    if n.lower() in _WEAK_CALL_COMPANY_NAMES:
+        return True
+    if _LEAD_ID_PLACEHOLDER_RE.match(n):
+        return True
+    return False
+
+
+def _buyer_call_display_name(db: Session, buyer: Buyer) -> str | None:
+    """Prefer real company name — never show country/city stored in company_name."""
+    company = (buyer.company_name or "").strip()
+    if (
+        company
+        and not _is_weak_call_company_name(company)
+        and not _looks_like_location_label(company, buyer=buyer)
+    ):
+        return company
+
+    website_name = _display_name_from_website(buyer.website_url)
+    if website_name and not _looks_like_location_label(website_name, buyer=buyer):
+        return website_name
+
+    contacts = (
+        db.query(Contact)
+        .filter(Contact.buyer_id == buyer.id)
+        .order_by(Contact.id.asc())
+        .all()
+    )
+    for contact in contacts:
+        email_name = _display_name_from_contact_email(contact.email)
+        if email_name and not _looks_like_location_label(email_name, buyer=buyer):
+            return email_name
+
+    for contact in contacts:
+        person = (contact.full_name or "").strip()
+        if (
+            person
+            and not _is_weak_call_company_name(person)
+            and not _looks_like_location_label(person, buyer=buyer)
+        ):
+            return person
+
+    return None
+
+
 def _resolve_call_company_name(
     db: Session,
     *,
     company_name: str | None,
     buyer_id: int | None,
+    interaction_id: int | None = None,
 ) -> str:
+    buyer: Buyer | None = db.get(Buyer, buyer_id) if buyer_id else None
+
+    if buyer:
+        resolved = _buyer_call_display_name(db, buyer)
+        if resolved:
+            return resolved
+
+    if interaction_id:
+        interaction = db.get(Interaction, interaction_id)
+        if interaction:
+            subject = (interaction.subject or "").strip()
+            if subject.lower().startswith("call to "):
+                parsed = subject[8:].strip()
+                if (
+                    parsed
+                    and not _is_weak_call_company_name(parsed)
+                    and not _looks_like_location_label(parsed, buyer=buyer)
+                ):
+                    return parsed
+
+            contact = db.get(Contact, interaction.contact_id)
+            if contact:
+                linked_buyer_id = contact.buyer_id
+                if linked_buyer_id and (not buyer or linked_buyer_id != buyer.id):
+                    linked = db.get(Buyer, linked_buyer_id)
+                    if linked:
+                        resolved = _buyer_call_display_name(db, linked)
+                        if resolved:
+                            return resolved
+                person = (contact.full_name or "").strip()
+                if (
+                    person
+                    and not _is_weak_call_company_name(person)
+                    and not _looks_like_location_label(person, buyer=buyer)
+                ):
+                    return person
+
     name = (company_name or "").strip()
-    weak = {"", "a company", "unknown", "manual dial", "unknown client"}
-    if name.lower() not in weak:
+    if (
+        name
+        and not _is_weak_call_company_name(name)
+        and not _looks_like_location_label(name, buyer=buyer)
+    ):
         return name
-    if buyer_id:
-        buyer = db.get(Buyer, buyer_id)
-        if buyer and (buyer.company_name or "").strip():
-            return buyer.company_name.strip()
-    return name or "Unknown client"
+    return "Unknown client"
 
 
 def _call_activity_message(user_label: str, company_name: str) -> str:
@@ -2140,7 +2325,10 @@ def record_call_activity(
     user = db.get(AppUser, user_id)
     label = _caller_label(user, user_label)
     company = _resolve_call_company_name(
-        db, company_name=company_name, buyer_id=buyer_id
+        db,
+        company_name=company_name,
+        buyer_id=buyer_id,
+        interaction_id=interaction_id,
     )
     message = _call_activity_message(label, company)
 
@@ -2187,7 +2375,10 @@ def list_call_activities(db: Session, *, limit: int = 100) -> dict[str, Any]:
     out_rows: list[dict[str, Any]] = []
     for r in rows:
         company = _resolve_call_company_name(
-            db, company_name=r.company_name, buyer_id=r.buyer_id
+            db,
+            company_name=r.company_name,
+            buyer_id=r.buyer_id,
+            interaction_id=r.interaction_id,
         )
         label = (r.user_label or "").strip() or "Someone"
         out_rows.append(
@@ -2493,6 +2684,206 @@ def _interested_clients_list_count(db: Session) -> int:
         .filter(Buyer.interested_clients_list_at.isnot(None))
         .scalar()
         or 0
+    )
+
+
+def list_interested_clients_for_lifecycle(
+    db: Session,
+    *,
+    search: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Interested Clients table rows awaiting quotation (default: not sent)."""
+    from sqlalchemy import or_
+
+    q = (
+        db.query(Buyer, AiCompanyLifecycle)
+        .outerjoin(AiCompanyLifecycle, AiCompanyLifecycle.buyer_id == Buyer.id)
+        .filter(Buyer.interested_clients_list_at.isnot(None))
+        .filter(
+            or_(
+                AiCompanyLifecycle.id.is_(None),
+                ~AiCompanyLifecycle.stage.in_(_POST_QUOTATION_LIFECYCLE_STAGES),
+            )
+        )
+    )
+    if search and search.strip():
+        like = f"%{search.strip()}%"
+        q = q.filter(
+            or_(
+                Buyer.company_name.ilike(like),
+                Buyer.country.ilike(like),
+            )
+        )
+
+    total = q.count()
+    rows = (
+        q.order_by(Buyer.interested_clients_list_at.desc(), Buyer.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    out_rows: list[dict[str, Any]] = []
+    for buyer, lifecycle in rows:
+        out_rows.append(
+            {
+                "buyer_id": buyer.id,
+                "company_name": buyer.company_name,
+                "country": buyer.country,
+                "interested_at": buyer.interested_clients_list_at.isoformat()
+                if buyer.interested_clients_list_at
+                else None,
+                "lifecycle_stage": lifecycle.stage if lifecycle else "interested",
+                "quotation_status": "not_sent",
+            }
+        )
+    return {"total": total, "rows": out_rows}
+
+
+def mark_buyer_quotation_sent(
+    db: Session,
+    buyer_id: int,
+    *,
+    user_id: int | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Move an interested client to Quotation Sent after quotation is sent."""
+    buyer = db.get(Buyer, buyer_id)
+    if not buyer:
+        raise ValueError("Buyer not found")
+    if buyer.interested_clients_list_at is None:
+        raise ValueError("Lead is not on the Interested Clients list")
+
+    return update_lifecycle(
+        db,
+        buyer_id,
+        stage="quotation_sent",
+        notes=(note or "").strip() or "Quotation sent",
+        user_id=user_id,
+    )
+
+
+def _list_lifecycle_stage_clients(
+    db: Session,
+    *,
+    stage: str,
+    search: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Buyers currently at a lifecycle stage (for pipeline action tabs)."""
+    from sqlalchemy import or_
+
+    q = (
+        db.query(Buyer, AiCompanyLifecycle)
+        .join(AiCompanyLifecycle, AiCompanyLifecycle.buyer_id == Buyer.id)
+        .filter(AiCompanyLifecycle.stage == stage)
+    )
+    if search and search.strip():
+        like = f"%{search.strip()}%"
+        q = q.filter(
+            or_(
+                Buyer.company_name.ilike(like),
+                Buyer.country.ilike(like),
+            )
+        )
+
+    total = q.count()
+    rows = (
+        q.order_by(AiCompanyLifecycle.stage_entered_at.desc(), Buyer.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    out_rows: list[dict[str, Any]] = []
+    for buyer, lifecycle in rows:
+        out_rows.append(
+            {
+                "buyer_id": buyer.id,
+                "company_name": buyer.company_name,
+                "country": buyer.country,
+                "stage_entered_at": lifecycle.stage_entered_at.isoformat()
+                if lifecycle.stage_entered_at
+                else None,
+                "lifecycle_stage": lifecycle.stage,
+            }
+        )
+    return {"total": total, "rows": out_rows}
+
+
+def list_quotation_sent_clients_for_lifecycle(
+    db: Session,
+    *,
+    search: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Quotation Sent tab — default meeting not done."""
+    result = _list_lifecycle_stage_clients(
+        db, stage="quotation_sent", search=search, limit=limit, offset=offset
+    )
+    result["rows"] = [
+        {**row, "meeting_status": "not_done"} for row in result.get("rows") or []
+    ]
+    return result
+
+
+def mark_meeting_done(
+    db: Session,
+    buyer_id: int,
+    *,
+    user_id: int | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Move a quotation-sent client to Negotiation after meeting is done."""
+    row = ensure_lifecycle(db, buyer_id)
+    if row.stage != "quotation_sent":
+        raise ValueError("Lead must be in Quotation Sent before marking meeting done")
+    return update_lifecycle(
+        db,
+        buyer_id,
+        stage="negotiation",
+        notes=(note or "").strip() or "Meeting done",
+        user_id=user_id,
+    )
+
+
+def list_negotiation_clients_for_lifecycle(
+    db: Session,
+    *,
+    search: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Negotiation tab — awaiting won/lost decision."""
+    return _list_lifecycle_stage_clients(
+        db, stage="negotiation", search=search, limit=limit, offset=offset
+    )
+
+
+def mark_negotiation_outcome(
+    db: Session,
+    buyer_id: int,
+    *,
+    outcome: str,
+    user_id: int | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Close negotiation as Won or Lost."""
+    key = (outcome or "").strip().lower()
+    if key not in {"won", "lost"}:
+        raise ValueError("Outcome must be won or lost")
+    row = ensure_lifecycle(db, buyer_id)
+    if row.stage != "negotiation":
+        raise ValueError("Lead must be in Negotiation before marking won or lost")
+    default_note = "Deal won" if key == "won" else "Deal lost"
+    return update_lifecycle(
+        db,
+        buyer_id,
+        stage=key,
+        notes=(note or "").strip() or default_note,
+        user_id=user_id,
     )
 
 
