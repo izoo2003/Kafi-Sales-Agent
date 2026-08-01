@@ -305,7 +305,7 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
   }
 
   return (
-    <section className="space-y-4">
+    <section className="space-y-4 w-full min-w-0">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h2 className="text-lg font-medium text-slate-100">Calls</h2>

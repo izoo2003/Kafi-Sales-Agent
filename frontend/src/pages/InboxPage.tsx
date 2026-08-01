@@ -803,7 +803,7 @@ export function InboxPage({
 
   if (!loading && status && !status.configured && !isDraftsView) {
     return (
-      <section className="space-y-4">
+      <section className="space-y-4 w-full min-w-0">
         <h2 className="text-lg font-medium text-slate-100">Mail</h2>
         <div className="p-6 rounded-xl border border-slate-800 bg-slate-900/40 text-slate-400 text-sm space-y-2">
           <p>Mail is not enabled for your account yet.</p>
@@ -898,7 +898,7 @@ export function InboxPage({
   }
 
   return (
-    <section className="space-y-4">
+    <section className="space-y-4 w-full min-w-0">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h2 className="text-lg font-medium text-slate-100">

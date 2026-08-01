@@ -746,11 +746,11 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
   }
 
   return (
-    <div className="space-y-5 w-full">
+    <div className="space-y-5 w-full min-w-0">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="text-lg font-medium text-slate-100">AI Mode</h2>
-          <p className="text-sm text-slate-500 mt-1 max-w-2xl">
+          <p className="text-sm text-slate-500 mt-1 max-w-3xl lg:max-w-none">
             {isAdmin ? (
               <>
                 Turn AI Mode on when you leave for the day. Auto-replies go to any{" "}
@@ -1031,7 +1031,7 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
 
       {panel === "lifecycle" && (
         <div className="space-y-4">
-          <div className="flex flex-wrap gap-2">
+          <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:pb-0">
             {stages.map((s) => {
               const count =
                 s.key === "new_lead"
@@ -1056,7 +1056,7 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                   onClick={() =>
                     setStageFilter((prev) => (prev === s.key ? "" : s.key))
                   }
-                  className={`rounded-lg border px-2.5 py-1 text-xs ${
+                  className={`shrink-0 rounded-lg border px-2.5 py-1 text-xs whitespace-nowrap ${
                     stageFilter === s.key
                       ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300"
                       : "border-slate-700 text-slate-400 hover:text-slate-200"

@@ -175,7 +175,7 @@ export function KpiPage({ onError }: KpiPageProps) {
         : "Date";
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 w-full min-w-0">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h2 className="text-xl font-semibold text-slate-100">KPI Generation</h2>

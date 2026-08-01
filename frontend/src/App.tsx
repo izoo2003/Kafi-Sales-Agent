@@ -778,22 +778,6 @@ function DashboardApp() {
     ...(isAdmin ? [{ id: "users" as const, label: "Users", count: 0 }] : []),
   ];
 
-  const isWideTable = tab === "table" && selectedLeadId === null;
-  const isWideMail =
-    tab === "inbox" || tab === "activity" || tab === "email-templates";
-  const isWideContent =
-    isWideTable ||
-    isWideMail ||
-    tab === "whatsapp-templates" ||
-    tab === "whatsapp-inbox" ||
-    tab === "ai-mode" ||
-    (tab === "leads" && selectedLeadId === null) ||
-    (tab === "calls" && selectedLeadId === null) ||
-    tab === "client-history" ||
-    tab === "chatbot" ||
-    tab === "kpi" ||
-    tab === "users";
-
   return (
     <TwilioVoiceProvider>
       <PostCallRemarksModal
@@ -878,11 +862,7 @@ function DashboardApp() {
             />
           </div>
 
-          <main
-            className={`w-full mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 lg:py-8 ${
-              isWideContent || !sidebarOpen ? "max-w-none" : "max-w-6xl"
-            }`}
-          >
+          <main className="w-full max-w-none min-w-0 mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 lg:py-8">
             <CallInitBanner />
             {error && (
               <div className="mb-7 p-4 rounded-lg bg-red-500/10 border border-red-500/30 text-red-200 text-sm">

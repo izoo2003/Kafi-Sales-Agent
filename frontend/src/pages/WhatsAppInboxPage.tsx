@@ -132,7 +132,7 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
   }
 
   return (
-    <section className="space-y-6">
+    <section className="space-y-6 w-full min-w-0">
       <div>
         <h2 className="text-lg font-medium text-slate-100">WhatsApp inbox</h2>
         <p className="text-sm text-slate-500 mt-1 max-w-2xl">

@@ -177,7 +177,7 @@ export function UserManualPage({
   const sections = visibleIndexSections(isAdmin, assignees);
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-8 w-full min-w-0">
       <header className="space-y-2">
         <p className="text-xs uppercase tracking-wider text-emerald-400/80 font-medium flex items-center gap-2">
           <IconBook size="xs" />

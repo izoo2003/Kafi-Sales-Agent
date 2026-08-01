@@ -114,7 +114,7 @@ export function EmailTemplatesPage({ onError, onCountChange }: EmailTemplatesPag
   }
 
   return (
-    <section className="space-y-6">
+    <section className="space-y-6 w-full min-w-0">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h2 className="text-lg font-medium text-slate-100">Email templates</h2>

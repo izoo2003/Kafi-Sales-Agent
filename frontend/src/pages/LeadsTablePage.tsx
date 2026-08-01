@@ -1776,7 +1776,7 @@ export function LeadsTablePage({
       className={
         isFullscreen
           ? "fixed inset-0 z-50 flex flex-col bg-slate-950 p-3 sm:p-4 gap-3 overflow-hidden"
-          : "space-y-4"
+          : "space-y-4 w-full min-w-0"
       }
     >
       <div className="flex items-start justify-between gap-4 flex-wrap shrink-0">

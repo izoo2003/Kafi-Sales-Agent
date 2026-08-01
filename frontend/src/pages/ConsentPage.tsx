@@ -102,7 +102,7 @@ export function ConsentPage({ onError, onSelectLead }: ConsentPageProps) {
   const allSelected = contacts.length > 0 && selected.size === contacts.length;
 
   return (
-    <section className="space-y-4">
+    <section className="space-y-4 w-full min-w-0">
       <div>
         <h2 className="text-lg font-medium text-slate-100">Automated messages</h2>
         <p className="text-sm text-slate-500 mt-1">

@@ -190,7 +190,7 @@ export function EmailActivityPage({ onError, onUnreadChange }: EmailActivityPage
   }
 
   return (
-    <section className="space-y-5">
+    <section className="space-y-5 w-full min-w-0">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-lg font-medium text-slate-100">Email Activity</h2>

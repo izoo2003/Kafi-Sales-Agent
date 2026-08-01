@@ -66,7 +66,7 @@ export function ClientHistoryPage({
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5 w-full min-w-0">
       <div>
         <h1 className="text-xl font-semibold text-slate-100">Client history</h1>
         <p className="text-sm text-slate-400 mt-1">
@@ -76,7 +76,7 @@ export function ClientHistoryPage({
       </div>
 
       <div className="flex flex-col sm:flex-row gap-3 sm:items-end sm:justify-between">
-        <form onSubmit={applySearch} className="flex flex-1 gap-2 max-w-xl">
+        <form onSubmit={applySearch} className="flex w-full min-w-0 flex-1 gap-2 sm:max-w-xl">
           <input
             value={searchDraft}
             onChange={(e) => setSearchDraft(e.target.value)}
@@ -162,7 +162,7 @@ export function ClientHistoryPage({
                     </span>
                   </td>
                   <td className="px-4 py-3 text-slate-400">{row.by || "—"}</td>
-                  <td className="px-4 py-3 text-slate-200 whitespace-pre-wrap break-words max-w-xl">
+                  <td className="px-4 py-3 text-slate-200 whitespace-pre-wrap break-words min-w-[280px]">
                     {row.text}
                   </td>
                 </tr>

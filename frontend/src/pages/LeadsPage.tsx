@@ -54,7 +54,7 @@ export function LeadsPage({ onError, onSelectLead, onTotalChange }: LeadsPagePro
   if (loading && leads.length === 0) return <p className="text-slate-400">Loading leads…</p>;
 
   return (
-    <section className="space-y-4">
+    <section className="space-y-4 w-full min-w-0">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="text-lg font-semibold text-slate-100">Discover Leads</h2>
