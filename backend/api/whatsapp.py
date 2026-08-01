@@ -19,6 +19,10 @@ from api.schemas import (
     WhatsAppConversationRead,
     WhatsAppReplyRequest,
     WhatsAppReplyResponse,
+    WhatsAppTemplateCreateRequest,
+    WhatsAppTemplateCreateResponse,
+    WhatsAppTemplateNotificationsReadRequest,
+    WhatsAppTemplateNotificationsResponse,
     WhatsAppTemplateRead,
     WhatsAppTemplateSyncResponse,
     WhatsAppTestSendRequest,
@@ -52,6 +56,12 @@ def get_whatsapp_config():
         missing.append("WHATSAPP_WEBHOOK_VERIFY_TOKEN")
     if not settings.whatsapp_app_secret:
         missing.append("WHATSAPP_APP_SECRET")
+    meta_api_ok: bool | None = None
+    meta_api_message: str | None = None
+    if settings.whatsapp_access_token and settings.whatsapp_business_account_id:
+        access = whatsapp_client.verify_api_access()
+        meta_api_ok = bool(access.get("ok"))
+        meta_api_message = access.get("message")
     return WhatsAppConfigRead(
         configured=whatsapp_client.is_configured,
         webhook_configured=whatsapp_client.webhook_configured,
@@ -60,6 +70,8 @@ def get_whatsapp_config():
         app_secret_set=bool(settings.whatsapp_app_secret),
         display_number=settings.whatsapp_display_number,
         missing_env=missing,
+        meta_api_ok=meta_api_ok,
+        meta_api_message=meta_api_message,
     )
 
 
@@ -118,6 +130,74 @@ def list_whatsapp_templates(
 
     rows = templates_module.list_templates(db, approved_only=approved_only)
     return [WhatsAppTemplateRead(**templates_module.template_to_dict(r)) for r in rows]
+
+
+@router.post("/templates", response_model=WhatsAppTemplateCreateResponse, status_code=201)
+def create_whatsapp_template(
+    payload: WhatsAppTemplateCreateRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(require_admin),
+):
+    """Submit a new WhatsApp template to Meta for review."""
+    from modules import whatsapp_templates as templates_module
+
+    try:
+        result = templates_module.create_template_for_meta(
+            db,
+            user_id=user.id,
+            name=payload.name,
+            category=payload.category,
+            language=payload.language,
+            body=payload.body,
+            footer=payload.footer,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    log_action(
+        db,
+        entity_type="whatsapp_template",
+        entity_id=result["template"]["id"],
+        action="submitted",
+        actor=user.username,
+        details={
+            "name": result["template"]["name"],
+            "meta_status": result.get("meta_status"),
+        },
+    )
+    return WhatsAppTemplateCreateResponse(**result)
+
+
+@router.get("/templates/notifications", response_model=WhatsAppTemplateNotificationsResponse)
+def list_whatsapp_template_notifications(
+    unread_only: bool = True,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    from modules import whatsapp_templates as templates_module
+
+    return WhatsAppTemplateNotificationsResponse(
+        **templates_module.list_template_notifications(
+            db, user_id=user.id, unread_only=unread_only, limit=limit
+        )
+    )
+
+
+@router.post("/templates/notifications/read")
+def mark_whatsapp_template_notifications_read(
+    payload: WhatsAppTemplateNotificationsReadRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    from modules import whatsapp_templates as templates_module
+
+    updated = templates_module.mark_template_notifications_read(
+        db,
+        user_id=user.id,
+        notification_ids=payload.notification_ids,
+    )
+    return {"updated_count": updated}
 
 
 @router.post("/templates/sync", response_model=WhatsAppTemplateSyncResponse)
@@ -314,7 +394,17 @@ async def receive_whatsapp_webhook(request: Request, db: Session = Depends(get_d
     payload = await request.json()
     for entry in payload.get("entry", []):
         for change in entry.get("changes", []):
+            field = change.get("field")
             value = change.get("value", {})
+
+            if field == "message_template_status_update":
+                try:
+                    from modules import whatsapp_templates as templates_module
+
+                    templates_module.handle_template_status_webhook(db, value)
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
 
             for message in value.get("messages", []):
                 if message.get("type") != "text":

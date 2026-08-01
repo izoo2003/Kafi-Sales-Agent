@@ -1,17 +1,20 @@
-"""Sync + read cache of WhatsApp message templates approved on the Meta WABA.
-
-Templates are authored and approved in Meta Business Manager — this module only
-mirrors their current status locally so the dashboard can pick one for a campaign
-without an extra round-trip per page load.
-"""
+"""Sync, submit, and track WhatsApp message templates on the Meta WABA."""
 
 from __future__ import annotations
 
+import re
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from db.models import WhatsAppTemplate, WhatsAppTemplateStatus
+from db.models import (
+    AppUser,
+    AppUserRole,
+    WhatsAppTemplate,
+    WhatsAppTemplateStatus,
+    WhatsAppTemplateStatusEvent,
+)
 from integrations.whatsapp_client import whatsapp_client
 
 _STATUS_MAP = {
@@ -22,6 +25,17 @@ _STATUS_MAP = {
     "disabled": WhatsAppTemplateStatus.disabled,
 }
 
+_ALLOWED_CATEGORIES = frozenset({"MARKETING", "UTILITY", "AUTHENTICATION"})
+_TEMPLATE_NAME_RE = re.compile(r"^[a-z0-9_]{1,512}$")
+_BODY_VARIABLE_RE = re.compile(r"\{\{\s*(\d+)\s*\}\}")
+
+
+def normalize_template_name(raw: str) -> str:
+    """Meta requires lowercase letters, numbers, and underscores only."""
+    cleaned = re.sub(r"[^a-z0-9_]+", "_", (raw or "").strip().lower())
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    return (cleaned or "kafi_template")[:512]
+
 
 def _extract_body_and_variables(components: list[dict[str, Any]]) -> tuple[str | None, int]:
     body_text = None
@@ -30,9 +44,112 @@ def _extract_body_and_variables(components: list[dict[str, Any]]) -> tuple[str |
         if (component.get("type") or "").upper() == "BODY":
             body_text = component.get("text")
             if body_text:
-                variable_count = body_text.count("{{")
+                variable_count = len(_BODY_VARIABLE_RE.findall(body_text))
             break
     return body_text, variable_count
+
+
+def _validate_body(body: str) -> None:
+    text = (body or "").strip()
+    if not text:
+        raise ValueError("Template body is required")
+    if len(text) > 1024:
+        raise ValueError("Template body must be 1024 characters or fewer")
+    if text.startswith("{{") or text.endswith("}}"):
+        raise ValueError("Template body cannot start or end with a variable placeholder")
+
+
+def build_components(*, body: str, footer: str | None = None) -> list[dict[str, Any]]:
+    _validate_body(body)
+    components: list[dict[str, Any]] = [{"type": "BODY", "text": body.strip()}]
+    footer_text = (footer or "").strip()
+    if footer_text:
+        if len(footer_text) > 60:
+            raise ValueError("Footer must be 60 characters or fewer")
+        components.append({"type": "FOOTER", "text": footer_text})
+    return components
+
+
+def _upsert_template_from_meta(
+    db: Session,
+    raw: dict[str, Any],
+    *,
+    submitted_by_user_id: int | None = None,
+) -> WhatsAppTemplate:
+    meta_id = raw.get("id")
+    name = raw.get("name")
+    if not name:
+        raise ValueError("Meta template payload missing name")
+
+    components = raw.get("components") or []
+    body_text, variable_count = _extract_body_and_variables(components)
+    status = _STATUS_MAP.get((raw.get("status") or "").lower(), WhatsAppTemplateStatus.pending)
+
+    record = None
+    if meta_id:
+        record = db.query(WhatsAppTemplate).filter_by(meta_template_id=str(meta_id)).first()
+    if not record:
+        record = (
+            db.query(WhatsAppTemplate)
+            .filter_by(name=name, language=raw.get("language") or "en")
+            .first()
+        )
+
+    if not record:
+        record = WhatsAppTemplate(meta_template_id=str(meta_id) if meta_id else None, name=name)
+        db.add(record)
+        if submitted_by_user_id is not None:
+            record.submitted_by_user_id = submitted_by_user_id
+    elif submitted_by_user_id is not None and record.submitted_by_user_id is None:
+        record.submitted_by_user_id = submitted_by_user_id
+
+    record.meta_template_id = str(meta_id) if meta_id else record.meta_template_id
+    record.name = name
+    record.category = raw.get("category")
+    record.language = raw.get("language") or record.language or "en"
+    record.status = status
+    record.components = components
+    record.body_text = body_text
+    record.variable_count = variable_count
+    record.synced_at = datetime.now(timezone.utc)
+    return record
+
+
+def _notify_users(
+    db: Session,
+    *,
+    template: WhatsAppTemplate,
+    event_type: str,
+    message: str,
+    user_ids: set[int],
+) -> None:
+    for uid in sorted(user_ids):
+        if uid <= 0:
+            continue
+        db.add(
+            WhatsAppTemplateStatusEvent(
+                template_id=template.id,
+                user_id=uid,
+                event_type=event_type,
+                message=message[:500],
+            )
+        )
+
+
+def _admin_user_ids(db: Session) -> set[int]:
+    rows = (
+        db.query(AppUser.id)
+        .filter(AppUser.role == AppUserRole.admin, AppUser.is_active.is_(True))
+        .all()
+    )
+    return {int(row[0]) for row in rows}
+
+
+def _notification_targets(db: Session, template: WhatsAppTemplate) -> set[int]:
+    targets = _admin_user_ids(db)
+    if template.submitted_by_user_id:
+        targets.add(int(template.submitted_by_user_id))
+    return targets
 
 
 def sync_templates_from_meta(db: Session) -> dict[str, Any]:
@@ -46,41 +163,216 @@ def sync_templates_from_meta(db: Session) -> dict[str, Any]:
 
     synced = 0
     for raw in result.get("templates") or []:
-        meta_id = raw.get("id")
-        name = raw.get("name")
-        if not name:
-            continue
-
-        components = raw.get("components") or []
-        body_text, variable_count = _extract_body_and_variables(components)
-        status = _STATUS_MAP.get((raw.get("status") or "").lower(), WhatsAppTemplateStatus.pending)
-
-        record = None
-        if meta_id:
-            record = db.query(WhatsAppTemplate).filter_by(meta_template_id=meta_id).first()
-        if not record:
-            record = (
-                db.query(WhatsAppTemplate)
-                .filter_by(name=name, language=raw.get("language") or "en")
-                .first()
-            )
-
-        if not record:
-            record = WhatsAppTemplate(meta_template_id=meta_id, name=name)
-            db.add(record)
-
-        record.meta_template_id = meta_id or record.meta_template_id
-        record.name = name
-        record.category = raw.get("category")
-        record.language = raw.get("language") or "en"
-        record.status = status
-        record.components = components
-        record.body_text = body_text
-        record.variable_count = variable_count
+        _upsert_template_from_meta(db, raw)
         synced += 1
 
     db.commit()
     return {"status": "ok", "message": f"Synced {synced} template(s)", "synced_count": synced}
+
+
+def create_template_for_meta(
+    db: Session,
+    *,
+    user_id: int,
+    name: str,
+    category: str,
+    language: str,
+    body: str,
+    footer: str | None = None,
+) -> dict[str, Any]:
+    """Create a template locally and submit it to Meta for review."""
+    normalized_name = normalize_template_name(name)
+    if not _TEMPLATE_NAME_RE.match(normalized_name):
+        raise ValueError(
+            "Template name must use lowercase letters, numbers, and underscores only "
+            "(e.g. kafi_product_intro)."
+        )
+
+    category_key = (category or "UTILITY").strip().upper()
+    if category_key not in _ALLOWED_CATEGORIES:
+        raise ValueError("Category must be MARKETING, UTILITY, or AUTHENTICATION")
+
+    language_code = (language or "en_US").strip() or "en_US"
+    components = build_components(body=body, footer=footer)
+
+    existing = (
+        db.query(WhatsAppTemplate)
+        .filter_by(name=normalized_name, language=language_code)
+        .first()
+    )
+    if existing and existing.status in {
+        WhatsAppTemplateStatus.approved,
+        WhatsAppTemplateStatus.pending,
+    }:
+        raise ValueError(
+            f"A template named '{normalized_name}' ({language_code}) already exists with "
+            f"status '{existing.status.value}'."
+        )
+
+    submit_result = whatsapp_client.create_message_template(
+        name=normalized_name,
+        language=language_code,
+        category=category_key,
+        components=components,
+    )
+    if submit_result.get("status") != "submitted":
+        raise ValueError(submit_result.get("message") or "Meta template submission failed")
+
+    body_text, variable_count = _extract_body_and_variables(components)
+    record = existing or WhatsAppTemplate(name=normalized_name, language=language_code)
+    if not existing:
+        db.add(record)
+
+    record.meta_template_id = submit_result.get("meta_template_id") or record.meta_template_id
+    record.category = category_key
+    record.status = WhatsAppTemplateStatus.pending
+    record.components = components
+    record.body_text = body_text
+    record.variable_count = variable_count
+    record.submitted_by_user_id = user_id
+    record.rejection_reason = None
+    record.synced_at = datetime.now(timezone.utc)
+    db.flush()
+
+    message = (
+        f"Template '{normalized_name}' submitted to Meta for review. "
+        "You will be notified when it is approved or rejected."
+    )
+    _notify_users(
+        db,
+        template=record,
+        event_type="submitted",
+        message=message,
+        user_ids=_notification_targets(db, record),
+    )
+    db.commit()
+    db.refresh(record)
+
+    return {
+        "template": template_to_dict(record),
+        "message": message,
+        "meta_status": submit_result.get("meta_status") or "PENDING",
+    }
+
+
+def handle_template_status_webhook(db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+    """Apply Meta message_template_status_update webhook payload."""
+    event = (payload.get("event") or payload.get("status") or "").strip().upper()
+    template_name = (payload.get("message_template_name") or payload.get("name") or "").strip()
+    language = (payload.get("message_template_language") or payload.get("language") or "en").strip()
+    meta_id = payload.get("message_template_id") or payload.get("id")
+    reason = payload.get("reason")
+
+    if not template_name:
+        return {"status": "ignored", "message": "No template name in webhook payload"}
+
+    record = None
+    if meta_id:
+        record = (
+            db.query(WhatsAppTemplate)
+            .filter_by(meta_template_id=str(meta_id))
+            .first()
+        )
+    if not record:
+        record = (
+            db.query(WhatsAppTemplate)
+            .filter_by(name=template_name, language=language)
+            .first()
+        )
+    if not record:
+        record = WhatsAppTemplate(
+            name=template_name,
+            language=language,
+            meta_template_id=str(meta_id) if meta_id else None,
+        )
+        db.add(record)
+
+    if meta_id:
+        record.meta_template_id = str(meta_id)
+
+    status_key = event.lower()
+    if status_key in _STATUS_MAP:
+        record.status = _STATUS_MAP[status_key]
+    elif event == "FLAGGED":
+        record.status = WhatsAppTemplateStatus.paused
+
+    if record.status == WhatsAppTemplateStatus.rejected:
+        record.rejection_reason = str(reason).strip() if reason and str(reason).upper() != "NONE" else None
+    elif record.status == WhatsAppTemplateStatus.approved:
+        record.rejection_reason = None
+
+    record.synced_at = datetime.now(timezone.utc)
+    db.flush()
+
+    if event == "APPROVED":
+        notice = f"Meta approved WhatsApp template '{template_name}'. You can use it in campaigns now."
+        event_type = "approved"
+    elif event in {"REJECTED", "FLAGGED"}:
+        detail = record.rejection_reason or "See Meta Business Manager for details."
+        notice = f"Meta {event.lower()} WhatsApp template '{template_name}': {detail}"
+        event_type = "rejected" if event == "REJECTED" else "paused"
+    else:
+        notice = f"WhatsApp template '{template_name}' status updated to {event or 'unknown'}."
+        event_type = status_key or "updated"
+
+    _notify_users(
+        db,
+        template=record,
+        event_type=event_type,
+        message=notice,
+        user_ids=_notification_targets(db, record),
+    )
+    db.commit()
+    return {"status": "ok", "template_id": record.id, "event": event}
+
+
+def list_template_notifications(
+    db: Session,
+    *,
+    user_id: int,
+    unread_only: bool = True,
+    limit: int = 50,
+) -> dict[str, Any]:
+    query = db.query(WhatsAppTemplateStatusEvent).filter(
+        WhatsAppTemplateStatusEvent.user_id == user_id
+    )
+    if unread_only:
+        query = query.filter(WhatsAppTemplateStatusEvent.read_at.is_(None))
+    rows = (
+        query.order_by(WhatsAppTemplateStatusEvent.created_at.desc())
+        .limit(min(max(1, limit), 200))
+        .all()
+    )
+    unread_count = (
+        db.query(WhatsAppTemplateStatusEvent)
+        .filter(
+            WhatsAppTemplateStatusEvent.user_id == user_id,
+            WhatsAppTemplateStatusEvent.read_at.is_(None),
+        )
+        .count()
+    )
+    return {
+        "unread_count": int(unread_count),
+        "rows": [notification_to_dict(row) for row in rows],
+    }
+
+
+def mark_template_notifications_read(
+    db: Session,
+    *,
+    user_id: int,
+    notification_ids: list[int] | None = None,
+) -> int:
+    now = datetime.now(timezone.utc)
+    query = db.query(WhatsAppTemplateStatusEvent).filter(
+        WhatsAppTemplateStatusEvent.user_id == user_id,
+        WhatsAppTemplateStatusEvent.read_at.is_(None),
+    )
+    if notification_ids:
+        query = query.filter(WhatsAppTemplateStatusEvent.id.in_(notification_ids))
+    updated = query.update({WhatsAppTemplateStatusEvent.read_at: now}, synchronize_session=False)
+    db.commit()
+    return int(updated or 0)
 
 
 def list_templates(db: Session, *, approved_only: bool = False) -> list[WhatsAppTemplate]:
@@ -113,6 +405,17 @@ def build_body_component(variables: list[str]) -> list[dict[str, Any]]:
     ]
 
 
+def notification_to_dict(row: WhatsAppTemplateStatusEvent) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "template_id": row.template_id,
+        "event_type": row.event_type,
+        "message": row.message,
+        "read_at": row.read_at.isoformat() if row.read_at else None,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
 def template_to_dict(template: WhatsAppTemplate) -> dict[str, Any]:
     return {
         "id": template.id,
@@ -123,5 +426,7 @@ def template_to_dict(template: WhatsAppTemplate) -> dict[str, Any]:
         "status": template.status.value,
         "body_text": template.body_text,
         "variable_count": template.variable_count,
+        "submitted_by_user_id": template.submitted_by_user_id,
+        "rejection_reason": template.rejection_reason,
         "synced_at": template.synced_at,
     }

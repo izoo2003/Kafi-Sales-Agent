@@ -840,6 +840,8 @@ export interface Contact {
   consent_status: string;
   whatsapp_opt_in: boolean;
   wa_id?: string | null;
+  within_session_window?: boolean;
+  window_expires_at?: string | null;
 }
 
 export interface ContactCreate {
@@ -1239,6 +1241,8 @@ export interface WhatsAppConfig {
   app_secret_set?: boolean;
   display_number?: string | null;
   missing_env: string[];
+  meta_api_ok?: boolean | null;
+  meta_api_message?: string | null;
 }
 
 export interface WhatsAppTestSendResult {
@@ -1257,7 +1261,37 @@ export interface WhatsAppTemplate {
   status: "approved" | "pending" | "rejected" | "paused" | "disabled" | string;
   body_text: string | null;
   variable_count: number;
+  submitted_by_user_id?: number | null;
+  rejection_reason?: string | null;
   synced_at: string;
+}
+
+export interface WhatsAppTemplateCreatePayload {
+  name: string;
+  category: "MARKETING" | "UTILITY" | "AUTHENTICATION";
+  language: string;
+  body: string;
+  footer?: string | null;
+}
+
+export interface WhatsAppTemplateCreateResult {
+  template: WhatsAppTemplate;
+  message: string;
+  meta_status: string;
+}
+
+export interface WhatsAppTemplateNotification {
+  id: number;
+  template_id: number;
+  event_type: string;
+  message: string;
+  read_at: string | null;
+  created_at: string;
+}
+
+export interface WhatsAppTemplateNotificationsResponse {
+  unread_count: number;
+  rows: WhatsAppTemplateNotification[];
 }
 
 export interface WhatsAppTemplateSyncResult {
@@ -2185,6 +2219,25 @@ export const client = {
     request<WhatsAppTemplate[]>(
       `/whatsapp/templates${approvedOnly ? "?approved_only=true" : ""}`,
     ),
+  createWhatsAppTemplate: (data: WhatsAppTemplateCreatePayload) =>
+    request<WhatsAppTemplateCreateResult>("/whatsapp/templates", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  listWhatsAppTemplateNotifications: (params: { unreadOnly?: boolean; limit?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.unreadOnly === false) query.set("unread_only", "false");
+    if (params.limit) query.set("limit", String(params.limit));
+    const qs = query.toString();
+    return request<WhatsAppTemplateNotificationsResponse>(
+      `/whatsapp/templates/notifications${qs ? `?${qs}` : ""}`,
+    );
+  },
+  markWhatsAppTemplateNotificationsRead: (notificationIds?: number[]) =>
+    request<{ updated_count: number }>("/whatsapp/templates/notifications/read", {
+      method: "POST",
+      body: JSON.stringify({ notification_ids: notificationIds ?? null }),
+    }),
   syncWhatsAppTemplates: () =>
     request<WhatsAppTemplateSyncResult>("/whatsapp/templates/sync", { method: "POST" }),
   createWhatsAppCampaignDrafts: (data: {

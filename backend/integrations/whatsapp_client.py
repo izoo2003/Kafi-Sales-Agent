@@ -122,6 +122,70 @@ class WhatsAppClient:
         }
         return self._post(f"{settings.whatsapp_phone_number_id}/messages", payload)
 
+    def create_message_template(
+        self,
+        *,
+        name: str,
+        language: str,
+        category: str,
+        components: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Submit a new message template to Meta for review (returns PENDING until approved)."""
+        if not settings.whatsapp_access_token or not settings.whatsapp_business_account_id:
+            return {
+                "status": "not_configured",
+                "message": "Set WHATSAPP_BUSINESS_ACCOUNT_ID and WHATSAPP_ACCESS_TOKEN "
+                "in backend/.env to submit templates.",
+            }
+        payload = {
+            "name": name,
+            "language": language,
+            "category": (category or "UTILITY").upper(),
+            "components": components,
+        }
+        path = f"{settings.whatsapp_business_account_id}/message_templates"
+        url = f"{self._base_url()}/{path}"
+        try:
+            response = httpx.post(url, headers=self._headers(), json=payload, timeout=30.0)
+        except Exception as exc:  # noqa: BLE001
+            return {"status": "error", "message": f"WhatsApp template submit failed: {exc}"}
+
+        try:
+            body = response.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+
+        if response.status_code in {200, 201}:
+            return {
+                "status": "submitted",
+                "message": "Template submitted to Meta for review",
+                "meta_template_id": str(body.get("id") or ""),
+                "meta_status": (body.get("status") or "PENDING"),
+                "raw": body,
+            }
+
+        detail = ((body.get("error") or {}).get("message")) or response.text
+        friendly = _friendly_whatsapp_api_error(response.status_code, detail, body)
+        return {
+            "status": "error",
+            "message": friendly,
+            "raw": body,
+        }
+
+    def verify_api_access(self) -> dict[str, Any]:
+        """Lightweight check that the Meta token and WABA ID are valid."""
+        result = self.list_templates()
+        if result.get("status") == "ok":
+            count = len(result.get("templates") or [])
+            return {
+                "ok": True,
+                "message": f"Connected to Meta ({count} template(s) visible).",
+            }
+        return {
+            "ok": False,
+            "message": result.get("message") or "Could not reach Meta WhatsApp API.",
+        }
+
     def send_approved(
         self,
         *,
@@ -188,7 +252,7 @@ class WhatsAppClient:
             detail = ((body.get("error") or {}).get("message")) or response.text
             return {
                 "status": "error",
-                "message": f"WhatsApp API {response.status_code}: {detail}",
+                "message": _friendly_whatsapp_api_error(response.status_code, detail, body),
                 "templates": [],
             }
 
@@ -211,3 +275,27 @@ class WhatsAppClient:
 
 
 whatsapp_client = WhatsAppClient()
+
+
+def _friendly_whatsapp_api_error(
+    status_code: int, detail: str, body: dict[str, Any] | None = None
+) -> str:
+    """Turn Meta Graph API errors into actionable dashboard messages."""
+    text = (detail or "").strip()
+    lower = text.lower()
+    error_obj = (body or {}).get("error") or {}
+    code = error_obj.get("code")
+
+    if status_code == 401 or code == 190 or "expired" in lower or "session has expired" in lower:
+        return (
+            "Your WHATSAPP_ACCESS_TOKEN has expired. In Meta Business Settings → System users, "
+            "generate a new permanent token with whatsapp_business_management, update "
+            "backend/.env, then restart the backend."
+        )
+    if status_code == 403 or "permission" in lower:
+        return (
+            f"Meta rejected the request (permissions): {text or 'missing whatsapp_business_management scope'}"
+        )
+    if text:
+        return f"WhatsApp API {status_code}: {text}"
+    return f"WhatsApp API error {status_code}"

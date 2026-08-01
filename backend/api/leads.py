@@ -180,7 +180,7 @@ def create_contact(payload: ContactCreate, db: Session = Depends(get_db)):
         action="created",
         details={"buyer_id": contact.buyer_id},
     )
-    return contact
+    return buyers_module.contact_to_read(contact)
 
 
 @router.patch("/contacts/{contact_id}", response_model=ContactRead)
@@ -204,7 +204,7 @@ def update_contact(
         action="updated",
         details={"buyer_id": contact.buyer_id},
     )
-    return contact
+    return buyers_module.contact_to_read(contact)
 
 
 @router.delete("/contacts/{contact_id}", status_code=204)
@@ -228,7 +228,8 @@ def delete_contact(contact_id: int, db: Session = Depends(get_db)):
 def list_lead_contacts(lead_id: int, db: Session = Depends(get_db)):
     if not buyers_module.get_buyer(db, lead_id):
         raise HTTPException(404, "Lead not found")
-    return buyers_module.list_contacts_for_buyer(db, lead_id)
+    contacts = buyers_module.list_contacts_for_buyer(db, lead_id)
+    return [buyers_module.contact_to_read(contact) for contact in contacts]
 
 
 @router.post("/{lead_id}/product-interest-email", response_model=InteractionRead)

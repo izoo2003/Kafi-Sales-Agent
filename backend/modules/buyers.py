@@ -282,6 +282,31 @@ def list_contacts_for_buyer(db: Session, buyer_id: int) -> list[Contact]:
     )
 
 
+def contact_to_read(contact: Contact) -> dict:
+    """Serialize a contact, including WhatsApp 24h session window status."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    expires = contact.whatsapp_window_expires_at
+    within_window = bool(expires and expires > now)
+    consent = contact.consent_status
+    consent_value = consent.value if hasattr(consent, "value") else str(consent or "unknown")
+    return {
+        "id": contact.id,
+        "buyer_id": contact.buyer_id,
+        "full_name": contact.full_name,
+        "designation": contact.designation,
+        "email": contact.email,
+        "phone": contact.phone,
+        "preferred_language": contact.preferred_language,
+        "consent_status": consent_value,
+        "whatsapp_opt_in": bool(contact.whatsapp_opt_in),
+        "wa_id": contact.wa_id,
+        "within_session_window": within_window,
+        "window_expires_at": expires,
+    }
+
+
 def get_contact(db: Session, contact_id: int) -> Contact | None:
     return db.get(Contact, contact_id)
 

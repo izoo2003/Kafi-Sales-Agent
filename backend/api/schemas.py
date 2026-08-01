@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -122,6 +122,8 @@ class ContactRead(BaseModel):
     consent_status: str = "unknown"
     whatsapp_opt_in: bool = False
     wa_id: Optional[str] = None
+    within_session_window: bool = False
+    window_expires_at: Optional[datetime] = None
 
 
 class ProductCreate(BaseModel):
@@ -1250,6 +1252,8 @@ class WhatsAppConfigRead(BaseModel):
     app_secret_set: bool = False
     display_number: Optional[str] = None
     missing_env: list[str] = Field(default_factory=list)
+    meta_api_ok: Optional[bool] = None
+    meta_api_message: Optional[str] = None
 
 
 class WhatsAppTestSendRequest(BaseModel):
@@ -1281,7 +1285,41 @@ class WhatsAppTemplateRead(BaseModel):
     status: str
     body_text: Optional[str] = None
     variable_count: int = 0
+    submitted_by_user_id: Optional[int] = None
+    rejection_reason: Optional[str] = None
     synced_at: datetime
+
+
+class WhatsAppTemplateCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=512)
+    category: Literal["MARKETING", "UTILITY", "AUTHENTICATION"] = "UTILITY"
+    language: str = Field(default="en_US", min_length=2, max_length=20)
+    body: str = Field(min_length=1, max_length=1024)
+    footer: Optional[str] = Field(default=None, max_length=60)
+
+
+class WhatsAppTemplateCreateResponse(BaseModel):
+    template: WhatsAppTemplateRead
+    message: str
+    meta_status: str = "PENDING"
+
+
+class WhatsAppTemplateNotificationRead(BaseModel):
+    id: int
+    template_id: int
+    event_type: str
+    message: str
+    read_at: Optional[datetime] = None
+    created_at: datetime
+
+
+class WhatsAppTemplateNotificationsResponse(BaseModel):
+    unread_count: int
+    rows: list[WhatsAppTemplateNotificationRead]
+
+
+class WhatsAppTemplateNotificationsReadRequest(BaseModel):
+    notification_ids: Optional[list[int]] = None
 
 
 class WhatsAppTemplateSyncResponse(BaseModel):

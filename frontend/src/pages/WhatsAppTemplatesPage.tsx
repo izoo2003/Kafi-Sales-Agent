@@ -1,5 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
-import { client, type WhatsAppConfig, type WhatsAppTemplate } from "../api/client";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
+import {
+  client,
+  type WhatsAppConfig,
+  type WhatsAppTemplate,
+  type WhatsAppTemplateNotification,
+} from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 
 interface WhatsAppTemplatesPageProps {
@@ -15,6 +20,18 @@ const STATUS_STYLES: Record<string, string> = {
   disabled: "bg-slate-700/50 border-slate-600 text-slate-400",
 };
 
+const DEFAULT_CREATE_FORM = {
+  name: "kafi_product_intro",
+  category: "UTILITY" as const,
+  language: "en_US",
+  body:
+    "Dear {{1}},\n\n" +
+    "Thank you for your interest in Kafi Commodities ESSENCE products. " +
+    "We would be pleased to share specifications and pricing for {{2}}.\n\n" +
+    "Best regards,\nKafi Commodities Export Team",
+  footer: "Kafi Commodities (Pvt) Ltd",
+};
+
 function StatusBadge({ status }: { status: string }) {
   return (
     <span
@@ -25,17 +42,41 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+function notificationStyle(eventType: string): string {
+  if (eventType === "approved") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-100";
+  if (eventType === "rejected") return "border-red-500/30 bg-red-500/10 text-red-100";
+  if (eventType === "submitted") return "border-amber-500/30 bg-amber-500/10 text-amber-100";
+  return "border-slate-700 bg-slate-900/80 text-slate-200";
+}
+
 export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTemplatesPageProps) {
   const { isAdmin } = useAuth();
   const [config, setConfig] = useState<WhatsAppConfig | null>(null);
   const [templates, setTemplates] = useState<WhatsAppTemplate[]>([]);
+  const [notifications, setNotifications] = useState<WhatsAppTemplateNotification[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const [showCreator, setShowCreator] = useState(false);
+  const [createForm, setCreateForm] = useState(DEFAULT_CREATE_FORM);
+  const [submitting, setSubmitting] = useState(false);
 
   const [testPhone, setTestPhone] = useState("");
   const [testTemplateId, setTestTemplateId] = useState("");
   const [testSending, setTestSending] = useState(false);
+
+  const refreshNotifications = useCallback(async () => {
+    try {
+      const data = await client.listWhatsAppTemplateNotifications({ unreadOnly: true, limit: 20 });
+      setNotifications(data.rows || []);
+      setUnreadCount(data.unread_count || 0);
+    } catch {
+      // Non-blocking — templates list still works without notifications.
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -53,16 +94,24 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
         const hello = approved.find((t) => t.name === "hello_world");
         return String((hello ?? approved[0])?.id ?? "");
       });
+      await refreshNotifications();
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to load WhatsApp templates");
     } finally {
       setLoading(false);
     }
-  }, [onCountChange, onError]);
+  }, [onCountChange, onError, refreshNotifications]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void refreshNotifications();
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, [refreshNotifications]);
 
   async function handleSync() {
     setSyncing(true);
@@ -75,6 +124,45 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
       onError(e instanceof Error ? e.message : "Template sync failed");
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function handleCreateSubmit(event: FormEvent) {
+    event.preventDefault();
+    if (!isAdmin) {
+      onError("Only an admin can submit WhatsApp templates to Meta.");
+      return;
+    }
+    setSubmitting(true);
+    setNotice(null);
+    setSubmitError(null);
+    try {
+      const result = await client.createWhatsAppTemplate({
+        name: createForm.name.trim(),
+        category: createForm.category,
+        language: createForm.language.trim() || "en_US",
+        body: createForm.body.trim(),
+        footer: createForm.footer.trim() || null,
+      });
+      setNotice(result.message);
+      setShowCreator(false);
+      setCreateForm(DEFAULT_CREATE_FORM);
+      await refresh();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to submit template to Meta";
+      setSubmitError(message);
+      onError(message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function dismissNotifications(ids?: number[]) {
+    try {
+      await client.markWhatsAppTemplateNotificationsRead(ids);
+      await refreshNotifications();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to mark notifications read");
     }
   }
 
@@ -124,21 +212,85 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
         <div>
           <h2 className="text-lg font-medium text-slate-100">WhatsApp templates</h2>
           <p className="text-sm text-slate-500 mt-1 max-w-2xl">
-            Templates are authored and approved in Meta Business Manager — this page mirrors
-            their current status so you can pick one for a bulk campaign. Click{" "}
-            <strong className="text-slate-300">Sync from Meta</strong> after creating or updating
-            templates there.
+            Create templates here and submit them to Meta for review. When Meta approves or
+            rejects a template, you&apos;ll see a notification on this page. Approved templates
+            are available immediately in bulk send and lead WhatsApp compose.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => void handleSync()}
-          disabled={syncing || !config?.configured}
-          className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium disabled:opacity-50 shrink-0"
-        >
-          {syncing ? "Syncing…" : "Sync from Meta"}
-        </button>
+        <div className="flex flex-wrap gap-2 shrink-0">
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => {
+                setShowCreator((open) => !open);
+                setNotice(null);
+              }}
+              disabled={!config?.configured}
+              className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm font-medium disabled:opacity-50"
+            >
+              {showCreator ? "Close creator" : "Create template"}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void handleSync()}
+            disabled={syncing || !config?.configured}
+            className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium disabled:opacity-50"
+          >
+            {syncing ? "Syncing…" : "Sync from Meta"}
+          </button>
+        </div>
       </div>
+
+      {unreadCount > 0 && notifications.length > 0 && (
+        <div className="rounded-xl border border-slate-700 bg-slate-900/70 p-4 space-y-2">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <h3 className="text-sm font-medium text-slate-200">
+              Template review updates ({unreadCount} unread)
+            </h3>
+            <button
+              type="button"
+              onClick={() => void dismissNotifications()}
+              className="text-xs text-slate-400 hover:text-slate-200"
+            >
+              Mark all read
+            </button>
+          </div>
+          <ul className="space-y-2">
+            {notifications.map((item) => (
+              <li
+                key={item.id}
+                className={`rounded-lg border px-3 py-2 text-sm flex items-start justify-between gap-3 ${notificationStyle(item.event_type)}`}
+              >
+                <div>
+                  <p>{item.message}</p>
+                  <p className="text-xs opacity-70 mt-1">
+                    {item.created_at ? new Date(item.created_at).toLocaleString() : ""}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void dismissNotifications([item.id])}
+                  className="text-xs opacity-80 hover:opacity-100 shrink-0"
+                >
+                  Dismiss
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {config?.configured && config.meta_api_ok === false && config.meta_api_message && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+          <p className="font-medium">Meta WhatsApp API connection failed</p>
+          <p className="mt-1">{config.meta_api_message}</p>
+        </div>
+      )}
+
+      {config?.configured && config.meta_api_ok === true && config.meta_api_message && (
+        <p className="text-xs text-emerald-400/90">{config.meta_api_message}</p>
+      )}
 
       {config && !config.configured && (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
@@ -147,21 +299,14 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
             Set {config.missing_env.join(", ")} in <code>backend/.env</code>, then restart the
             backend.
           </p>
-          {config.display_number && (
-            <p className="mt-1 text-amber-200/70 text-xs">
-              Sender display number: {config.display_number}
-              {config.phone_number_id_set ? " · Phone Number ID is set" : ""}
-            </p>
-          )}
         </div>
       )}
 
-      {config?.configured && config.display_number && (
+      {config?.configured && (
         <p className="text-xs text-slate-500">
-          Sending as {config.display_number}
-          {!config.business_account_id_set
-            ? " · set WHATSAPP_BUSINESS_ACCOUNT_ID to sync templates"
-            : ""}
+          Webhook must subscribe to <code className="text-slate-400">message_template_status_update</code>{" "}
+          for instant approval/rejection alerts.
+          {config.display_number ? ` Sending as ${config.display_number}.` : ""}
         </p>
       )}
 
@@ -171,14 +316,108 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
         </p>
       )}
 
+      {isAdmin && showCreator && config?.configured && (
+        <form
+          onSubmit={(e) => void handleCreateSubmit(e)}
+          className="rounded-xl border border-slate-800 bg-slate-900/50 p-5 space-y-4"
+        >
+          <div>
+            <h3 className="text-sm font-medium text-slate-200">Submit template to Meta</h3>
+            <p className="text-xs text-slate-500 mt-1">
+              Meta reviews every template (usually minutes to 48 hours). Use{" "}
+              <code className="text-slate-400">{`{{1}}`}</code>,{" "}
+              <code className="text-slate-400">{`{{2}}`}</code> for variables. Name must be
+              lowercase with underscores.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <label className="block sm:col-span-1">
+              <span className="text-xs text-slate-400">Template name</span>
+              <input
+                value={createForm.name}
+                onChange={(e) => setCreateForm((f) => ({ ...f, name: e.target.value }))}
+                placeholder="kafi_product_intro"
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+                required
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-slate-400">Category</span>
+              <select
+                value={createForm.category}
+                onChange={(e) =>
+                  setCreateForm((f) => ({
+                    ...f,
+                    category: e.target.value as "MARKETING" | "UTILITY" | "AUTHENTICATION",
+                  }))
+                }
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+              >
+                <option value="UTILITY">Utility</option>
+                <option value="MARKETING">Marketing</option>
+                <option value="AUTHENTICATION">Authentication</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="text-xs text-slate-400">Language</span>
+              <input
+                value={createForm.language}
+                onChange={(e) => setCreateForm((f) => ({ ...f, language: e.target.value }))}
+                placeholder="en_US"
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+                required
+              />
+            </label>
+          </div>
+          <label className="block">
+            <span className="text-xs text-slate-400">Body</span>
+            <textarea
+              rows={8}
+              value={createForm.body}
+              onChange={(e) => setCreateForm((f) => ({ ...f, body: e.target.value }))}
+              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-mono"
+              required
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-slate-400">Footer (optional, max 60 chars)</span>
+            <input
+              value={createForm.footer}
+              onChange={(e) => setCreateForm((f) => ({ ...f, footer: e.target.value }))}
+              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+              maxLength={60}
+            />
+          </label>
+          {submitError && (
+            <p className="text-sm text-red-300 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2">
+              {submitError}
+            </p>
+          )}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setShowCreator(false)}
+              className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium disabled:opacity-50"
+            >
+              {submitting ? "Submitting to Meta…" : "Submit for Meta review"}
+            </button>
+          </div>
+        </form>
+      )}
+
       {isAdmin && config?.configured && (
         <div className="rounded-xl border border-emerald-800/40 bg-emerald-950/20 p-4 space-y-3">
           <div>
             <h3 className="text-sm font-medium text-slate-200">Send test WhatsApp</h3>
             <p className="text-xs text-slate-500 mt-1">
-              Sends from your connected business number to any phone. Use a different WhatsApp than
-              the business line. First contact usually needs a template (try{" "}
-              <code className="text-slate-400">hello_world</code>).
+              Sends from your connected business number to any phone using an approved template.
             </p>
           </div>
           <div className="flex flex-col sm:flex-row gap-2">
@@ -217,7 +456,7 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
 
       <div className="rounded-xl border border-slate-800 bg-slate-900/50 overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
-          <h3 className="text-sm font-medium text-slate-300">Synced templates</h3>
+          <h3 className="text-sm font-medium text-slate-300">Templates</h3>
           <span className="text-xs text-slate-500">{templates.length} total</span>
         </div>
         <div className="p-4 space-y-2 max-h-[70vh] overflow-y-auto">
@@ -225,8 +464,8 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
             <p className="text-sm text-slate-400">Loading templates…</p>
           ) : templates.length === 0 ? (
             <p className="text-sm text-slate-500 rounded-lg border border-dashed border-slate-700 p-4">
-              No templates synced yet. Create marketing/utility templates in Meta Business
-              Manager, then click <strong className="text-slate-300">Sync from Meta</strong>.
+              No templates yet. Click <strong className="text-slate-300">Create template</strong>{" "}
+              to submit one to Meta, or sync existing templates from Business Manager.
             </p>
           ) : (
             templates.map((template) => (
@@ -248,6 +487,11 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
                   {template.body_text && (
                     <p className="text-xs text-slate-500 mt-1.5 whitespace-pre-wrap line-clamp-3">
                       {template.body_text}
+                    </p>
+                  )}
+                  {template.rejection_reason && (
+                    <p className="text-xs text-red-300/90 mt-2">
+                      Rejection reason: {template.rejection_reason}
                     </p>
                   )}
                   {template.variable_count > 0 && (

@@ -403,7 +403,7 @@ class EmailTemplate(Base):
 
 
 class WhatsAppTemplate(Base):
-    """Cache of message templates approved (or pending) on the Meta WABA — synced, not authored here."""
+    """WhatsApp message templates on the Meta WABA — synced and/or submitted via this app."""
 
     __tablename__ = "whatsapp_templates"
 
@@ -418,11 +418,33 @@ class WhatsAppTemplate(Base):
     components: Mapped[Optional[list]] = mapped_column(JSONB, default=list)
     body_text: Mapped[Optional[str]] = mapped_column(Text)
     variable_count: Mapped[int] = mapped_column(Integer, default=0)
+    submitted_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("app_users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    rejection_reason: Mapped[Optional[str]] = mapped_column(Text)
     synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class WhatsAppTemplateStatusEvent(Base):
+    """In-app notifications when a submitted WhatsApp template is reviewed by Meta."""
+
+    __tablename__ = "whatsapp_template_status_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    template_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("whatsapp_templates.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    message: Mapped[str] = mapped_column(String(500), nullable=False)
+    read_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class AuditLog(Base):
