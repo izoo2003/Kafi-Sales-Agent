@@ -2226,6 +2226,15 @@ export const client = {
     request<AiModeFollowUpActivitiesResponse>(
       `/ai-mode/follow-up-activities?limit=${limit}`,
     ),
+  listAiModeInterestedActivities: (params: { limit?: number; after_id?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.limit) query.set("limit", String(params.limit));
+    if (params.after_id != null) query.set("after_id", String(params.after_id));
+    const qs = query.toString();
+    return request<AiModeInterestedActivitiesResponse>(
+      `/ai-mode/interested-activities${qs ? `?${qs}` : ""}`,
+    );
+  },
   listAiModePotentialClients: (params: { search?: string; limit?: number } = {}) => {
     const query = new URLSearchParams();
     if (params.search) query.set("search", params.search);
@@ -2381,6 +2390,7 @@ export interface AiModeLifecycleListResponse {
   assignments?: AiModeAssignmentsResponse;
   call_activities?: AiModeCallActivitiesResponse;
   follow_up_activities?: AiModeFollowUpActivitiesResponse;
+  interested_activities?: AiModeInterestedActivitiesResponse;
   interested_leads?: AiModeInterestedLeadsResponse;
   potential_clients?: AiModeInterestedLeadsResponse;
 }
@@ -2432,6 +2442,33 @@ export interface AiModeFollowUpActivityRow {
 export interface AiModeFollowUpActivitiesResponse {
   total_events: number;
   rows: AiModeFollowUpActivityRow[];
+}
+
+export interface AiModeInterestedActivityRow {
+  id: number;
+  user_id: number;
+  user_label: string;
+  buyer_id: number | null;
+  company_name: string;
+  event_type: string;
+  source: string;
+  message: string;
+  created_at: string | null;
+}
+
+export interface AiModeInterestedUserScore {
+  user_id: number;
+  user_label: string;
+  placed_count: number;
+}
+
+export interface AiModeInterestedActivitiesResponse {
+  total_in_list: number;
+  total_events: number;
+  my_placed_count: number;
+  latest_id: number;
+  by_user: AiModeInterestedUserScore[];
+  rows: AiModeInterestedActivityRow[];
 }
 
 export interface AiModeInterestedLeadRow {

@@ -131,7 +131,7 @@ def list_lifecycle(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    _user: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user),
 ) -> dict[str, Any]:
     result = ai_mode_module.list_lifecycle(
         db, stage=stage, search=search, limit=limit, offset=offset
@@ -141,6 +141,9 @@ def list_lifecycle(
     result["call_activities"] = ai_mode_module.list_call_activities(db, limit=100)
     result["follow_up_activities"] = ai_mode_module.list_follow_up_activities(
         db, limit=100
+    )
+    result["interested_activities"] = ai_mode_module.list_interested_activities(
+        db, viewer=user, limit=100
     )
     result["potential_clients"] = ai_mode_module.list_potential_clients(
         db, search=search if stage == "potential_clients" else None, limit=100
@@ -178,6 +181,19 @@ def list_follow_up_activities(
 ) -> dict[str, Any]:
     """Follow up clients statements for Company lifecycle → Follow-up."""
     return ai_mode_module.list_follow_up_activities(db, limit=limit)
+
+
+@router.get("/interested-activities")
+def list_interested_activities(
+    limit: int = Query(100, ge=1, le=500),
+    after_id: Optional[int] = Query(None, ge=0),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Interested Clients activity for Company lifecycle → Interested."""
+    return ai_mode_module.list_interested_activities(
+        db, viewer=user, limit=limit, after_id=after_id
+    )
 
 
 @router.get("/potential-clients")

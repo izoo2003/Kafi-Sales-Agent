@@ -742,3 +742,29 @@ class AiFollowUpActivityLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
+
+
+class AiInterestedActivityLog(Base):
+    """Per-user Interested Clients activity for Company lifecycle → Interested.
+
+    Each row is one statement (e.g. \"Usman added Acme Trading to Interested Clients\").
+    Tracks who placed leads on the Interested Clients table for admin/user feeds.
+    """
+
+    __tablename__ = "ai_interested_activity_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_label: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    buyer_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("buyers.id", ondelete="SET NULL"), index=True
+    )
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False, default="placed")
+    source: Mapped[str] = mapped_column(String(50), nullable=False, default="manual")
+    message: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )

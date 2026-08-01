@@ -1,4 +1,5 @@
 ﻿import { useCallback, useEffect, useRef, useState } from "react";
+import type { IndexAction } from "./data/indexSections";
 import { client, QUOTATION_AGENT_URL, type AppUser, type LeadTableSectionCountsResponse } from "./api/client";
 import { useAuth } from "./auth/AuthContext";
 import {
@@ -13,6 +14,7 @@ import {
 } from "./components/AppSidebar";
 import { InboxAlertToasts } from "./components/InboxAlertToasts";
 import { InterestedFollowUpAlertToasts } from "./components/InterestedFollowUpAlertToasts";
+import { InterestedClientsActivityToasts } from "./components/InterestedClientsActivityToasts";
 import { AppTopActions } from "./components/AppTopActions";
 import { EmailActivityPage } from "./pages/EmailActivityPage";
 import { EmailTemplatesPage } from "./pages/EmailTemplatesPage";
@@ -22,6 +24,8 @@ import { BuyerProfile } from "./pages/BuyerProfile";
 import { CallsPage } from "./pages/CallsPage";
 import { InboxPage } from "./pages/InboxPage";
 import { AiModePage } from "./pages/AiModePage";
+import { IndexesPage } from "./pages/IndexesPage";
+import { UserManualPage } from "./pages/UserManualPage";
 import { LeadsPage } from "./pages/LeadsPage";
 import { LeadsTablePage } from "./pages/LeadsTablePage";
 import { ChatbotPage } from "./pages/ChatbotPage";
@@ -34,6 +38,7 @@ import { CallingCardOverlay } from "./components/CallingCardOverlay";
 import { FloatingDialpad } from "./components/FloatingDialpad";
 import {
   alertInterestedFollowUp,
+  alertInterestedClientsActivity,
   alertNewInboxMessage,
   requestNotificationPermission,
   unlockNotificationAudio,
@@ -42,6 +47,7 @@ import {
 
 const INBOX_POLL_INTERVAL_MS = 20_000;
 const FOLLOW_UP_POLL_INTERVAL_MS = 60_000;
+const INTERESTED_ACTIVITY_POLL_INTERVAL_MS = 30_000;
 const SIDEBAR_OPEN_KEY = "kafi_sidebar_open";
 
 function readSidebarOpenPreference(): boolean {
@@ -109,6 +115,7 @@ function DashboardApp() {
   const seenMessageUidsRef = useRef<Set<string> | null>(null);
   const lastInboxUnreadRef = useRef(0);
   const seenFollowUpIdsRef = useRef<Set<string>>(new Set());
+  const seenInterestedActivityIdRef = useRef<number | null>(null);
 
   useEffect(() => {
     const onExpired = () => {
@@ -296,7 +303,9 @@ function DashboardApp() {
             tableSection:
               reminder.table_section === "not_received_call_clients"
                 ? "not_received_call_clients"
-                : "interested_clients",
+                : reminder.table_section === "sales_interested_clients"
+                  ? "sales_interested_clients"
+                  : "interested_clients",
           });
         }
       })
@@ -304,6 +313,71 @@ function DashboardApp() {
         /* optional */
       });
   }, []);
+
+  const pollInterestedClientsActivity = useCallback(() => {
+    const afterId = seenInterestedActivityIdRef.current;
+    client
+      .listAiModeInterestedActivities({
+        after_id: afterId ?? undefined,
+        limit: 50,
+      })
+      .then((data) => {
+        if (afterId === null) {
+          seenInterestedActivityIdRef.current = data.latest_id ?? 0;
+          return;
+        }
+
+        const newRows = data.rows || [];
+        seenInterestedActivityIdRef.current = data.latest_id ?? afterId;
+
+        if (newRows.length === 0) return;
+
+        if (isAdmin) {
+          const grouped = new Map<
+            number,
+            { label: string; count: number; companies: string[] }
+          >();
+          for (const row of newRows) {
+            const current = grouped.get(row.user_id) || {
+              label: row.user_label,
+              count: 0,
+              companies: [],
+            };
+            current.count += 1;
+            if (row.company_name) current.companies.push(row.company_name);
+            grouped.set(row.user_id, current);
+          }
+          for (const [userId, group] of grouped) {
+            const message =
+              group.count === 1
+                ? `${group.label} added ${group.companies[0] || "a client"} to Interested Clients`
+                : `${group.label} added ${group.count} clients to Interested Clients`;
+            alertInterestedClientsActivity({
+              id: `interested-admin-${userId}-${data.latest_id}-${group.count}`,
+              message,
+              count: group.count,
+              isSelf: false,
+              userLabel: group.label,
+            });
+          }
+          return;
+        }
+
+        const message =
+          newRows.length === 1
+            ? `You added ${newRows[0].company_name || "a client"} to Interested Clients`
+            : `You added ${newRows.length} clients to Interested Clients`;
+        alertInterestedClientsActivity({
+          id: `interested-self-${data.latest_id}-${newRows.length}`,
+          message,
+          count: newRows.length,
+          isSelf: true,
+        });
+      })
+      .catch(() => {
+        /* optional */
+      });
+  }, [isAdmin]);
 
   const refreshAll = useCallback(() => {
     setError(null);
@@ -320,6 +394,7 @@ function DashboardApp() {
       .catch(() => setEmailActivityUnread(0));
     pollInbox();
     pollInterestedFollowUps();
+    pollInterestedClientsActivity();
   }, [
     loadDiscoverLeadsCount,
     loadEmailTemplateCount,
@@ -330,6 +405,7 @@ function DashboardApp() {
     loadAssigneeNavUsers,
     pollInbox,
     pollInterestedFollowUps,
+    pollInterestedClientsActivity,
   ]);
 
   useEffect(() => {
@@ -348,12 +424,17 @@ function DashboardApp() {
 
     pollInbox();
     pollInterestedFollowUps();
+    pollInterestedClientsActivity();
     client
       .getEmailActivityUnreadCount()
       .then((r) => setEmailActivityUnread(r.unread_count))
       .catch(() => setEmailActivityUnread(0));
     const inboxTimer = window.setInterval(pollInbox, INBOX_POLL_INTERVAL_MS);
     const followUpTimer = window.setInterval(pollInterestedFollowUps, FOLLOW_UP_POLL_INTERVAL_MS);
+    const interestedActivityTimer = window.setInterval(
+      pollInterestedClientsActivity,
+      INTERESTED_ACTIVITY_POLL_INTERVAL_MS,
+    );
     const activityTimer = window.setInterval(() => {
       client
         .getEmailActivityUnreadCount()
@@ -363,6 +444,7 @@ function DashboardApp() {
     return () => {
       window.clearInterval(inboxTimer);
       window.clearInterval(followUpTimer);
+      window.clearInterval(interestedActivityTimer);
       window.clearInterval(activityTimer);
       window.removeEventListener("click", unlock);
       window.removeEventListener("keydown", unlock);
@@ -377,6 +459,7 @@ function DashboardApp() {
     loadAssigneeNavUsers,
     pollInbox,
     pollInterestedFollowUps,
+    pollInterestedClientsActivity,
   ]);
 
   function handleSelectLead(leadId: number) {
@@ -479,6 +562,52 @@ function DashboardApp() {
     setSelectedLeadId(buyerId);
   }
 
+  function handleOpenIndexesSection(sectionNumber: number) {
+    sessionStorage.setItem("kafi.indexSection", String(sectionNumber));
+    handleSelectTab("indexes");
+  }
+
+  function handleIndexNavigate(action: IndexAction) {
+    switch (action.type) {
+      case "tab":
+        handleSelectTab(action.tab);
+        break;
+      case "table":
+        handleSelectTab("table");
+        handleSelectTableSection(action.section);
+        break;
+      case "mail":
+        handleSelectMailSection(action.section);
+        break;
+      case "whatsapp":
+        handleSelectWhatsAppSection(action.section);
+        break;
+      case "ai-mode":
+        if (action.panel) {
+          sessionStorage.setItem("kafi.aiModePanel", action.panel);
+        }
+        if (action.stage) {
+          sessionStorage.setItem("kafi.aiModeStage", action.stage);
+        }
+        handleSelectTab("ai-mode");
+        break;
+      case "external":
+        window.open(action.url, "_blank", "noopener,noreferrer");
+        break;
+      case "mailer":
+        void openMailerApp();
+        break;
+      default:
+        break;
+    }
+  }
+
+  function handleViewInterestedClientsFeed() {
+    sessionStorage.setItem("kafi.aiModeStage", "interested");
+    setTab("ai-mode");
+    setSelectedLeadId(null);
+  }
+
   async function handleAcknowledgeInterestedFollowUp(buyerId: number) {
     await client.acknowledgeInterestedFollowUp(buyerId);
     const reminders = await client.listInterestedFollowUps();
@@ -567,7 +696,14 @@ function DashboardApp() {
 
   const defaultTableSection: LeadsTableSection = isAdmin ? "master" : "old_clients";
 
+  const indexAssignees = assigneeSectionUsers.map((u) => ({
+    id: u.id,
+    username: u.username,
+  }));
+
   const navItems: NavItem[] = [
+    { id: "indexes", label: "Indexes", count: 0 },
+    { id: "user-manual", label: "User Manual", count: 0 },
     {
       id: "whatsapp-inbox",
       label: "WhatsApp",
@@ -675,6 +811,7 @@ function DashboardApp() {
           onViewClient={handleViewInterestedClient}
           onAcknowledge={handleAcknowledgeInterestedFollowUp}
         />
+        <InterestedClientsActivityToasts onViewFeed={handleViewInterestedClientsFeed} />
         <AppSidebar
           navItems={navItems}
           activeTab={tab}
@@ -754,6 +891,23 @@ function DashboardApp() {
               </div>
             )}
 
+            {tab === "indexes" && (
+              <IndexesPage
+                isAdmin={isAdmin}
+                quotationAgentUrl={QUOTATION_AGENT_URL}
+                assignees={indexAssignees}
+                onNavigate={handleIndexNavigate}
+              />
+            )}
+            {tab === "user-manual" && (
+              <UserManualPage
+                isAdmin={isAdmin}
+                quotationAgentUrl={QUOTATION_AGENT_URL}
+                assignees={indexAssignees}
+                onNavigate={handleIndexNavigate}
+                onOpenIndexesSection={handleOpenIndexesSection}
+              />
+            )}
             {tab === "activity" && (
               <EmailActivityPage onError={setError} onUnreadChange={setEmailActivityUnread} />
             )}

@@ -9,7 +9,7 @@ import {
 interface InterestedFollowUpAlertToastsProps {
   onViewClient: (
     buyerId: number,
-    section?: "interested_clients" | "not_received_call_clients",
+    section?: "interested_clients" | "not_received_call_clients" | "sales_interested_clients",
   ) => void;
   onAcknowledge: (buyerId: number) => Promise<void>;
 }

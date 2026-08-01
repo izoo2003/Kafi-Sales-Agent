@@ -1,6 +1,16 @@
 import { useEffect, useState } from "react";
+import {
+  IconBell,
+  IconChevronDown,
+  IconChevronRight,
+  IconExternal,
+  IconUser,
+  NavIcon,
+} from "./icons/AppIcons";
 
 export type Tab =
+  | "indexes"
+  | "user-manual"
   | "activity"
   | "email-templates"
   | "whatsapp-templates"
@@ -164,6 +174,12 @@ export function AppSidebar({
     onMobileClose?.();
   }
 
+  function navIconClass(highlighted: boolean, activeGroup = false) {
+    if (highlighted) return "text-white";
+    if (activeGroup) return "text-emerald-300";
+    return "text-slate-400 group-hover:text-slate-200";
+  }
+
   function closeSidebar() {
     onToggleDesktop?.();
     closeMobile();
@@ -226,22 +242,13 @@ export function AppSidebar({
                     onOpenMailer?.();
                     closeMobile();
                   }}
-                  className="w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg text-sm font-medium text-left transition text-slate-300 hover:bg-slate-800 hover:text-slate-100"
+                  className="w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg text-sm font-medium text-left transition text-slate-300 hover:bg-slate-800 hover:text-slate-100 group"
                 >
-                  <span className="flex items-center gap-2 truncate min-w-0">
-                    {item.alert && (
-                      <span
-                        aria-label="new messages"
-                        className="shrink-0 text-emerald-400 animate-pulse"
-                      >
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                          <path d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm7-5-1.6-1.6V10a5.4 5.4 0 0 0-4-5.23V4a1.4 1.4 0 0 0-2.8 0v.77A5.4 5.4 0 0 0 6.6 10v5.4L5 17a.9.9 0 0 0 .64 1.54h12.72A.9.9 0 0 0 19 17Z" />
-                        </svg>
-                      </span>
-                    )}
+                  <span className="flex items-center gap-2.5 truncate min-w-0">
+                    <NavIcon navId="mail" className={navIconClass(false)} />
                     <span className="truncate">{item.label}</span>
                   </span>
-                  <span className="shrink-0 text-xs opacity-70">↗</span>
+                  <IconExternal size="xs" className="text-slate-500 shrink-0" />
                 </button>
               );
             }
@@ -254,10 +261,13 @@ export function AppSidebar({
                     window.open(item.external, "_blank", "noopener,noreferrer");
                     closeMobile();
                   }}
-                  className="w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg text-sm font-medium text-left transition text-slate-300 hover:bg-slate-800 hover:text-slate-100"
+                  className="w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg text-sm font-medium text-left transition text-slate-300 hover:bg-slate-800 hover:text-slate-100 group"
                 >
-                  <span className="truncate">{item.label}</span>
-                  <span className="shrink-0 text-xs opacity-70">↗</span>
+                  <span className="flex items-center gap-2.5 truncate min-w-0">
+                    <NavIcon navId="quotation-agent" className={navIconClass(false)} />
+                    <span className="truncate">{item.label}</span>
+                  </span>
+                  <IconExternal size="xs" className="text-slate-500 shrink-0" />
                 </button>
               );
             }
@@ -316,7 +326,7 @@ export function AppSidebar({
             return (
               <div key={item.id} className="space-y-1">
                 <div
-                  className={`w-full flex items-center rounded-lg text-sm font-medium transition ${
+                  className={`w-full flex items-center rounded-lg text-sm font-medium transition group ${
                     parentHighlighted
                       ? "bg-emerald-600 text-white shadow-sm shadow-emerald-900/30"
                       : isExpandableParent && isActive
@@ -350,9 +360,9 @@ export function AppSidebar({
                       onSelectTab(item.id);
                       closeMobile();
                     }}
-                    className="flex-1 min-w-0 flex items-center justify-between gap-2 px-3 py-2.5 text-left rounded-lg"
+                    className="flex-1 min-w-0 flex items-center justify-between gap-2 px-3 py-2.5 text-left rounded-lg group"
                   >
-                    <span className="flex items-center gap-2 truncate min-w-0">
+                    <span className="flex items-center gap-2.5 truncate min-w-0">
                       {hasAlert && (
                         <span
                           aria-label="new messages"
@@ -360,11 +370,13 @@ export function AppSidebar({
                             parentHighlighted ? "text-white" : "text-emerald-400"
                           } animate-pulse`}
                         >
-                          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                            <path d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm7-5-1.6-1.6V10a5.4 5.4 0 0 0-4-5.23V4a1.4 1.4 0 0 0-2.8 0v.77A5.4 5.4 0 0 0 6.6 10v5.4L5 17a.9.9 0 0 0 .64 1.54h12.72A.9.9 0 0 0 19 17Z" />
-                          </svg>
+                          <IconBell size="xs" />
                         </span>
                       )}
+                      <NavIcon
+                        navId={item.id}
+                        className={navIconClass(parentHighlighted, isExpandableParent && isActive)}
+                      />
                       <span className="truncate">{item.label}</span>
                     </span>
                     <span
@@ -392,13 +404,17 @@ export function AppSidebar({
                         e.stopPropagation();
                         setMenuOpen((open) => !open);
                       }}
-                      className={`shrink-0 px-2.5 py-2.5 rounded-r-lg text-xs ${
+                      className={`shrink-0 px-2.5 py-2.5 rounded-r-lg ${
                         parentHighlighted || (isExpandableParent && isActive)
                           ? "text-emerald-50/90 hover:bg-emerald-500/20"
                           : "text-slate-400 hover:text-slate-200"
                       }`}
                     >
-                      {menuOpen ? "▾" : "▸"}
+                      {menuOpen ? (
+                        <IconChevronDown size="xs" />
+                      ) : (
+                        <IconChevronRight size="xs" />
+                      )}
                     </button>
                   )}
                 </div>
@@ -425,13 +441,23 @@ export function AppSidebar({
                             }
                             closeMobile();
                           }}
-                          className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm text-left transition ${
+                          className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm text-left transition group ${
                             childActive
                               ? "bg-emerald-600 text-white shadow-sm shadow-emerald-900/30"
                               : "text-slate-400 hover:bg-slate-800 hover:text-slate-100"
                           }`}
                         >
-                          <span className="truncate">{child.label}</span>
+                          <span className="flex items-center gap-2.5 truncate min-w-0">
+                            <NavIcon
+                              navId={child.id}
+                              className={
+                                childActive
+                                  ? "text-white"
+                                  : navIconClass(false)
+                              }
+                            />
+                            <span className="truncate">{child.label}</span>
+                          </span>
                           <span
                             className={`shrink-0 text-xs tabular-nums px-1.5 py-0.5 rounded ${
                               childActive
@@ -453,11 +479,14 @@ export function AppSidebar({
 
         {(userLabel || userRole) && (
           <div className="px-3 py-4 border-t border-slate-800 pb-[max(1rem,env(safe-area-inset-bottom))]">
-            <div className="px-3 py-2 rounded-lg bg-slate-900/80 border border-slate-800">
-              <p className="text-sm text-slate-200 truncate">{userLabel}</p>
-              {userRole && (
-                <p className="text-xs text-slate-500 mt-0.5 capitalize">{userRole}</p>
-              )}
+            <div className="px-3 py-2 rounded-lg bg-slate-900/80 border border-slate-800 flex items-start gap-2.5">
+              <IconUser size="sm" className="text-slate-500 mt-0.5 shrink-0" />
+              <div className="min-w-0">
+                <p className="text-sm text-slate-200 truncate">{userLabel}</p>
+                {userRole && (
+                  <p className="text-xs text-slate-500 mt-0.5 capitalize">{userRole}</p>
+                )}
+              </div>
             </div>
           </div>
         )}

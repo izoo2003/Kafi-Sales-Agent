@@ -668,6 +668,7 @@ def update_call_followup(
         buyer_id=interaction.contact.buyer_id,
         new_outcome=new_outcome,
         previous_outcome=existing_outcome,
+        user_id=app_user_id,
     )
 
     db.commit()
@@ -710,15 +711,6 @@ def update_call_followup(
                     company_name=company,
                     buyer_id=buyer.id,
                     event_type="placed",
-                )
-            elif new_outcome == "interested" and buyer:
-                from modules import ai_mode as ai_mode_module
-
-                ai_mode_module.mark_buyer_interested_stage(
-                    db,
-                    buyer.id,
-                    user_id=app_user_id,
-                    note=f"Call outcome: Client is Interested",
                 )
         if notes_changed and (new_notes or "").strip():
             preview = (new_notes or "").strip()

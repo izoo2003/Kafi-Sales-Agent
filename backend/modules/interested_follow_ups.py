@@ -88,6 +88,8 @@ def sync_buyer_interested_status(
     buyer_id: int,
     new_outcome: str | None,
     previous_outcome: str | None = None,
+    user_id: int | None = None,
+    user_label: str | None = None,
 ) -> None:
     buyer = db.get(Buyer, buyer_id)
     if not buyer:
@@ -98,10 +100,25 @@ def sync_buyer_interested_status(
 
     if new == "interested":
         # Client is Interested → Interested Clients table (not Follow up).
+        was_new = buyer.interested_clients_list_at is None
         buyer.interested_at = _utcnow()
         buyer.interested_follow_up_ack_at = None
-        if buyer.interested_clients_list_at is None:
-            buyer.interested_clients_list_at = _utcnow()
+        if was_new:
+            if user_id is not None:
+                from modules import ai_mode as ai_mode_module
+
+                ai_mode_module.record_interested_activity(
+                    db,
+                    user_id=user_id,
+                    company_name=buyer.company_name,
+                    buyer_id=buyer.id,
+                    source="call",
+                    user_label=user_label,
+                    note="Call outcome: Client is Interested",
+                    commit=False,
+                )
+            else:
+                buyer.interested_clients_list_at = _utcnow()
     elif new == "follow_up":
         # Next call scheduled — Follow up clients only; does not imply interest.
         if prev == "interested":
@@ -136,6 +153,8 @@ def set_interested_clients_list_membership(
     *,
     buyer_ids: list[int],
     in_list: bool,
+    user_id: int | None = None,
+    user_label: str | None = None,
 ) -> dict[str, object]:
     """Add/remove buyers from the Interested Clients leads-table section."""
     now = _utcnow()
@@ -146,7 +165,20 @@ def set_interested_clients_list_membership(
             continue
         if in_list:
             if buyer.interested_clients_list_at is None:
-                buyer.interested_clients_list_at = now
+                if user_id is not None:
+                    from modules import ai_mode as ai_mode_module
+
+                    ai_mode_module.record_interested_activity(
+                        db,
+                        user_id=user_id,
+                        company_name=buyer.company_name,
+                        buyer_id=buyer.id,
+                        source="manual",
+                        user_label=user_label,
+                        commit=False,
+                    )
+                else:
+                    buyer.interested_clients_list_at = now
                 updated_ids.append(buyer_id)
         elif buyer.interested_clients_list_at is not None:
             buyer.interested_clients_list_at = None

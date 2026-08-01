@@ -1,0 +1,406 @@
+import type {
+  LeadsTableSection,
+  MailSection,
+  Tab,
+  WhatsAppSection,
+} from "../components/AppSidebar";
+
+export type IndexAction =
+  | { type: "tab"; tab: Tab }
+  | { type: "table"; section: LeadsTableSection }
+  | { type: "mail"; section: MailSection }
+  | { type: "whatsapp"; section: WhatsAppSection }
+  | { type: "ai-mode"; panel?: "auto-reply" | "lifecycle"; stage?: string }
+  | { type: "external"; url: string }
+  | { type: "mailer" };
+
+export type IndexIconKey =
+  | "search"
+  | "table"
+  | "users"
+  | "heart"
+  | "phone"
+  | "x-circle"
+  | "message"
+  | "template"
+  | "inbox"
+  | "activity"
+  | "mail"
+  | "call"
+  | "robot"
+  | "sparkles"
+  | "chart"
+  | "quote"
+  | "settings";
+
+export interface IndexItem {
+  id: string;
+  title: string;
+  description: string;
+  icon: IndexIconKey;
+  action: IndexAction;
+  adminOnly?: boolean;
+}
+
+export interface IndexSection {
+  number: number;
+  title: string;
+  description: string;
+  openAction: IndexAction;
+  items: IndexItem[];
+  adminOnly?: boolean;
+}
+
+/** Order matches sidebar: WhatsApp → Discover/Master table → Mail → Vercel mailer → Calls → … */
+export const INDEX_SECTIONS: IndexSection[] = [
+  {
+    number: 1,
+    title: "WhatsApp",
+    description:
+      "Essence brand WhatsApp — inbox conversations and Meta-approved template sends.",
+    openAction: { type: "whatsapp", section: "whatsapp-inbox" },
+    items: [
+      {
+        id: "1.1",
+        title: "WhatsApp inbox",
+        description: "Essence brand number — conversations and quick replies.",
+        icon: "message",
+        action: { type: "whatsapp", section: "whatsapp-inbox" },
+      },
+      {
+        id: "1.2",
+        title: "WhatsApp templates",
+        description: "Meta-approved templates — bulk or single send from leads table.",
+        icon: "template",
+        action: { type: "whatsapp", section: "whatsapp-templates" },
+      },
+    ],
+  },
+  {
+    number: 2,
+    title: "Discover Leads & Master table",
+    description:
+      "Prospect discovery, scrapped leads pool, client outcome buckets, and leads sent to each sales user.",
+    openAction: { type: "table", section: "master" },
+    items: [
+      {
+        id: "2.1",
+        title: "Discover Leads",
+        description: "Search and add new prospects from the web (admin).",
+        icon: "search",
+        action: { type: "tab", tab: "leads" },
+        adminOnly: true,
+      },
+      {
+        id: "2.2",
+        title: "Master table",
+        description: "Admin overview — assign, score, call, and bulk outreach from one table.",
+        icon: "table",
+        action: { type: "table", section: "master" },
+        adminOnly: true,
+      },
+      {
+        id: "2.3",
+        title: "Scrapped Leads",
+        description: "Unassigned scrapped pool under Master table (admin).",
+        icon: "table",
+        action: { type: "table", section: "all" },
+        adminOnly: true,
+      },
+      {
+        id: "2.4",
+        title: "Old clients",
+        description: "Repeat buyers and assigned client pool.",
+        icon: "users",
+        action: { type: "table", section: "old_clients" },
+      },
+      {
+        id: "2.5",
+        title: "Follow up clients",
+        description: "Next-call reminders — outcome Follow up, not interest.",
+        icon: "phone",
+        action: { type: "table", section: "interested_clients" },
+      },
+      {
+        id: "2.6",
+        title: "Interested Clients",
+        description: "Clients marked interested — from call outcome or manual move.",
+        icon: "heart",
+        action: { type: "table", section: "sales_interested_clients" },
+      },
+      {
+        id: "2.7",
+        title: "Not interested",
+        description: "Declined prospects — removed from active follow-up.",
+        icon: "x-circle",
+        action: { type: "table", section: "not_interested_clients" },
+      },
+      {
+        id: "2.8",
+        title: "Did not receive call",
+        description: "Unreachable numbers — schedule a retry reminder.",
+        icon: "phone",
+        action: { type: "table", section: "not_received_call_clients" },
+      },
+    ],
+  },
+  {
+    number: 3,
+    title: "Mail",
+    description:
+      "Personal IMAP mailbox — inbox, folders, activity log, templates, and custom labels.",
+    openAction: { type: "mail", section: "inbox" },
+    items: [
+      {
+        id: "3.1",
+        title: "Inbox",
+        description: "Read, reply, and compose from your company mailbox.",
+        icon: "inbox",
+        action: { type: "mail", section: "inbox" },
+      },
+      {
+        id: "3.2",
+        title: "Sent",
+        description: "Outbound messages already sent from this mailbox.",
+        icon: "mail",
+        action: { type: "mail", section: "sent" },
+      },
+      {
+        id: "3.3",
+        title: "Drafts",
+        description: "Saved drafts waiting to be sent.",
+        icon: "template",
+        action: { type: "mail", section: "drafts" },
+      },
+      {
+        id: "3.4",
+        title: "Trash",
+        description: "Deleted messages — recover or purge.",
+        icon: "x-circle",
+        action: { type: "mail", section: "trash" },
+      },
+      {
+        id: "3.5",
+        title: "Archive",
+        description: "Archived threads kept out of the inbox.",
+        icon: "inbox",
+        action: { type: "mail", section: "archive" },
+      },
+      {
+        id: "3.6",
+        title: "Email Activity",
+        description: "Send log — success, failures, and bulk batch status.",
+        icon: "activity",
+        action: { type: "mail", section: "activity" },
+      },
+      {
+        id: "3.7",
+        title: "Email templates",
+        description: "Saved templates with buyer merge fields for bulk outreach.",
+        icon: "template",
+        action: { type: "mail", section: "email-templates" },
+      },
+      {
+        id: "3.8",
+        title: "Custom mail labels",
+        description: "User labels under Mail (e.g. LinkedIn) — filter inbox by label.",
+        icon: "inbox",
+        action: { type: "mail", section: "inbox" },
+      },
+    ],
+  },
+  {
+    number: 4,
+    title: "Vercel mailer",
+    description: "Full mailer web app — labels, drafts, and advanced compose.",
+    openAction: { type: "mailer" },
+    items: [
+      {
+        id: "4.1",
+        title: "Vercel mailer",
+        description: "Opens the Vercel mailer in the same session when configured.",
+        icon: "mail",
+        action: { type: "mailer" },
+      },
+    ],
+  },
+  {
+    number: 5,
+    title: "Calls",
+    description: "Twilio call log, floating dialpad, and post-call outcomes.",
+    openAction: { type: "tab", tab: "calls" },
+    items: [
+      {
+        id: "5.1",
+        title: "Calls",
+        description: "Recent calls with outcomes, notes, and recordings.",
+        icon: "call",
+        action: { type: "tab", tab: "calls" },
+      },
+      {
+        id: "5.2",
+        title: "Floating dialpad",
+        description: "Dial any lead from the table — available on every screen.",
+        icon: "phone",
+        action: { type: "tab", tab: "calls" },
+      },
+      {
+        id: "5.3",
+        title: "Call outcomes",
+        description:
+          "Client is Interested → Interested Clients; Follow up → Follow up clients.",
+        icon: "heart",
+        action: { type: "table", section: "sales_interested_clients" },
+      },
+    ],
+  },
+  {
+    number: 6,
+    title: "Quotation agent",
+    description: "ESSENCE catalog quotations with carton specs and PDF export.",
+    openAction: { type: "external", url: "__QUOTATION_AGENT__" },
+    items: [
+      {
+        id: "6.1",
+        title: "Quotation agent",
+        description: "Build ESSENCE quotations with carton specs and PDF export.",
+        icon: "quote",
+        action: { type: "external", url: "__QUOTATION_AGENT__" },
+      },
+    ],
+  },
+  {
+    number: 7,
+    title: "Brand assistant",
+    description: "Ask about Kafi / ESSENCE products, specs, and export guidance.",
+    openAction: { type: "tab", tab: "chatbot" },
+    items: [
+      {
+        id: "7.1",
+        title: "Brand assistant",
+        description: "Chatbot for product and export questions.",
+        icon: "robot",
+        action: { type: "tab", tab: "chatbot" },
+      },
+    ],
+  },
+  {
+    number: 8,
+    title: "AI Mode",
+    description:
+      "Auto-reply to query emails, company lifecycle stages, and team activity feeds.",
+    openAction: { type: "ai-mode", panel: "lifecycle" },
+    items: [
+      {
+        id: "8.1",
+        title: "Auto-reply settings",
+        description: "Keywords, templates, and WhatsApp/email auto-reply toggles.",
+        icon: "sparkles",
+        action: { type: "ai-mode", panel: "auto-reply" },
+      },
+      {
+        id: "8.2",
+        title: "New Lead (queries)",
+        description: "Inbox scan for buyer inquiry emails — reply from your mailbox.",
+        icon: "inbox",
+        action: { type: "ai-mode", panel: "lifecycle", stage: "new_lead" },
+      },
+      {
+        id: "8.3",
+        title: "Potential Clients",
+        description: "AA/AAA scrapped leads — assign to sales users.",
+        icon: "users",
+        action: { type: "ai-mode", panel: "lifecycle", stage: "potential_clients" },
+        adminOnly: true,
+      },
+      {
+        id: "8.4",
+        title: "Assigned / Calling / Follow-up feeds",
+        description: "Per-user activity — transfers, calls, and follow-up placements.",
+        icon: "activity",
+        action: { type: "ai-mode", panel: "lifecycle", stage: "assigned" },
+      },
+      {
+        id: "8.5",
+        title: "Interested lifecycle feed",
+        description: "Who added clients to Interested Clients — admin team scores.",
+        icon: "heart",
+        action: { type: "ai-mode", panel: "lifecycle", stage: "interested" },
+      },
+    ],
+  },
+  {
+    number: 9,
+    title: "KPI Generation",
+    description: "Per-user and team activity reports for calls, emails, and outcomes.",
+    openAction: { type: "tab", tab: "kpi" },
+    items: [
+      {
+        id: "9.1",
+        title: "KPI Generation",
+        description: "Calls, emails, outcomes, and team rollup for admins.",
+        icon: "chart",
+        action: { type: "tab", tab: "kpi" },
+      },
+    ],
+  },
+  {
+    number: 10,
+    title: "Users",
+    description: "Create sales accounts, mailboxes, roles, and lead assignment (admin).",
+    openAction: { type: "tab", tab: "users" },
+    adminOnly: true,
+    items: [
+      {
+        id: "10.1",
+        title: "Users",
+        description: "Create sales accounts, mailboxes, and admin access.",
+        icon: "settings",
+        action: { type: "tab", tab: "users" },
+        adminOnly: true,
+      },
+      {
+        id: "10.2",
+        title: "Assign leads to sales users",
+        description: "Transfer scrapped leads — appears as Leads Sent To {user} in sidebar.",
+        icon: "users",
+        action: { type: "table", section: "master" },
+        adminOnly: true,
+      },
+    ],
+  },
+];
+
+export interface AssigneeIndexInput {
+  id: number;
+  username: string;
+}
+
+function assigneeIndexItems(assignees: AssigneeIndexInput[]): IndexItem[] {
+  return assignees.map((user, index) => ({
+    id: `2.${9 + index}`,
+    title: `Leads Sent To ${user.username}`,
+    description: `Leads assigned to ${user.username} — open their working list.`,
+    icon: "users" as const,
+    action: {
+      type: "table" as const,
+      section: `assigned:${user.id}` as LeadsTableSection,
+    },
+    adminOnly: true,
+  }));
+}
+
+export function visibleIndexSections(
+  isAdmin: boolean,
+  assignees: AssigneeIndexInput[] = [],
+): IndexSection[] {
+  return INDEX_SECTIONS.filter((section) => !section.adminOnly || isAdmin).map(
+    (section) => {
+      let items = section.items.filter((item) => !item.adminOnly || isAdmin);
+      if (section.number === 2 && isAdmin && assignees.length > 0) {
+        items = [...items, ...assigneeIndexItems(assignees)];
+      }
+      return { ...section, items };
+    },
+  );
+}

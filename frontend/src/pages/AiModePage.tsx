@@ -5,6 +5,8 @@ import {
   type AiModeAutoReplyLogRow,
   type AiModeCallActivityRow,
   type AiModeFollowUpActivityRow,
+  type AiModeInterestedActivityRow,
+  type AiModeInterestedUserScore,
   type AiModeInterestedLeadRow,
   type AiModeLifecycleRow,
   type AiModeQueryRow,
@@ -98,6 +100,14 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
     AiModeFollowUpActivityRow[]
   >([]);
   const [followUpCount, setFollowUpCount] = useState(0);
+  const [interestedActivityRows, setInterestedActivityRows] = useState<
+    AiModeInterestedActivityRow[]
+  >([]);
+  const [interestedInListCount, setInterestedInListCount] = useState(0);
+  const [interestedMyCount, setInterestedMyCount] = useState(0);
+  const [interestedByUser, setInterestedByUser] = useState<
+    AiModeInterestedUserScore[]
+  >([]);
   const [potentialRows, setPotentialRows] = useState<PotentialClientRow[]>([]);
   const [potentialCount, setPotentialCount] = useState(0);
 
@@ -161,7 +171,8 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
         stageFilter === "potential_clients" ||
         stageFilter === "assigned" ||
         stageFilter === "calling" ||
-        stageFilter === "follow_up";
+        stageFilter === "follow_up" ||
+        stageFilter === "interested";
       const [data] = await Promise.all([
         client.listAiModeLifecycle({
           // Activity / grade feeds — other stages list companies.
@@ -186,7 +197,8 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
             r.stage !== "potential_clients" &&
             r.stage !== "assigned" &&
             r.stage !== "calling" &&
-            r.stage !== "follow_up",
+            r.stage !== "follow_up" &&
+            r.stage !== "interested",
         ),
       );
       setPipeline(data.pipeline || {});
@@ -204,6 +216,13 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
         (await client.listAiModeFollowUpActivities(100));
       setFollowUpActivityRows(followUps.rows || []);
       setFollowUpCount(followUps.total_events || 0);
+      const interested =
+        data.interested_activities ||
+        (await client.listAiModeInterestedActivities({ limit: 100 }));
+      setInterestedActivityRows(interested.rows || []);
+      setInterestedInListCount(interested.total_in_list || 0);
+      setInterestedMyCount(interested.my_placed_count || 0);
+      setInterestedByUser(interested.by_user || []);
       const potential =
         data.potential_clients ||
         data.interested_leads ||
@@ -299,6 +318,19 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
   useEffect(() => {
     void loadSettings();
   }, [loadSettings]);
+
+  useEffect(() => {
+    const pending = sessionStorage.getItem("kafi.aiModeStage");
+    const pendingPanel = sessionStorage.getItem("kafi.aiModePanel");
+    if (pendingPanel === "auto-reply" || pendingPanel === "lifecycle") {
+      setPanel(pendingPanel);
+      sessionStorage.removeItem("kafi.aiModePanel");
+    }
+    if (!pending) return;
+    setPanel("lifecycle");
+    setStageFilter(pending);
+    sessionStorage.removeItem("kafi.aiModeStage");
+  }, []);
 
   useEffect(() => {
     if (panel !== "lifecycle") return;
@@ -780,7 +812,9 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                         ? callingCount
                         : s.key === "follow_up"
                           ? followUpCount
-                          : (pipeline[s.key] ?? 0);
+                          : s.key === "interested"
+                            ? interestedInListCount
+                            : (pipeline[s.key] ?? 0);
               return (
                 <button
                   key={s.key}
@@ -1053,12 +1087,82 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                 <p className="text-sm text-slate-500">Loading follow-up activity…</p>
               ) : followUpActivityRows.length === 0 ? (
                 <p className="text-sm text-slate-500">
-                  No follow-up activity yet. Mark a call as Interested (Follow up clients)
-                  or set a follow-up date and it will appear here.
+                  No follow-up activity yet. Mark a call as Follow up or set a follow-up
+                  date and it will appear here.
                 </p>
               ) : (
                 <ul className="divide-y divide-slate-800 max-h-[32rem] overflow-y-auto">
                   {followUpActivityRows.map((row) => (
+                    <li key={row.id} className="py-3 px-1">
+                      <p className="text-sm text-slate-100">{row.message}</p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        {row.user_label}
+                        {row.company_name ? ` · ${row.company_name}` : ""}
+                        {row.created_at
+                          ? ` · ${new Date(row.created_at).toLocaleString()}`
+                          : ""}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          ) : stageFilter === "interested" ? (
+            <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-medium text-slate-200">
+                    Interested Clients activity{" "}
+                    <span className="text-emerald-400/90">
+                      ({interestedInListCount})
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Linked to the Interested Clients leads table. Tracks who added each
+                    client — from call outcome “Client is Interested” or manual move.
+                    {isAdmin
+                      ? " Admin sees every user’s score and full feed."
+                      : ` You have added ${interestedMyCount} client${interestedMyCount === 1 ? "" : "s"} to Interested Clients.`}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={lifecycleLoading}
+                  onClick={() => void loadLifecycle()}
+                  className="rounded-lg bg-violet-700 hover:bg-violet-600 disabled:opacity-50 px-3 py-1.5 text-sm"
+                >
+                  {lifecycleLoading ? "Refreshing…" : "Refresh"}
+                </button>
+              </div>
+              {isAdmin && interestedByUser.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {interestedByUser.map((score) => (
+                    <span
+                      key={score.user_id}
+                      className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-200"
+                    >
+                      {score.user_label}: {score.placed_count} client
+                      {score.placed_count === 1 ? "" : "s"}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {!isAdmin && interestedMyCount > 0 && (
+                <p className="text-xs text-emerald-300/90 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2">
+                  You added {interestedMyCount} client
+                  {interestedMyCount === 1 ? "" : "s"} to Interested Clients.
+                </p>
+              )}
+              {lifecycleLoading && interestedActivityRows.length === 0 ? (
+                <p className="text-sm text-slate-500">Loading interested activity…</p>
+              ) : interestedActivityRows.length === 0 ? (
+                <p className="text-sm text-slate-500">
+                  No Interested Clients activity yet. Mark a call as Client is Interested
+                  or move leads to Interested Clients from the leads table.
+                </p>
+              ) : (
+                <ul className="divide-y divide-slate-800 max-h-[32rem] overflow-y-auto">
+                  {interestedActivityRows.map((row) => (
                     <li key={row.id} className="py-3 px-1">
                       <p className="text-sm text-slate-100">{row.message}</p>
                       <p className="text-xs text-slate-500 mt-1">
@@ -1190,8 +1294,8 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
               ) : lifecycleRows.length === 0 ? (
                 <p className="text-sm text-slate-500">
                   {stageFilter === "interested"
-                    ? "No interested companies yet. When a call is labeled Client is Interested, the company moves here."
-                    : "No companies in this stage yet. Use New Lead, Potential Clients, Assigned, Calling, or Follow-up for the activity / grade feeds — or move a company into this stage from the pipeline."}
+                    ? "Select the Interested tab above to see who added clients to Interested Clients."
+                    : "No companies in this stage yet. Use New Lead, Potential Clients, Assigned, Calling, Follow-up, or Interested for the activity / grade feeds — or move a company into this stage from the pipeline."}
                 </p>
               ) : (
                 <div className="overflow-x-auto rounded-xl border border-slate-800">

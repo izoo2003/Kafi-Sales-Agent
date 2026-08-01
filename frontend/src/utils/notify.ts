@@ -16,7 +16,15 @@ export interface InterestedFollowUpPopupPayload {
   contactName: string | null;
   dueAt: string;
   daysSincePlacement: number;
-  tableSection?: "interested_clients" | "not_received_call_clients";
+  tableSection?: "interested_clients" | "not_received_call_clients" | "sales_interested_clients";
+}
+
+export interface InterestedClientsActivityPopupPayload {
+  id: string;
+  message: string;
+  count: number;
+  isSelf: boolean;
+  userLabel?: string;
 }
 
 const MODE_STORAGE_KEY = "kafi.notificationMode";
@@ -26,6 +34,9 @@ let audioCtx: AudioContext | null = null;
 let audioUnlocked = false;
 const popupListeners = new Set<(payload: InboxPopupPayload) => void>();
 const followUpListeners = new Set<(payload: InterestedFollowUpPopupPayload) => void>();
+const interestedClientsListeners = new Set<
+  (payload: InterestedClientsActivityPopupPayload) => void
+>();
 const prefListeners = new Set<() => void>();
 
 function getAudioContext(): AudioContext | null {
@@ -89,12 +100,27 @@ export function subscribeInterestedFollowUpPopup(
   };
 }
 
+export function subscribeInterestedClientsActivityPopup(
+  listener: (payload: InterestedClientsActivityPopupPayload) => void,
+) {
+  interestedClientsListeners.add(listener);
+  return () => {
+    interestedClientsListeners.delete(listener);
+  };
+}
+
 function emitInboxPopup(payload: InboxPopupPayload) {
   popupListeners.forEach((listener) => listener(payload));
 }
 
 function emitInterestedFollowUpPopup(payload: InterestedFollowUpPopupPayload) {
   followUpListeners.forEach((listener) => listener(payload));
+}
+
+function emitInterestedClientsActivityPopup(
+  payload: InterestedClientsActivityPopupPayload,
+) {
+  interestedClientsListeners.forEach((listener) => listener(payload));
 }
 
 /** Call once after a user click/keypress so browsers allow sound. */
@@ -298,5 +324,31 @@ export function alertInterestedFollowUp(details: {
     dueAt: details.dueAt,
     daysSincePlacement: details.daysSincePlacement ?? 0,
     tableSection: details.tableSection,
+  });
+}
+
+export function alertInterestedClientsActivity(details: {
+  id: string;
+  message: string;
+  count: number;
+  isSelf: boolean;
+  userLabel?: string;
+}) {
+  const mode = getNotificationMode();
+  if (mode === "off") return;
+
+  applyAlertEffects(mode, details.message);
+
+  showDesktopNotification(
+    details.isSelf ? "Interested Clients update" : "Team Interested Clients update",
+    details.message,
+  );
+
+  emitInterestedClientsActivityPopup({
+    id: details.id,
+    message: details.message,
+    count: details.count,
+    isSelf: details.isSelf,
+    userLabel: details.userLabel,
   });
 }

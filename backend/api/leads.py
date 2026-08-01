@@ -630,6 +630,8 @@ def set_interested_clients_membership(
         db,
         buyer_ids=payload.lead_ids,
         in_list=payload.in_list,
+        user_id=user.id,
+        user_label=user.username or user.full_name,
     )
     return LeadTableInterestedClientsMembershipResponse(**result)
 

@@ -17,11 +17,13 @@ from db.models import (
     AiCallActivityLog,
     AiCompanyLifecycle,
     AiFollowUpActivityLog,
+    AiInterestedActivityLog,
     AiLeadTransferLog,
     AiModeAutoReplyLog,
     AiModeQueryLog,
     AiModeSettings,
     AppUser,
+    AppUserRole,
     Buyer,
     Channel,
     Contact,
@@ -1188,6 +1190,8 @@ def lifecycle_pipeline_counts(db: Session) -> dict[str, int]:
     # Follow-up chip tracks Follow up clients activity across all users.
     follow_ups = list_follow_up_activities(db, limit=1)
     counts["follow_up"] = int(follow_ups.get("total_events") or 0)
+    # Interested chip = buyers currently on Interested Clients table.
+    counts["interested"] = _interested_clients_list_count(db)
     # Potential Clients = Scrapped Leads with company + AI grade AA/AAA.
     potential = list_potential_clients(db, limit=1)
     counts["potential_clients"] = int(potential.get("total") or 0)
@@ -1774,6 +1778,167 @@ def list_follow_up_activities(db: Session, *, limit: int = 100) -> dict[str, Any
                 "company_name": r.company_name,
                 "event_type": r.event_type,
                 "follow_up_at": r.follow_up_at.isoformat() if r.follow_up_at else None,
+                "message": r.message,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+def _interested_clients_list_count(db: Session) -> int:
+    from sqlalchemy import func
+
+    return int(
+        db.query(func.count(Buyer.id))
+        .filter(Buyer.interested_clients_list_at.isnot(None))
+        .scalar()
+        or 0
+    )
+
+
+def _is_admin_user(user: AppUser) -> bool:
+    role = user.role.value if isinstance(user.role, AppUserRole) else str(user.role)
+    return role == AppUserRole.admin.value
+
+
+def record_interested_activity(
+    db: Session,
+    *,
+    user_id: int,
+    company_name: str,
+    buyer_id: int | None = None,
+    event_type: str = "placed",
+    source: str = "manual",
+    user_label: str | None = None,
+    note: str | None = None,
+    commit: bool = True,
+) -> dict[str, Any]:
+    """Log Interested Clients activity for Company lifecycle → Interested."""
+    user = db.get(AppUser, user_id)
+    label = _caller_label(user, user_label)
+    company = (company_name or "").strip() or "a company"
+    kind = (event_type or "placed").strip().lower() or "placed"
+    src = (source or "manual").strip().lower() or "manual"
+
+    if kind == "placed":
+        message = f"{label} added {company} to Interested Clients"
+        if buyer_id:
+            buyer = db.get(Buyer, buyer_id)
+            if buyer and buyer.interested_clients_list_at is None:
+                buyer.interested_clients_list_at = _utcnow()
+            mark_buyer_interested_stage(
+                db,
+                buyer_id,
+                user_id=user_id,
+                note=note or message,
+                commit=False,
+            )
+    else:
+        kind = "removed"
+        message = f"{label} removed {company} from Interested Clients"
+
+    row = AiInterestedActivityLog(
+        user_id=user_id,
+        user_label=label,
+        buyer_id=buyer_id,
+        company_name=company[:255],
+        event_type=kind,
+        source=src[:50],
+        message=message[:500],
+    )
+    db.add(row)
+    if commit:
+        db.commit()
+        db.refresh(row)
+    return {
+        "id": row.id if commit else None,
+        "user_id": user_id,
+        "user_label": label,
+        "buyer_id": buyer_id,
+        "company_name": company,
+        "event_type": kind,
+        "source": src,
+        "message": message,
+        "created_at": row.created_at.isoformat() if commit and row.created_at else None,
+    }
+
+
+def list_interested_activities(
+    db: Session,
+    *,
+    viewer: AppUser,
+    limit: int = 100,
+    after_id: int | None = None,
+) -> dict[str, Any]:
+    from sqlalchemy import func
+
+    is_admin = _is_admin_user(viewer)
+    total_in_list = _interested_clients_list_count(db)
+
+    placed_filter = AiInterestedActivityLog.event_type == "placed"
+    total_events = (
+        db.query(func.count(AiInterestedActivityLog.id)).filter(placed_filter).scalar()
+        or 0
+    )
+
+    by_user_rows = (
+        db.query(
+            AiInterestedActivityLog.user_id,
+            AiInterestedActivityLog.user_label,
+            func.count(AiInterestedActivityLog.id),
+        )
+        .filter(placed_filter)
+        .group_by(AiInterestedActivityLog.user_id, AiInterestedActivityLog.user_label)
+        .order_by(func.count(AiInterestedActivityLog.id).desc())
+        .all()
+    )
+    by_user = [
+        {
+            "user_id": uid,
+            "user_label": label,
+            "placed_count": int(cnt),
+        }
+        for uid, label, cnt in by_user_rows
+    ]
+    my_placed = next(
+        (item["placed_count"] for item in by_user if item["user_id"] == viewer.id),
+        0,
+    )
+
+    feed_query = db.query(AiInterestedActivityLog).filter(placed_filter)
+    if not is_admin:
+        feed_query = feed_query.filter(AiInterestedActivityLog.user_id == viewer.id)
+    if after_id is not None:
+        feed_query = feed_query.filter(AiInterestedActivityLog.id > after_id).order_by(
+            AiInterestedActivityLog.id.asc()
+        )
+    else:
+        feed_query = feed_query.order_by(
+            AiInterestedActivityLog.created_at.desc(),
+            AiInterestedActivityLog.id.desc(),
+        )
+
+    rows = feed_query.limit(limit).all()
+    latest_id = (
+        db.query(func.max(AiInterestedActivityLog.id)).scalar() or 0
+    )
+
+    return {
+        "total_in_list": total_in_list,
+        "total_events": int(total_events),
+        "my_placed_count": my_placed,
+        "by_user": by_user if is_admin else [],
+        "latest_id": int(latest_id),
+        "rows": [
+            {
+                "id": r.id,
+                "user_id": r.user_id,
+                "user_label": r.user_label,
+                "buyer_id": r.buyer_id,
+                "company_name": r.company_name,
+                "event_type": r.event_type,
+                "source": r.source,
                 "message": r.message,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }
