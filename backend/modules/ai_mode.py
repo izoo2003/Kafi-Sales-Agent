@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -1705,6 +1705,7 @@ def update_lifecycle(
                 "by_user_id": user_id,
             }
         )
+        _clear_meeting_schedule(row)
         row.stage = stage_key
         row.stage_entered_at = now
         row.history = history
@@ -2819,14 +2820,181 @@ def list_quotation_sent_clients_for_lifecycle(
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """Quotation Sent tab — default meeting not done."""
-    result = _list_lifecycle_stage_clients(
-        db, stage="quotation_sent", search=search, limit=limit, offset=offset
+    """Quotation Sent tab — meeting schedule per lifecycle row."""
+    from sqlalchemy import or_
+
+    q = (
+        db.query(Buyer, AiCompanyLifecycle)
+        .join(AiCompanyLifecycle, AiCompanyLifecycle.buyer_id == Buyer.id)
+        .filter(AiCompanyLifecycle.stage == "quotation_sent")
     )
-    result["rows"] = [
-        {**row, "meeting_status": "not_done"} for row in result.get("rows") or []
-    ]
-    return result
+    if search and search.strip():
+        like = f"%{search.strip()}%"
+        q = q.filter(
+            or_(
+                Buyer.company_name.ilike(like),
+                Buyer.country.ilike(like),
+            )
+        )
+
+    total = q.count()
+    rows = (
+        q.order_by(AiCompanyLifecycle.stage_entered_at.desc(), Buyer.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    out_rows: list[dict[str, Any]] = []
+    for buyer, lifecycle in rows:
+        out_rows.append(
+            {
+                "buyer_id": buyer.id,
+                "company_name": buyer.company_name,
+                "country": buyer.country,
+                "stage_entered_at": lifecycle.stage_entered_at.isoformat()
+                if lifecycle.stage_entered_at
+                else None,
+                "lifecycle_stage": lifecycle.stage,
+                "meeting_status": lifecycle.meeting_status or "not_scheduled",
+                "meeting_at": lifecycle.meeting_at.isoformat()
+                if lifecycle.meeting_at
+                else None,
+            }
+        )
+    return {"total": total, "rows": out_rows}
+
+
+MEETING_REMINDER_MINUTES = 15
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _clear_meeting_schedule(row: AiCompanyLifecycle) -> None:
+    row.meeting_status = "not_scheduled"
+    row.meeting_at = None
+    row.meeting_reminder_sent_at = None
+
+
+def _primary_contact_name(db: Session, buyer_id: int) -> str | None:
+    contact = (
+        db.query(Contact)
+        .filter(Contact.buyer_id == buyer_id)
+        .order_by(Contact.id.asc())
+        .first()
+    )
+    return contact.full_name if contact else None
+
+
+def update_quotation_meeting_schedule(
+    db: Session,
+    buyer_id: int,
+    *,
+    meeting_status: str,
+    meeting_at: datetime | None = None,
+    user_id: int | None = None,
+) -> dict[str, Any]:
+    """Set or clear a quotation-sent meeting schedule."""
+    buyer = db.get(Buyer, buyer_id)
+    if not buyer:
+        raise ValueError("Buyer not found")
+
+    row = ensure_lifecycle(db, buyer_id)
+    if row.stage != "quotation_sent":
+        raise ValueError("Lead must be in Quotation Sent to schedule a meeting")
+
+    status = (meeting_status or "").strip().lower()
+    if status not in {"not_scheduled", "scheduled"}:
+        raise ValueError("meeting_status must be not_scheduled or scheduled")
+
+    now = _utcnow()
+    if status == "not_scheduled":
+        _clear_meeting_schedule(row)
+    else:
+        if not meeting_at:
+            raise ValueError("meeting_at is required when meeting is scheduled")
+        at = _as_utc(meeting_at)
+        if at <= now:
+            raise ValueError("Meeting must be scheduled in the future")
+        row.meeting_status = "scheduled"
+        row.meeting_at = at
+        row.meeting_reminder_sent_at = None
+
+    row.updated_by_user_id = user_id
+    row.updated_at = now
+    db.commit()
+    db.refresh(row)
+    return {
+        "buyer_id": buyer.id,
+        "company_name": buyer.company_name,
+        "country": buyer.country,
+        "meeting_status": row.meeting_status,
+        "meeting_at": row.meeting_at.isoformat() if row.meeting_at else None,
+    }
+
+
+def process_quotation_meeting_alerts(db: Session) -> dict[str, Any]:
+    """Send upcoming-meeting alerts and auto-move to Negotiation when meeting time passes."""
+    now = _utcnow()
+    reminder_delta = timedelta(minutes=MEETING_REMINDER_MINUTES)
+    auto_moved: list[dict[str, Any]] = []
+    alerts: list[dict[str, Any]] = []
+    dirty = False
+
+    rows = (
+        db.query(AiCompanyLifecycle, Buyer)
+        .join(Buyer, Buyer.id == AiCompanyLifecycle.buyer_id)
+        .filter(
+            AiCompanyLifecycle.stage == "quotation_sent",
+            AiCompanyLifecycle.meeting_status == "scheduled",
+            AiCompanyLifecycle.meeting_at.isnot(None),
+        )
+        .all()
+    )
+
+    for lifecycle, buyer in rows:
+        meeting_at = _as_utc(lifecycle.meeting_at)
+        if now >= meeting_at:
+            update_lifecycle(
+                db,
+                buyer.id,
+                stage="negotiation",
+                notes="Meeting completed (scheduled time reached)",
+                user_id=None,
+            )
+            auto_moved.append(
+                {
+                    "buyer_id": buyer.id,
+                    "company_name": buyer.company_name,
+                    "meeting_at": meeting_at.isoformat(),
+                }
+            )
+            continue
+
+        reminder_at = meeting_at - reminder_delta
+        if now >= reminder_at and lifecycle.meeting_reminder_sent_at is None:
+            stamp = meeting_at.strftime("%Y%m%d%H%M")
+            minutes_until = max(0, int((meeting_at - now).total_seconds() // 60))
+            alerts.append(
+                {
+                    "id": f"{buyer.id}-{stamp}",
+                    "buyer_id": buyer.id,
+                    "company_name": buyer.company_name,
+                    "contact_name": _primary_contact_name(db, buyer.id),
+                    "meeting_at": meeting_at.isoformat(),
+                    "minutes_until": minutes_until,
+                }
+            )
+            lifecycle.meeting_reminder_sent_at = now
+            dirty = True
+
+    if dirty:
+        db.commit()
+
+    return {"alerts": alerts, "auto_moved": auto_moved}
 
 
 def mark_meeting_done(

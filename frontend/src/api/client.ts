@@ -2343,6 +2343,19 @@ export const client = {
       method: "PATCH",
       body: JSON.stringify(data),
     }),
+  updateQuotationMeeting: (
+    buyerId: number,
+    data: { meeting_status: "not_scheduled" | "scheduled"; meeting_at?: string | null },
+  ) =>
+    request<QuotationMeetingScheduleResult>(
+      `/ai-mode/quotation-sent/${buyerId}/meeting`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      },
+    ),
+  listQuotationMeetingAlerts: () =>
+    request<QuotationMeetingAlertsResponse>("/ai-mode/meeting-alerts"),
   ensureAiModeLifecycle: (buyerId: number) =>
     request<AiModeLifecycleRow>("/ai-mode/lifecycle/ensure", {
       method: "POST",
@@ -2608,7 +2621,34 @@ export interface AiModeLifecycleClientRow {
 }
 
 export interface AiModeQuotationSentClientRow extends AiModeLifecycleClientRow {
-  meeting_status: "not_done" | "done";
+  meeting_status: "not_scheduled" | "scheduled";
+  meeting_at: string | null;
+}
+
+export interface QuotationMeetingScheduleResult {
+  buyer_id: number;
+  company_name: string;
+  country: string | null;
+  meeting_status: "not_scheduled" | "scheduled";
+  meeting_at: string | null;
+}
+
+export interface QuotationMeetingAlert {
+  id: string;
+  buyer_id: number;
+  company_name: string;
+  contact_name: string | null;
+  meeting_at: string;
+  minutes_until: number;
+}
+
+export interface QuotationMeetingAlertsResponse {
+  alerts: QuotationMeetingAlert[];
+  auto_moved: Array<{
+    buyer_id: number;
+    company_name: string;
+    meeting_at: string;
+  }>;
 }
 
 export interface AiModeQuotationSentClientsResponse {

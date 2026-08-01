@@ -27,6 +27,15 @@ export interface InterestedClientsActivityPopupPayload {
   userLabel?: string;
 }
 
+export interface QuotationMeetingPopupPayload {
+  id: string;
+  buyerId: number;
+  companyName: string;
+  contactName: string | null;
+  meetingAt: string;
+  minutesUntil: number;
+}
+
 const MODE_STORAGE_KEY = "kafi.notificationMode";
 const MODE_VALUES: NotificationMode[] = ["popup_sound", "popup_voiceover", "off"];
 
@@ -37,6 +46,7 @@ const followUpListeners = new Set<(payload: InterestedFollowUpPopupPayload) => v
 const interestedClientsListeners = new Set<
   (payload: InterestedClientsActivityPopupPayload) => void
 >();
+const quotationMeetingListeners = new Set<(payload: QuotationMeetingPopupPayload) => void>();
 const prefListeners = new Set<() => void>();
 
 function getAudioContext(): AudioContext | null {
@@ -109,6 +119,15 @@ export function subscribeInterestedClientsActivityPopup(
   };
 }
 
+export function subscribeQuotationMeetingPopup(
+  listener: (payload: QuotationMeetingPopupPayload) => void,
+) {
+  quotationMeetingListeners.add(listener);
+  return () => {
+    quotationMeetingListeners.delete(listener);
+  };
+}
+
 function emitInboxPopup(payload: InboxPopupPayload) {
   popupListeners.forEach((listener) => listener(payload));
 }
@@ -121,6 +140,10 @@ function emitInterestedClientsActivityPopup(
   payload: InterestedClientsActivityPopupPayload,
 ) {
   interestedClientsListeners.forEach((listener) => listener(payload));
+}
+
+function emitQuotationMeetingPopup(payload: QuotationMeetingPopupPayload) {
+  quotationMeetingListeners.forEach((listener) => listener(payload));
 }
 
 /** Call once after a user click/keypress so browsers allow sound. */
@@ -324,6 +347,54 @@ export function alertInterestedFollowUp(details: {
     dueAt: details.dueAt,
     daysSincePlacement: details.daysSincePlacement ?? 0,
     tableSection: details.tableSection,
+  });
+}
+
+export function alertQuotationMeeting(details: {
+  id: string;
+  buyerId: number;
+  companyName: string;
+  contactName?: string | null;
+  meetingAt: string;
+  minutesUntil?: number;
+}) {
+  const mode = getNotificationMode();
+  if (mode === "off") return;
+
+  const label = details.contactName?.trim()
+    ? `${details.contactName} (${details.companyName})`
+    : details.companyName;
+  const meetingDate = new Date(details.meetingAt);
+  const timeLabel = Number.isNaN(meetingDate.getTime())
+    ? "soon"
+    : meetingDate.toLocaleString(undefined, {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      });
+  const minutesUntil = details.minutesUntil ?? 0;
+  const soonLabel =
+    minutesUntil > 0 ? `in ${minutesUntil} minute${minutesUntil === 1 ? "" : "s"}` : "now";
+
+  applyAlertEffects(
+    mode,
+    `Meeting reminder. ${label}. Scheduled for ${timeLabel}, starting ${soonLabel}.`,
+  );
+
+  showDesktopNotification(
+    "Meeting starting soon",
+    `${label} — ${timeLabel} (${soonLabel})`,
+  );
+
+  emitQuotationMeetingPopup({
+    id: details.id,
+    buyerId: details.buyerId,
+    companyName: details.companyName,
+    contactName: details.contactName ?? null,
+    meetingAt: details.meetingAt,
+    minutesUntil,
   });
 }
 

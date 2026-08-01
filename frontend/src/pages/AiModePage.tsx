@@ -23,6 +23,10 @@ import {
   type AssigneeOption,
 } from "../components/AssignedToSelect";
 import { IconChevronDown, IconChevronRight } from "../components/icons/AppIcons";
+import {
+  QuotationMeetingControl,
+  type QuotationMeetingStatus,
+} from "../components/QuotationMeetingControl";
 
 interface AiModePageProps {
   onError: (message: string) => void;
@@ -703,18 +707,68 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
     }
   }
 
-  async function markMeetingDone(buyerId: number) {
+  async function updateMeetingStatus(buyerId: number, meetingStatus: QuotationMeetingStatus) {
+    if (meetingStatus === "scheduled") {
+      setQuotationSentRows((rows) =>
+        rows.map((row) =>
+          row.buyer_id === buyerId ? { ...row, meeting_status: "scheduled" } : row,
+        ),
+      );
+      return;
+    }
+
     setMeetingUpdatingId(buyerId);
     try {
-      await client.updateAiModeLifecycle(buyerId, {
-        stage: "negotiation",
-        notes: "Meeting done",
+      const result = await client.updateQuotationMeeting(buyerId, {
+        meeting_status: meetingStatus,
+        meeting_at: null,
       });
-      setNotice("Client moved to Negotiation.");
-      window.setTimeout(() => setNotice(null), 4000);
-      await loadLifecycle();
+      setQuotationSentRows((rows) =>
+        rows.map((row) =>
+          row.buyer_id === buyerId
+            ? {
+                ...row,
+                meeting_status: result.meeting_status,
+                meeting_at: result.meeting_at,
+              }
+            : row,
+        ),
+      );
+      if (meetingStatus === "not_scheduled") {
+        setNotice("Meeting schedule cleared.");
+        window.setTimeout(() => setNotice(null), 4000);
+      }
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to update meeting status");
+      await loadLifecycle();
+    } finally {
+      setMeetingUpdatingId(null);
+    }
+  }
+
+  async function saveMeetingSchedule(buyerId: number, meetingAtIso: string) {
+    setMeetingUpdatingId(buyerId);
+    try {
+      const result = await client.updateQuotationMeeting(buyerId, {
+        meeting_status: "scheduled",
+        meeting_at: meetingAtIso,
+      });
+      setQuotationSentRows((rows) =>
+        rows.map((row) =>
+          row.buyer_id === buyerId
+            ? {
+                ...row,
+                meeting_status: result.meeting_status,
+                meeting_at: result.meeting_at,
+              }
+            : row,
+        ),
+      );
+      setNotice("Meeting scheduled.");
+      window.setTimeout(() => setNotice(null), 4000);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to schedule meeting");
+      await loadLifecycle();
     } finally {
       setMeetingUpdatingId(null);
     }
@@ -1602,8 +1656,9 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                   </h3>
                   <p className="text-xs text-slate-500 mt-1">
                     Clients with quotation sent. Default is{" "}
-                    <span className="text-slate-400">Meeting not done</span>. When the
-                    meeting is complete, they move to Negotiation.
+                    <span className="text-slate-400">Meeting not scheduled</span>. Schedule a
+                    date and time; you&apos;ll get a reminder 15 minutes before, and the client
+                    moves to Negotiation automatically when the meeting time arrives.
                   </p>
                 </div>
                 <button
@@ -1665,19 +1720,17 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                               : "—"}
                           </td>
                           <td className="py-2 px-3">
-                            <select
-                              value={row.meeting_status}
+                            <QuotationMeetingControl
+                              meetingStatus={row.meeting_status}
+                              meetingAt={row.meeting_at}
                               disabled={meetingUpdatingId === row.buyer_id}
-                              onChange={(e) => {
-                                if (e.target.value === "done") {
-                                  void markMeetingDone(row.buyer_id);
-                                }
-                              }}
-                              className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-slate-200 disabled:opacity-50"
-                            >
-                              <option value="not_done">Meeting not done</option>
-                              <option value="done">Meeting done</option>
-                            </select>
+                              onStatusChange={(status) =>
+                                void updateMeetingStatus(row.buyer_id, status)
+                              }
+                              onSchedule={(meetingAtIso) =>
+                                void saveMeetingSchedule(row.buyer_id, meetingAtIso)
+                              }
+                            />
                           </td>
                         </tr>
                       ))}
@@ -1728,7 +1781,8 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                 <p className="text-sm text-slate-500">Loading negotiation clients…</p>
               ) : negotiationRows.length === 0 ? (
                 <p className="text-sm text-slate-500">
-                  No clients in Negotiation yet. Mark meeting as done from Quotation Sent.
+                  No clients in Negotiation yet. Clients move here automatically when a
+                  scheduled meeting time is reached.
                 </p>
               ) : (
                 <div className="overflow-x-auto rounded-xl border border-slate-800">
@@ -1909,7 +1963,7 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                     : stageFilter === "not_interested"
                       ? "Select the Not Interested tab above to see who marked clients as not interested."
                       : stageFilter === "quotation_sent"
-                        ? "Select Quotation Sent to track meetings after quotation."
+                        ? "Select Quotation Sent to schedule meetings after quotation."
                         : stageFilter === "negotiation"
                           ? "Select Negotiation to close deals as Won or Lost."
                     : "No companies in this stage yet. Move clients through Interested → Quotation Sent → Negotiation → Won/Lost using the pipeline tabs above."}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -43,6 +44,14 @@ class LifecycleUpdateRequest(BaseModel):
 
 class LifecycleEnsureRequest(BaseModel):
     buyer_id: int = Field(..., ge=1)
+
+
+class QuotationMeetingUpdateRequest(BaseModel):
+    meeting_status: str = Field(..., description="not_scheduled or scheduled")
+    meeting_at: Optional[str] = Field(
+        None,
+        description="ISO-8601 datetime (required when meeting_status is scheduled)",
+    )
 
 
 @router.get("/settings")
@@ -335,3 +344,41 @@ def patch_lifecycle(
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@router.patch("/quotation-sent/{buyer_id}/meeting")
+def patch_quotation_meeting(
+    buyer_id: int,
+    payload: QuotationMeetingUpdateRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Schedule or clear a meeting for a Quotation Sent client."""
+    meeting_at = None
+    if payload.meeting_at:
+        raw = payload.meeting_at.strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        try:
+            meeting_at = datetime.fromisoformat(raw)
+        except ValueError as exc:
+            raise HTTPException(400, "Invalid meeting_at datetime") from exc
+    try:
+        return ai_mode_module.update_quotation_meeting_schedule(
+            db,
+            buyer_id,
+            meeting_status=payload.meeting_status,
+            meeting_at=meeting_at,
+            user_id=user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/meeting-alerts")
+def list_meeting_alerts(
+    db: Session = Depends(get_db),
+    _user: AppUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Upcoming meeting reminders + auto-move clients to Negotiation when due."""
+    return ai_mode_module.process_quotation_meeting_alerts(db)

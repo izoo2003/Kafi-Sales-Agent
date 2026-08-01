@@ -659,6 +659,13 @@ class AiCompanyLifecycle(Base):
     )
     history: Mapped[Optional[list]] = mapped_column(JSONB)
     notes: Mapped[Optional[str]] = mapped_column(Text)
+    meeting_status: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="not_scheduled", server_default="not_scheduled"
+    )
+    meeting_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    meeting_reminder_sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
     updated_by_user_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("app_users.id", ondelete="SET NULL")
     )

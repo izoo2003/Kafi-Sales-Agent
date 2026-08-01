@@ -14,6 +14,7 @@ import {
 } from "./components/AppSidebar";
 import { InboxAlertToasts } from "./components/InboxAlertToasts";
 import { InterestedFollowUpAlertToasts } from "./components/InterestedFollowUpAlertToasts";
+import { QuotationMeetingAlertToasts } from "./components/QuotationMeetingAlertToasts";
 import { InterestedClientsActivityToasts } from "./components/InterestedClientsActivityToasts";
 import { AppTopActions } from "./components/AppTopActions";
 import { EmailActivityPage } from "./pages/EmailActivityPage";
@@ -41,6 +42,7 @@ import {
   alertInterestedFollowUp,
   alertInterestedClientsActivity,
   alertNewInboxMessage,
+  alertQuotationMeeting,
   requestNotificationPermission,
   unlockNotificationAudio,
 } from "./utils/notify";
@@ -48,6 +50,7 @@ import {
 
 const INBOX_POLL_INTERVAL_MS = 20_000;
 const FOLLOW_UP_POLL_INTERVAL_MS = 60_000;
+const MEETING_POLL_INTERVAL_MS = 60_000;
 const INTERESTED_ACTIVITY_POLL_INTERVAL_MS = 30_000;
 const SIDEBAR_OPEN_KEY = "kafi_sidebar_open";
 
@@ -116,6 +119,7 @@ function DashboardApp() {
   const seenMessageUidsRef = useRef<Set<string> | null>(null);
   const lastInboxUnreadRef = useRef(0);
   const seenFollowUpIdsRef = useRef<Set<string>>(new Set());
+  const seenMeetingAlertIdsRef = useRef<Set<string>>(new Set());
   const seenInterestedActivityIdRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -315,6 +319,29 @@ function DashboardApp() {
       });
   }, []);
 
+  const pollQuotationMeetings = useCallback(() => {
+    client
+      .listQuotationMeetingAlerts()
+      .then((result) => {
+        const seen = seenMeetingAlertIdsRef.current;
+        for (const alert of result.alerts || []) {
+          if (seen.has(alert.id)) continue;
+          seen.add(alert.id);
+          alertQuotationMeeting({
+            id: alert.id,
+            buyerId: alert.buyer_id,
+            companyName: alert.company_name,
+            contactName: alert.contact_name,
+            meetingAt: alert.meeting_at,
+            minutesUntil: alert.minutes_until,
+          });
+        }
+      })
+      .catch(() => {
+        /* optional */
+      });
+  }, []);
+
   const pollInterestedClientsActivity = useCallback(() => {
     const afterId = seenInterestedActivityIdRef.current;
     client
@@ -395,6 +422,7 @@ function DashboardApp() {
       .catch(() => setEmailActivityUnread(0));
     pollInbox();
     pollInterestedFollowUps();
+    pollQuotationMeetings();
     pollInterestedClientsActivity();
   }, [
     loadDiscoverLeadsCount,
@@ -406,6 +434,7 @@ function DashboardApp() {
     loadAssigneeNavUsers,
     pollInbox,
     pollInterestedFollowUps,
+    pollQuotationMeetings,
     pollInterestedClientsActivity,
   ]);
 
@@ -425,6 +454,7 @@ function DashboardApp() {
 
     pollInbox();
     pollInterestedFollowUps();
+    pollQuotationMeetings();
     pollInterestedClientsActivity();
     client
       .getEmailActivityUnreadCount()
@@ -432,6 +462,7 @@ function DashboardApp() {
       .catch(() => setEmailActivityUnread(0));
     const inboxTimer = window.setInterval(pollInbox, INBOX_POLL_INTERVAL_MS);
     const followUpTimer = window.setInterval(pollInterestedFollowUps, FOLLOW_UP_POLL_INTERVAL_MS);
+    const meetingTimer = window.setInterval(pollQuotationMeetings, MEETING_POLL_INTERVAL_MS);
     const interestedActivityTimer = window.setInterval(
       pollInterestedClientsActivity,
       INTERESTED_ACTIVITY_POLL_INTERVAL_MS,
@@ -445,6 +476,7 @@ function DashboardApp() {
     return () => {
       window.clearInterval(inboxTimer);
       window.clearInterval(followUpTimer);
+      window.clearInterval(meetingTimer);
       window.clearInterval(interestedActivityTimer);
       window.clearInterval(activityTimer);
       window.removeEventListener("click", unlock);
@@ -460,6 +492,7 @@ function DashboardApp() {
     loadAssigneeNavUsers,
     pollInbox,
     pollInterestedFollowUps,
+    pollQuotationMeetings,
     pollInterestedClientsActivity,
   ]);
 
@@ -607,6 +640,12 @@ function DashboardApp() {
     sessionStorage.setItem("kafi.aiModeStage", "interested");
     setTab("ai-mode");
     setSelectedLeadId(null);
+  }
+
+  function handleViewQuotationMeeting(buyerId: number) {
+    sessionStorage.setItem("kafi.aiModeStage", "quotation_sent");
+    setTab("ai-mode");
+    setSelectedLeadId(buyerId);
   }
 
   async function handleAcknowledgeInterestedFollowUp(buyerId: number) {
@@ -799,6 +838,7 @@ function DashboardApp() {
           onViewClient={handleViewInterestedClient}
           onAcknowledge={handleAcknowledgeInterestedFollowUp}
         />
+        <QuotationMeetingAlertToasts onViewClient={handleViewQuotationMeeting} />
         <InterestedClientsActivityToasts onViewFeed={handleViewInterestedClientsFeed} />
         <AppSidebar
           navItems={navItems}
