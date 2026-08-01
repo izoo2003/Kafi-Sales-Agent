@@ -20,6 +20,10 @@ import { SocialLinksCell } from "../components/SocialLinksCell";
 import { BulkEmailModal } from "../components/BulkEmailModal";
 import { BulkWhatsAppModal } from "../components/BulkWhatsAppModal";
 import {
+  LeadWhatsAppComposeModal,
+  type WhatsAppComposeTarget,
+} from "../components/WhatsAppComposeLink";
+import {
   BulkActionProgressPanel,
   type BulkActionProgress,
 } from "../components/BulkActionProgressPanel";
@@ -563,6 +567,8 @@ export function LeadsTablePage({
   const [openingMailer, setOpeningMailer] = useState(false);
   const [showBulkWhatsApp, setShowBulkWhatsApp] = useState(false);
   const [whatsappTargetIds, setWhatsappTargetIds] = useState<number[] | null>(null);
+  const [whatsappComposeTarget, setWhatsappComposeTarget] =
+    useState<WhatsAppComposeTarget | null>(null);
   const [bulkWhatsAppNotice, setBulkWhatsAppNotice] = useState<string | null>(null);
   const [showCsvImport, setShowCsvImport] = useState(false);
   const [bulkEmailNotice, setBulkEmailNotice] = useState<string | null>(null);
@@ -1196,6 +1202,10 @@ export function LeadsTablePage({
         e instanceof Error ? e.message : "Failed to update Interested Clients membership",
       );
     }
+  }
+
+  function openWhatsAppCompose(row: LeadTableRow, phone: string) {
+    setWhatsappComposeTarget({ row, phone: phone.trim() });
   }
 
   async function saveFollowUpAt(rowId: number, followUpAt: string | null) {
@@ -2759,10 +2769,7 @@ export function LeadsTablePage({
                             <WhatsAppLeadButton
                               phone={row.contact_phone}
                               compact
-                              onClick={() => {
-                                setWhatsappTargetIds([row.id]);
-                                setShowBulkWhatsApp(true);
-                              }}
+                              onClick={() => openWhatsAppCompose(row, row.contact_phone!)}
                             />
                           </span>
                         ) : (
@@ -2788,10 +2795,9 @@ export function LeadsTablePage({
                             <WhatsAppLeadButton
                               phone={row.contact_secondary_mobile}
                               compact
-                              onClick={() => {
-                                setWhatsappTargetIds([row.id]);
-                                setShowBulkWhatsApp(true);
-                              }}
+                              onClick={() =>
+                                openWhatsAppCompose(row, row.contact_secondary_mobile!)
+                              }
                             />
                           </span>
                         ) : (
@@ -2817,10 +2823,9 @@ export function LeadsTablePage({
                             <WhatsAppLeadButton
                               phone={row.contact_primary_phone}
                               compact
-                              onClick={() => {
-                                setWhatsappTargetIds([row.id]);
-                                setShowBulkWhatsApp(true);
-                              }}
+                              onClick={() =>
+                                openWhatsAppCompose(row, row.contact_primary_phone!)
+                              }
                             />
                           </span>
                         ) : (
@@ -2846,10 +2851,9 @@ export function LeadsTablePage({
                             <WhatsAppLeadButton
                               phone={row.contact_secondary_phone}
                               compact
-                              onClick={() => {
-                                setWhatsappTargetIds([row.id]);
-                                setShowBulkWhatsApp(true);
-                              }}
+                              onClick={() =>
+                                openWhatsAppCompose(row, row.contact_secondary_phone!)
+                              }
                             />
                           </span>
                         ) : (
@@ -3245,10 +3249,7 @@ export function LeadsTablePage({
                           <WhatsAppLeadButton
                             phone={row.contact_phone}
                             compact
-                            onClick={() => {
-                              setWhatsappTargetIds([row.id]);
-                              setShowBulkWhatsApp(true);
-                            }}
+                            onClick={() => openWhatsAppCompose(row, row.contact_phone!)}
                           />
                         </span>
                       ) : (
@@ -3290,10 +3291,13 @@ export function LeadsTablePage({
                                 row.contact_secondary_phone) as string
                             }
                             compact
-                            onClick={() => {
-                              setWhatsappTargetIds([row.id]);
-                              setShowBulkWhatsApp(true);
-                            }}
+                            onClick={() =>
+                              openWhatsAppCompose(
+                                row,
+                                (row.contact_secondary_mobile ||
+                                  row.contact_secondary_phone) as string,
+                              )
+                            }
                           />
                         </span>
                       ) : (
@@ -3471,6 +3475,18 @@ export function LeadsTablePage({
                 "Open Email Activity for live notifications.",
             );
             clearSelection();
+          }}
+        />
+      )}
+
+      {whatsappComposeTarget && (
+        <LeadWhatsAppComposeModal
+          target={whatsappComposeTarget}
+          onClose={() => setWhatsappComposeTarget(null)}
+          onError={onError}
+          onSent={(message) => {
+            setBulkWhatsAppNotice(message);
+            setWhatsappComposeTarget(null);
           }}
         />
       )}

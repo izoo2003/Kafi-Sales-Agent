@@ -723,12 +723,18 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
         meeting_status: meetingStatus,
         meeting_at: null,
       });
+      if (result.moved_to_negotiation || meetingStatus === "done") {
+        setNotice("Client moved to Negotiation.");
+        window.setTimeout(() => setNotice(null), 4000);
+        await loadLifecycle();
+        return;
+      }
       setQuotationSentRows((rows) =>
         rows.map((row) =>
           row.buyer_id === buyerId
             ? {
                 ...row,
-                meeting_status: result.meeting_status,
+                meeting_status: "not_scheduled",
                 meeting_at: result.meeting_at,
               }
             : row,
@@ -758,7 +764,7 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
           row.buyer_id === buyerId
             ? {
                 ...row,
-                meeting_status: result.meeting_status,
+                meeting_status: "scheduled",
                 meeting_at: result.meeting_at,
               }
             : row,
@@ -1657,8 +1663,9 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                   <p className="text-xs text-slate-500 mt-1">
                     Clients with quotation sent. Default is{" "}
                     <span className="text-slate-400">Meeting not scheduled</span>. Schedule a
-                    date and time; you&apos;ll get a reminder 15 minutes before, and the client
-                    moves to Negotiation automatically when the meeting time arrives.
+                    date and time for a reminder 15 minutes before; when the meeting is complete,
+                    select <span className="text-slate-400">Meeting done</span> to move the client
+                    to Negotiation.
                   </p>
                 </div>
                 <button
@@ -1781,8 +1788,9 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                 <p className="text-sm text-slate-500">Loading negotiation clients…</p>
               ) : negotiationRows.length === 0 ? (
                 <p className="text-sm text-slate-500">
-                  No clients in Negotiation yet. Clients move here automatically when a
-                  scheduled meeting time is reached.
+                  No clients in Negotiation yet. Mark{" "}
+                  <span className="text-slate-400">Meeting done</span> from Quotation Sent after
+                  the meeting is complete.
                 </p>
               ) : (
                 <div className="overflow-x-auto rounded-xl border border-slate-800">

@@ -2345,7 +2345,10 @@ export const client = {
     }),
   updateQuotationMeeting: (
     buyerId: number,
-    data: { meeting_status: "not_scheduled" | "scheduled"; meeting_at?: string | null },
+    data: {
+      meeting_status: "not_scheduled" | "scheduled" | "done";
+      meeting_at?: string | null;
+    },
   ) =>
     request<QuotationMeetingScheduleResult>(
       `/ai-mode/quotation-sent/${buyerId}/meeting`,
@@ -2629,8 +2632,10 @@ export interface QuotationMeetingScheduleResult {
   buyer_id: number;
   company_name: string;
   country: string | null;
-  meeting_status: "not_scheduled" | "scheduled";
+  meeting_status: "not_scheduled" | "scheduled" | "done";
   meeting_at: string | null;
+  lifecycle_stage?: string;
+  moved_to_negotiation?: boolean;
 }
 
 export interface QuotationMeetingAlert {

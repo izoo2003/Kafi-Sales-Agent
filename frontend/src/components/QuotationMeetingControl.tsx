@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-export type QuotationMeetingStatus = "not_scheduled" | "scheduled";
+export type QuotationMeetingStatus = "not_scheduled" | "scheduled" | "done";
 
 interface QuotationMeetingControlProps {
   meetingStatus: QuotationMeetingStatus;
@@ -13,6 +13,8 @@ interface QuotationMeetingControlProps {
 
 const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 const DEFAULT_TIME = "10:00";
+const HOURS = Array.from({ length: 24 }, (_, index) => String(index).padStart(2, "0"));
+const MINUTES = Array.from({ length: 60 }, (_, index) => String(index).padStart(2, "0"));
 
 function startOfMonth(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), 1);
@@ -44,6 +46,18 @@ function parseLocalTime(iso: string | null | undefined): string {
   const h = String(date.getHours()).padStart(2, "0");
   const m = String(date.getMinutes()).padStart(2, "0");
   return `${h}:${m}`;
+}
+
+function splitTime(value: string): { hour: string; minute: string } {
+  const [hour = "10", minute = "00"] = value.split(":");
+  return {
+    hour: HOURS.includes(hour) ? hour : "10",
+    minute: MINUTES.includes(minute) ? minute : "00",
+  };
+}
+
+function joinTime(hour: string, minute: string): string {
+  return `${hour}:${minute}`;
 }
 
 function combineDateAndTime(date: Date, timeHHMM: string): string {
@@ -88,6 +102,7 @@ export function QuotationMeetingControl({
   const selectedDate = parseLocalDate(meetingAt);
   const [pendingDate, setPendingDate] = useState<Date | null>(selectedDate);
   const [pendingTime, setPendingTime] = useState(() => parseLocalTime(meetingAt));
+  const { hour: pendingHour, minute: pendingMinute } = splitTime(pendingTime);
   const [viewMonth, setViewMonth] = useState(() => startOfMonth(selectedDate ?? new Date()));
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -107,7 +122,11 @@ export function QuotationMeetingControl({
   useEffect(() => {
     if (!open) return;
     setViewMonth(startOfMonth(pendingDate ?? selectedDate ?? new Date()));
-  }, [open, pendingDate, selectedDate]);
+    if (!pendingDate && !selectedDate) {
+      setPendingDate(today);
+      setPendingTime(DEFAULT_TIME);
+    }
+  }, [open, pendingDate, selectedDate, today]);
 
   useEffect(() => {
     if (!open || !buttonRef.current) return;
@@ -115,20 +134,44 @@ export function QuotationMeetingControl({
     function place() {
       if (!buttonRef.current) return;
       const rect = buttonRef.current.getBoundingClientRect();
+      const panel = panelRef.current;
       const width = 300;
-      const left = Math.min(Math.max(8, rect.left), window.innerWidth - width - 8);
-      const top = Math.min(rect.bottom + 6, window.innerHeight - 380);
+      const height = panel?.offsetHeight ?? 420;
+      const margin = 12;
+      const gap = 8;
+
+      const left = Math.min(
+        Math.max(margin, rect.left),
+        window.innerWidth - width - margin,
+      );
+
+      const spaceBelow = window.innerHeight - rect.bottom - margin;
+      const spaceAbove = rect.top - margin;
+      let top = rect.bottom + gap;
+
+      if (top + height > window.innerHeight - margin) {
+        if (spaceAbove >= height + gap) {
+          top = rect.top - height - gap;
+        } else if (spaceBelow >= spaceAbove) {
+          top = Math.max(margin, window.innerHeight - height - margin);
+        } else {
+          top = margin;
+        }
+      }
+
       setPanelPos({ top, left });
     }
 
     place();
+    const raf = window.requestAnimationFrame(place);
     window.addEventListener("scroll", place, true);
     window.addEventListener("resize", place);
     return () => {
+      window.cancelAnimationFrame(raf);
       window.removeEventListener("scroll", place, true);
       window.removeEventListener("resize", place);
     };
-  }, [open]);
+  }, [open, pendingDate, pendingTime, viewMonth]);
 
   useEffect(() => {
     if (!open) return;
@@ -145,10 +188,10 @@ export function QuotationMeetingControl({
     }
 
     document.addEventListener("keydown", onKey);
-    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("click", onPointer);
     return () => {
       document.removeEventListener("keydown", onKey);
-      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("click", onPointer);
     };
   }, [open]);
 
@@ -196,9 +239,10 @@ export function QuotationMeetingControl({
             ref={panelRef}
             role="dialog"
             aria-label="Choose meeting date and time"
-            className="fixed z-[120] w-[300px] rounded-xl border border-slate-600 bg-slate-900 shadow-2xl shadow-black/50 p-3"
+            className="fixed z-[120] w-[300px] max-h-[min(440px,calc(100dvh-1.5rem))] overflow-y-auto rounded-xl border border-slate-600 bg-slate-900 shadow-2xl shadow-black/50 p-3 pb-4"
             style={{ top: panelPos.top, left: panelPos.left }}
             onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-2 mb-3">
               <button
@@ -256,17 +300,52 @@ export function QuotationMeetingControl({
               })}
             </div>
             <div className="mt-3 border-t border-slate-800 pt-3 space-y-2">
-              <label className="block text-xs text-slate-400">
+              <div className="block text-xs text-slate-400">
                 Meeting time
-                <input
-                  type="time"
-                  value={pendingTime}
-                  disabled={busy || !pendingDate}
-                  onChange={(e) => setPendingTime(e.target.value)}
-                  className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-200 disabled:opacity-50"
-                />
-              </label>
-              <div className="flex items-center justify-between gap-2">
+                <div
+                  className="mt-1 grid grid-cols-2 gap-2"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <label className="block">
+                    <span className="sr-only">Hour</span>
+                    <select
+                      value={pendingHour}
+                      disabled={busy}
+                      onChange={(e) => setPendingTime(joinTime(e.target.value, pendingMinute))}
+                      className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-slate-100 disabled:opacity-50"
+                    >
+                      {HOURS.map((hour) => (
+                        <option key={hour} value={hour}>
+                          {hour}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="sr-only">Minute</span>
+                    <select
+                      value={pendingMinute}
+                      disabled={busy}
+                      onChange={(e) => setPendingTime(joinTime(pendingHour, e.target.value))}
+                      className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-slate-100 disabled:opacity-50"
+                    >
+                      {MINUTES.map((minute) => (
+                        <option key={minute} value={minute}>
+                          {minute}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Selected: {pendingHour}:{pendingMinute}
+                </p>
+              </div>
+              {!pendingDate && (
+                <p className="text-[11px] text-amber-300/90">Select a date above to schedule.</p>
+              )}
+              <div className="flex items-center justify-between gap-2 pt-1">
                 <button
                   type="button"
                   disabled={busy}
@@ -303,6 +382,7 @@ export function QuotationMeetingControl({
       >
         <option value="not_scheduled">Meeting not scheduled</option>
         <option value="scheduled">Meeting scheduled</option>
+        <option value="done">Meeting done</option>
       </select>
       {meetingStatus === "scheduled" && (
         <button

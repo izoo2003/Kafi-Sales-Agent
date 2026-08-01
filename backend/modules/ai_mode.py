@@ -2907,8 +2907,20 @@ def update_quotation_meeting_schedule(
         raise ValueError("Lead must be in Quotation Sent to schedule a meeting")
 
     status = (meeting_status or "").strip().lower()
+    if status == "done":
+        mark_meeting_done(db, buyer_id, user_id=user_id)
+        return {
+            "buyer_id": buyer.id,
+            "company_name": buyer.company_name,
+            "country": buyer.country,
+            "meeting_status": "done",
+            "meeting_at": None,
+            "lifecycle_stage": "negotiation",
+            "moved_to_negotiation": True,
+        }
+
     if status not in {"not_scheduled", "scheduled"}:
-        raise ValueError("meeting_status must be not_scheduled or scheduled")
+        raise ValueError("meeting_status must be not_scheduled, scheduled, or done")
 
     now = _utcnow()
     if status == "not_scheduled":
@@ -2937,10 +2949,9 @@ def update_quotation_meeting_schedule(
 
 
 def process_quotation_meeting_alerts(db: Session) -> dict[str, Any]:
-    """Send upcoming-meeting alerts and auto-move to Negotiation when meeting time passes."""
+    """Return upcoming-meeting alerts (15 minutes before scheduled time)."""
     now = _utcnow()
     reminder_delta = timedelta(minutes=MEETING_REMINDER_MINUTES)
-    auto_moved: list[dict[str, Any]] = []
     alerts: list[dict[str, Any]] = []
     dirty = False
 
@@ -2958,20 +2969,6 @@ def process_quotation_meeting_alerts(db: Session) -> dict[str, Any]:
     for lifecycle, buyer in rows:
         meeting_at = _as_utc(lifecycle.meeting_at)
         if now >= meeting_at:
-            update_lifecycle(
-                db,
-                buyer.id,
-                stage="negotiation",
-                notes="Meeting completed (scheduled time reached)",
-                user_id=None,
-            )
-            auto_moved.append(
-                {
-                    "buyer_id": buyer.id,
-                    "company_name": buyer.company_name,
-                    "meeting_at": meeting_at.isoformat(),
-                }
-            )
             continue
 
         reminder_at = meeting_at - reminder_delta
@@ -2994,7 +2991,7 @@ def process_quotation_meeting_alerts(db: Session) -> dict[str, Any]:
     if dirty:
         db.commit()
 
-    return {"alerts": alerts, "auto_moved": auto_moved}
+    return {"alerts": alerts, "auto_moved": []}
 
 
 def mark_meeting_done(

@@ -47,7 +47,10 @@ class LifecycleEnsureRequest(BaseModel):
 
 
 class QuotationMeetingUpdateRequest(BaseModel):
-    meeting_status: str = Field(..., description="not_scheduled or scheduled")
+    meeting_status: str = Field(
+        ...,
+        description="not_scheduled, scheduled, or done (done moves client to Negotiation)",
+    )
     meeting_at: Optional[str] = Field(
         None,
         description="ISO-8601 datetime (required when meeting_status is scheduled)",
@@ -380,5 +383,5 @@ def list_meeting_alerts(
     db: Session = Depends(get_db),
     _user: AppUser = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Upcoming meeting reminders + auto-move clients to Negotiation when due."""
+    """Upcoming meeting reminders for scheduled Quotation Sent clients."""
     return ai_mode_module.process_quotation_meeting_alerts(db)
