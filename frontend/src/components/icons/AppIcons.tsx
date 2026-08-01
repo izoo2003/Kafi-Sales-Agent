@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { IndexIconKey } from "../data/indexSections";
+import type { IndexIconKey } from "../../data/indexSections";
 
 export type IconSize = "xs" | "sm" | "md" | "lg";
 

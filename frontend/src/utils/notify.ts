@@ -289,7 +289,7 @@ export function alertInterestedFollowUp(details: {
   contactName?: string | null;
   dueAt: string;
   daysSincePlacement?: number;
-  tableSection?: "interested_clients" | "not_received_call_clients";
+  tableSection?: "interested_clients" | "not_received_call_clients" | "sales_interested_clients";
 }) {
   const mode = getNotificationMode();
   if (mode === "off") return;
