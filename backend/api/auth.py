@@ -110,7 +110,7 @@ def logout(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
     token: str | None = Depends(get_session_token),
-) -> None:
+) -> Response:
     del user
     if token:
         auth_module.revoke_session(db, token)
@@ -122,6 +122,7 @@ def logout(
         httponly=True,
         samesite="none" if secure else "lax",
     )
+    return Response(status_code=204)
 
 
 @router.get("/me", response_model=UserRead)
@@ -212,7 +213,7 @@ def delete_user(
     user_id: int,
     db: Session = Depends(get_db),
     admin: AppUser = Depends(require_admin),
-) -> None:
+) -> Response:
     if admin.id == user_id:
         raise HTTPException(status_code=400, detail="You cannot delete your own account")
     try:
@@ -221,3 +222,4 @@ def delete_user(
         detail = str(exc)
         status = 404 if detail == "User not found" else 400
         raise HTTPException(status_code=status, detail=detail) from exc
+    return Response(status_code=204)

@@ -191,40 +191,58 @@ def list_lifecycle(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ) -> dict[str, Any]:
+    assignee_scope = ai_mode_module.lifecycle_assignee_scope(user)
     result = ai_mode_module.list_lifecycle(
-        db, stage=stage, search=search, limit=limit, offset=offset
+        db,
+        stage=stage,
+        search=search,
+        limit=limit,
+        offset=offset,
+        assigned_to_user_id=assignee_scope,
     )
-    result["pipeline"] = ai_mode_module.lifecycle_pipeline_counts(db)
-    result["assignments"] = ai_mode_module.list_lead_transfers(db, limit=100)
-    result["call_activities"] = ai_mode_module.list_call_activities(db, limit=100)
+    result["pipeline"] = ai_mode_module.lifecycle_pipeline_counts(
+        db, assigned_to_user_id=assignee_scope, viewer=user
+    )
+    result["assignments"] = ai_mode_module.list_lead_transfers(
+        db, limit=100, assigned_to_user_id=assignee_scope
+    )
+    result["call_activities"] = ai_mode_module.list_call_activities(
+        db, limit=100, viewer=user
+    )
     result["follow_up_activities"] = ai_mode_module.list_follow_up_activities(
-        db, limit=100
+        db, limit=100, viewer=user
     )
     result["interested_activities"] = ai_mode_module.list_interested_activities(
-        db, viewer=user, limit=100
+        db, viewer=user, limit=100, assigned_to_user_id=assignee_scope
     )
     result["not_interested_activities"] = ai_mode_module.list_not_interested_activities(
-        db, viewer=user, limit=100
+        db, viewer=user, limit=100, assigned_to_user_id=assignee_scope
     )
     result["potential_clients"] = ai_mode_module.list_potential_clients(
-        db, search=search if stage == "potential_clients" else None, limit=100
+        db,
+        search=search if stage == "potential_clients" else None,
+        limit=100,
+        assigned_to_user_id=assignee_scope,
     )
     result["interested_clients"] = ai_mode_module.list_interested_clients_for_lifecycle(
         db,
         search=search if stage == "interested" else None,
         limit=100,
+        assigned_to_user_id=assignee_scope,
     )
     result["quotation_sent_clients"] = (
         ai_mode_module.list_quotation_sent_clients_for_lifecycle(
             db,
             search=search if stage == "quotation_sent" else None,
             limit=100,
+            assigned_to_user_id=assignee_scope,
         )
     )
     result["negotiation_clients"] = ai_mode_module.list_negotiation_clients_for_lifecycle(
         db,
         search=search if stage == "negotiation" else None,
         limit=100,
+        assigned_to_user_id=assignee_scope,
     )
     # Back-compat for older frontends.
     result["interested_leads"] = result["potential_clients"]
@@ -235,30 +253,34 @@ def list_lifecycle(
 def list_assignments(
     limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
-    _user: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Lead transfer messages for Company lifecycle → Assigned."""
-    return ai_mode_module.list_lead_transfers(db, limit=limit)
+    return ai_mode_module.list_lead_transfers(
+        db,
+        limit=limit,
+        assigned_to_user_id=ai_mode_module.lifecycle_assignee_scope(user),
+    )
 
 
 @router.get("/call-activities")
 def list_call_activities(
     limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
-    _user: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Call statements for Company lifecycle → Calling (all users incl. admin)."""
-    return ai_mode_module.list_call_activities(db, limit=limit)
+    """Call statements for Company lifecycle → Calling."""
+    return ai_mode_module.list_call_activities(db, limit=limit, viewer=user)
 
 
 @router.get("/follow-up-activities")
 def list_follow_up_activities(
     limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
-    _user: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Follow up clients statements for Company lifecycle → Follow-up."""
-    return ai_mode_module.list_follow_up_activities(db, limit=limit)
+    return ai_mode_module.list_follow_up_activities(db, limit=limit, viewer=user)
 
 
 @router.get("/interested-activities")
@@ -270,7 +292,11 @@ def list_interested_activities(
 ) -> dict[str, Any]:
     """Interested Clients activity for Company lifecycle → Interested."""
     return ai_mode_module.list_interested_activities(
-        db, viewer=user, limit=limit, after_id=after_id
+        db,
+        viewer=user,
+        limit=limit,
+        after_id=after_id,
+        assigned_to_user_id=ai_mode_module.lifecycle_assignee_scope(user),
     )
 
 
@@ -283,7 +309,11 @@ def list_not_interested_activities(
 ) -> dict[str, Any]:
     """Not interested clients activity for Company lifecycle → Not Interested."""
     return ai_mode_module.list_not_interested_activities(
-        db, viewer=user, limit=limit, after_id=after_id
+        db,
+        viewer=user,
+        limit=limit,
+        after_id=after_id,
+        assigned_to_user_id=ai_mode_module.lifecycle_assignee_scope(user),
     )
 
 
@@ -293,11 +323,15 @@ def list_potential_clients(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    _user: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Scrapped Leads with company grading + AI grade both AA or AAA."""
     return ai_mode_module.list_potential_clients(
-        db, search=search, limit=limit, offset=offset
+        db,
+        search=search,
+        limit=limit,
+        offset=offset,
+        assigned_to_user_id=ai_mode_module.lifecycle_assignee_scope(user),
     )
 
 
@@ -307,11 +341,15 @@ def list_interested_leads(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    _user: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Back-compat alias for Potential Clients (AA/AAA Scrapped Leads)."""
     return ai_mode_module.list_potential_clients(
-        db, search=search, limit=limit, offset=offset
+        db,
+        search=search,
+        limit=limit,
+        offset=offset,
+        assigned_to_user_id=ai_mode_module.lifecycle_assignee_scope(user),
     )
 
 

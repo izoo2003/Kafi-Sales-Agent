@@ -206,6 +206,21 @@ def _is_admin_user(user: AppUser) -> bool:
     return role == AppUserRole.admin.value
 
 
+def lifecycle_assignee_scope(user: AppUser | None) -> int | None:
+    """Non-admins only see leads assigned to them in Company lifecycle."""
+    if user is None:
+        return None
+    if _is_admin_user(user):
+        return None
+    return user.id
+
+
+def _apply_buyer_assignee_scope(query, assigned_to_user_id: int | None):
+    if assigned_to_user_id is not None:
+        return query.filter(Buyer.assigned_to_user_id == assigned_to_user_id)
+    return query
+
+
 _AUTO_REPLY_SETTING_KEYS = frozenset(
     {
         "enabled",
@@ -1656,8 +1671,10 @@ def list_lifecycle(
     search: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    assigned_to_user_id: int | None = None,
 ) -> dict[str, Any]:
     q = db.query(AiCompanyLifecycle, Buyer).join(Buyer, Buyer.id == AiCompanyLifecycle.buyer_id)
+    q = _apply_buyer_assignee_scope(q, assigned_to_user_id)
     if stage:
         q = q.filter(AiCompanyLifecycle.stage == stage)
     if search and search.strip():
@@ -1718,33 +1735,41 @@ def update_lifecycle(
     return _lifecycle_to_dict(row, buyer)
 
 
-def lifecycle_pipeline_counts(db: Session) -> dict[str, int]:
+def lifecycle_pipeline_counts(
+    db: Session,
+    *,
+    assigned_to_user_id: int | None = None,
+    viewer: AppUser | None = None,
+) -> dict[str, int]:
     from sqlalchemy import func
 
-    rows = (
+    stage_q = (
         db.query(AiCompanyLifecycle.stage, func.count(AiCompanyLifecycle.id))
-        .group_by(AiCompanyLifecycle.stage)
-        .all()
+        .join(Buyer, Buyer.id == AiCompanyLifecycle.buyer_id)
     )
+    stage_q = _apply_buyer_assignee_scope(stage_q, assigned_to_user_id)
+    rows = stage_q.group_by(AiCompanyLifecycle.stage).all()
     counts = {s["key"]: 0 for s in LIFECYCLE_STAGES}
     for stage, count in rows:
         if stage in counts:
             counts[stage] = int(count)
-    # Assigned chip tracks transfer volume (sum of leads sent), not company rows.
-    transfers = list_lead_transfers(db, limit=1)
+    transfers = list_lead_transfers(
+        db, limit=1, assigned_to_user_id=assigned_to_user_id
+    )
     counts["assigned"] = int(transfers.get("total_leads") or 0)
-    # Calling chip tracks total call statements across all users (admin + sales).
-    calls = list_call_activities(db, limit=1)
+    calls = list_call_activities(db, limit=1, viewer=viewer)
     counts["calling"] = int(calls.get("total_calls") or 0)
-    # Follow-up chip tracks Follow up clients activity across all users.
-    follow_ups = list_follow_up_activities(db, limit=1)
+    follow_ups = list_follow_up_activities(db, limit=1, viewer=viewer)
     counts["follow_up"] = int(follow_ups.get("total_events") or 0)
-    # Interested chip = buyers currently on Interested Clients table.
-    counts["interested"] = _interested_clients_list_count(db)
-    # Not Interested chip = buyers on Not interested clients table (latest call outcome).
-    counts["not_interested"] = _not_interested_clients_count(db)
-    # Potential Clients = Scrapped Leads with company + AI grade AA/AAA.
-    potential = list_potential_clients(db, limit=1)
+    counts["interested"] = _interested_clients_list_count(
+        db, assigned_to_user_id=assigned_to_user_id
+    )
+    counts["not_interested"] = _not_interested_clients_count(
+        db, assigned_to_user_id=assigned_to_user_id
+    )
+    potential = list_potential_clients(
+        db, limit=1, assigned_to_user_id=assigned_to_user_id
+    )
     counts["potential_clients"] = int(potential.get("total") or 0)
     return counts
 
@@ -1770,6 +1795,7 @@ def list_potential_clients(
     search: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    assigned_to_user_id: int | None = None,
 ) -> dict[str, Any]:
     """Scrapped Leads (not Old clients) with company grading AND AI grade AA/AAA."""
     from sqlalchemy import func, or_
@@ -1814,6 +1840,7 @@ def list_potential_clients(
             ),
         )
     )
+    q = _apply_buyer_assignee_scope(q, assigned_to_user_id)
     if search and search.strip():
         like = f"%{search.strip()}%"
         q = q.filter(
@@ -1996,16 +2023,34 @@ def record_lead_transfer(
     }
 
 
-def list_lead_transfers(db: Session, *, limit: int = 100) -> dict[str, Any]:
+def list_lead_transfers(
+    db: Session,
+    *,
+    limit: int = 100,
+    assigned_to_user_id: int | None = None,
+) -> dict[str, Any]:
     from sqlalchemy import func
 
+    transfer_q = db.query(AiLeadTransferLog)
+    if assigned_to_user_id is not None:
+        transfer_q = transfer_q.filter(
+            AiLeadTransferLog.to_user_id == assigned_to_user_id
+        )
     total_leads = (
-        db.query(func.coalesce(func.sum(AiLeadTransferLog.lead_count), 0)).scalar() or 0
+        db.query(func.coalesce(func.sum(AiLeadTransferLog.lead_count), 0))
+        .filter(
+            *(
+                [AiLeadTransferLog.to_user_id == assigned_to_user_id]
+                if assigned_to_user_id is not None
+                else []
+            )
+        )
+        .scalar()
+        or 0
     )
-    total_events = db.query(func.count(AiLeadTransferLog.id)).scalar() or 0
+    total_events = transfer_q.with_entities(func.count(AiLeadTransferLog.id)).scalar() or 0
     rows = (
-        db.query(AiLeadTransferLog)
-        .order_by(AiLeadTransferLog.created_at.desc(), AiLeadTransferLog.id.desc())
+        transfer_q.order_by(AiLeadTransferLog.created_at.desc(), AiLeadTransferLog.id.desc())
         .limit(limit)
         .all()
     )
@@ -2363,13 +2408,20 @@ def record_call_activity(
     }
 
 
-def list_call_activities(db: Session, *, limit: int = 100) -> dict[str, Any]:
+def list_call_activities(
+    db: Session,
+    *,
+    limit: int = 100,
+    viewer: AppUser | None = None,
+) -> dict[str, Any]:
     from sqlalchemy import func
 
-    total_calls = db.query(func.count(AiCallActivityLog.id)).scalar() or 0
+    q = db.query(AiCallActivityLog)
+    if viewer is not None and not _is_admin_user(viewer):
+        q = q.filter(AiCallActivityLog.user_id == viewer.id)
+    total_calls = q.with_entities(func.count(AiCallActivityLog.id)).scalar() or 0
     rows = (
-        db.query(AiCallActivityLog)
-        .order_by(AiCallActivityLog.created_at.desc(), AiCallActivityLog.id.desc())
+        q.order_by(AiCallActivityLog.created_at.desc(), AiCallActivityLog.id.desc())
         .limit(limit)
         .all()
     )
@@ -2645,13 +2697,20 @@ def record_follow_up_activity(
     }
 
 
-def list_follow_up_activities(db: Session, *, limit: int = 100) -> dict[str, Any]:
+def list_follow_up_activities(
+    db: Session,
+    *,
+    limit: int = 100,
+    viewer: AppUser | None = None,
+) -> dict[str, Any]:
     from sqlalchemy import func
 
-    total_events = db.query(func.count(AiFollowUpActivityLog.id)).scalar() or 0
+    q = db.query(AiFollowUpActivityLog)
+    if viewer is not None and not _is_admin_user(viewer):
+        q = q.filter(AiFollowUpActivityLog.user_id == viewer.id)
+    total_events = q.with_entities(func.count(AiFollowUpActivityLog.id)).scalar() or 0
     rows = (
-        db.query(AiFollowUpActivityLog)
-        .order_by(
+        q.order_by(
             AiFollowUpActivityLog.created_at.desc(),
             AiFollowUpActivityLog.id.desc(),
         )
@@ -2677,15 +2736,16 @@ def list_follow_up_activities(db: Session, *, limit: int = 100) -> dict[str, Any
     }
 
 
-def _interested_clients_list_count(db: Session) -> int:
+def _interested_clients_list_count(
+    db: Session,
+    *,
+    assigned_to_user_id: int | None = None,
+) -> int:
     from sqlalchemy import func
 
-    return int(
-        db.query(func.count(Buyer.id))
-        .filter(Buyer.interested_clients_list_at.isnot(None))
-        .scalar()
-        or 0
-    )
+    q = db.query(func.count(Buyer.id)).filter(Buyer.interested_clients_list_at.isnot(None))
+    q = _apply_buyer_assignee_scope(q, assigned_to_user_id)
+    return int(q.scalar() or 0)
 
 
 def list_interested_clients_for_lifecycle(
@@ -2694,6 +2754,7 @@ def list_interested_clients_for_lifecycle(
     search: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    assigned_to_user_id: int | None = None,
 ) -> dict[str, Any]:
     """Interested Clients table rows awaiting quotation (default: not sent)."""
     from sqlalchemy import or_
@@ -2709,6 +2770,7 @@ def list_interested_clients_for_lifecycle(
             )
         )
     )
+    q = _apply_buyer_assignee_scope(q, assigned_to_user_id)
     if search and search.strip():
         like = f"%{search.strip()}%"
         q = q.filter(
@@ -2772,6 +2834,7 @@ def _list_lifecycle_stage_clients(
     search: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    assigned_to_user_id: int | None = None,
 ) -> dict[str, Any]:
     """Buyers currently at a lifecycle stage (for pipeline action tabs)."""
     from sqlalchemy import or_
@@ -2781,6 +2844,7 @@ def _list_lifecycle_stage_clients(
         .join(AiCompanyLifecycle, AiCompanyLifecycle.buyer_id == Buyer.id)
         .filter(AiCompanyLifecycle.stage == stage)
     )
+    q = _apply_buyer_assignee_scope(q, assigned_to_user_id)
     if search and search.strip():
         like = f"%{search.strip()}%"
         q = q.filter(
@@ -2819,6 +2883,7 @@ def list_quotation_sent_clients_for_lifecycle(
     search: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    assigned_to_user_id: int | None = None,
 ) -> dict[str, Any]:
     """Quotation Sent tab — meeting schedule per lifecycle row."""
     from sqlalchemy import or_
@@ -2828,6 +2893,7 @@ def list_quotation_sent_clients_for_lifecycle(
         .join(AiCompanyLifecycle, AiCompanyLifecycle.buyer_id == Buyer.id)
         .filter(AiCompanyLifecycle.stage == "quotation_sent")
     )
+    q = _apply_buyer_assignee_scope(q, assigned_to_user_id)
     if search and search.strip():
         like = f"%{search.strip()}%"
         q = q.filter(
@@ -3020,10 +3086,16 @@ def list_negotiation_clients_for_lifecycle(
     search: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    assigned_to_user_id: int | None = None,
 ) -> dict[str, Any]:
     """Negotiation tab — awaiting won/lost decision."""
     return _list_lifecycle_stage_clients(
-        db, stage="negotiation", search=search, limit=limit, offset=offset
+        db,
+        stage="negotiation",
+        search=search,
+        limit=limit,
+        offset=offset,
+        assigned_to_user_id=assigned_to_user_id,
     )
 
 
@@ -3120,11 +3192,14 @@ def list_interested_activities(
     viewer: AppUser,
     limit: int = 100,
     after_id: int | None = None,
+    assigned_to_user_id: int | None = None,
 ) -> dict[str, Any]:
     from sqlalchemy import func
 
     is_admin = _is_admin_user(viewer)
-    total_in_list = _interested_clients_list_count(db)
+    total_in_list = _interested_clients_list_count(
+        db, assigned_to_user_id=assigned_to_user_id
+    )
 
     placed_filter = AiInterestedActivityLog.event_type == "placed"
     total_events = (
@@ -3197,10 +3272,26 @@ def list_interested_activities(
     }
 
 
-def _not_interested_clients_count(db: Session) -> int:
+def _not_interested_clients_count(
+    db: Session,
+    *,
+    assigned_to_user_id: int | None = None,
+) -> int:
     from modules.calls import buyer_ids_with_latest_call_outcome
 
-    return len(buyer_ids_with_latest_call_outcome(db, "not_interested"))
+    ids = buyer_ids_with_latest_call_outcome(db, "not_interested")
+    if not ids:
+        return 0
+    if assigned_to_user_id is None:
+        return len(ids)
+    return (
+        db.query(Buyer.id)
+        .filter(
+            Buyer.id.in_(ids),
+            Buyer.assigned_to_user_id == assigned_to_user_id,
+        )
+        .count()
+    )
 
 
 def record_not_interested_activity(
@@ -3268,11 +3359,14 @@ def list_not_interested_activities(
     viewer: AppUser,
     limit: int = 100,
     after_id: int | None = None,
+    assigned_to_user_id: int | None = None,
 ) -> dict[str, Any]:
     from sqlalchemy import func
 
     is_admin = _is_admin_user(viewer)
-    total_in_list = _not_interested_clients_count(db)
+    total_in_list = _not_interested_clients_count(
+        db, assigned_to_user_id=assigned_to_user_id
+    )
 
     placed_filter = AiNotInterestedActivityLog.event_type == "placed"
     total_events = (
