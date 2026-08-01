@@ -10,6 +10,7 @@ import { ScoreBadge } from "../components/ScoreBadge";
 import { MarketRoleBadge } from "../components/MarketRoleBadge";
 import { ConversionBar, ProducerTierBadge } from "../components/ProducerTierBadge";
 import { CallHistoryPanel } from "../components/CallHistoryPanel";
+import { ClientHistoryPanel } from "../components/ClientHistoryPanel";
 import { ContactsPanel } from "../components/ContactsPanel";
 import { DiscoverLeadsPanel } from "../components/DiscoverLeadsPanel";
 interface BuyerProfileProps {
@@ -214,6 +215,12 @@ export function BuyerProfile({
         leadId={leadId}
         onError={onError}
         onCallFollowUpSaved={onCallFollowUpSaved}
+      />
+
+      <ClientHistoryPanel
+        buyerId={leadId}
+        companyName={lead.company_name}
+        onError={onError}
       />
 
       {score && (

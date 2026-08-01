@@ -384,6 +384,7 @@ export function NavIcon({
   if (navId.startsWith("label:")) return <IconTag {...props} />;
   if (navId === "mail") return <IconExternal {...props} />;
   if (navId === "calls") return <IconCall {...props} />;
+  if (navId === "client-history") return <IconActivity {...props} />;
   if (navId === "quotation-agent") return <IconQuote {...props} />;
   if (navId === "chatbot") return <IconRobot {...props} />;
   if (navId === "ai-mode") return <IconSparkles {...props} />;

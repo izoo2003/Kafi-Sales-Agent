@@ -1077,7 +1077,12 @@ export interface LeadTableRow {
   address: string | null;
   remarks: string | null;
   /** Prior remarks entries with timestamps (oldest → newest). */
-  remarks_history?: Array<{ text: string; at: string; by?: string | null }> | null;
+  remarks_history?: Array<{
+    text: string;
+    at: string;
+    by?: string | null;
+    source?: string | null;
+  }> | null;
   /** Post-call notes from the latest phone call (Follow up / Not interested / Did not receive). */
   call_remarks: string | null;
   assigned_to: string;
@@ -1142,6 +1147,42 @@ export interface LeadTableResponse {
 export interface LeadTableIdsResponse {
   filtered_count: number;
   ids: number[];
+}
+
+export interface ClientHistoryEntry {
+  id: string;
+  buyer_id: number;
+  company_name: string;
+  country?: string | null;
+  assigned_to?: string | null;
+  assigned_to_user_id?: number | null;
+  text: string;
+  at?: string | null;
+  by?: string | null;
+  source?: string;
+}
+
+export interface ClientHistoryFeedResponse {
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  rows: ClientHistoryEntry[];
+}
+
+export interface ClientHistoryDetailEntry {
+  text: string;
+  at?: string | null;
+  by?: string | null;
+  source?: string;
+  current?: boolean;
+}
+
+export interface ClientHistoryDetailResponse {
+  buyer_id: number;
+  company_name: string;
+  remarks?: string | null;
+  entries: ClientHistoryDetailEntry[];
 }
 
 export interface DraftListResponse {
@@ -1398,6 +1439,32 @@ export const client = {
     const query = search.toString();
     return request<LeadTableIdsResponse>(`/leads/table/ids${query ? `?${query}` : ""}`);
   },
+  listClientHistory: (params: {
+    page?: number;
+    page_size?: number;
+    search?: string;
+    buyer_id?: number;
+  } = {}) => {
+    const search = new URLSearchParams();
+    if (params.page) search.set("page", String(params.page));
+    if (params.page_size) search.set("page_size", String(params.page_size));
+    if (params.search) search.set("search", params.search);
+    if (params.buyer_id != null) search.set("buyer_id", String(params.buyer_id));
+    const query = search.toString();
+    return request<ClientHistoryFeedResponse>(
+      `/leads/client-history${query ? `?${query}` : ""}`,
+    );
+  },
+  getClientHistory: (buyerId: number) =>
+    request<ClientHistoryDetailResponse>(`/leads/${buyerId}/client-history`),
+  addClientHistoryRemark: (
+    buyerId: number,
+    data: { text: string; append_to_remarks?: boolean },
+  ) =>
+    request<ClientHistoryDetailResponse>(`/leads/${buyerId}/client-history`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
   updateLeadTableRow: (leadId: number, data: LeadTableRowUpdate) =>
     request<LeadTableRow>(`/leads/table/${leadId}`, {
       method: "PATCH",
@@ -2200,6 +2267,11 @@ export const client = {
     request<AiModeQueriesResponse>("/ai-mode/queries/scan", { method: "POST" }),
   getAiModeQueryMessage: (queryId: number) =>
     request<AiModeQueryMessageResponse>(`/ai-mode/queries/${queryId}`),
+  generateAiModeQueryReply: (queryId: number) =>
+    request<AiModeQueryReplyDraftResponse>(
+      `/ai-mode/queries/${queryId}/generate-reply`,
+      { method: "POST" },
+    ),
   listAiModeLifecycle: (params: {
     stage?: string;
     search?: string;
@@ -2233,6 +2305,15 @@ export const client = {
     const qs = query.toString();
     return request<AiModeInterestedActivitiesResponse>(
       `/ai-mode/interested-activities${qs ? `?${qs}` : ""}`,
+    );
+  },
+  listAiModeNotInterestedActivities: (params: { limit?: number; after_id?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.limit) query.set("limit", String(params.limit));
+    if (params.after_id != null) query.set("after_id", String(params.after_id));
+    const qs = query.toString();
+    return request<AiModeNotInterestedActivitiesResponse>(
+      `/ai-mode/not-interested-activities${qs ? `?${qs}` : ""}`,
     );
   },
   listAiModePotentialClients: (params: { search?: string; limit?: number } = {}) => {
@@ -2282,6 +2363,11 @@ export interface AiModeSettings {
   last_email_processed_at: string | null;
   updated_at: string | null;
   lifecycle_stages: Array<{ key: string; label: string }>;
+  enabled_at?: string | null;
+  auto_reply_admin_only?: boolean;
+  llm_query_enabled?: boolean;
+  llm_auto_reply_enabled?: boolean;
+  serpapi_auto_reply_enabled?: boolean;
 }
 
 export interface AiModeSettingsUpdate {
@@ -2364,6 +2450,16 @@ export interface AiModeQueryMessageResponse {
   };
 }
 
+export interface AiModeQueryReplyDraftResponse {
+  query_id: number;
+  body: string;
+  subject: string;
+  source: "llm" | "template" | string;
+  llm_enabled: boolean;
+  model?: string | null;
+  error?: string | null;
+}
+
 export interface AiModeLifecycleRow {
   id: number;
   buyer_id: number;
@@ -2391,6 +2487,7 @@ export interface AiModeLifecycleListResponse {
   call_activities?: AiModeCallActivitiesResponse;
   follow_up_activities?: AiModeFollowUpActivitiesResponse;
   interested_activities?: AiModeInterestedActivitiesResponse;
+  not_interested_activities?: AiModeNotInterestedActivitiesResponse;
   interested_leads?: AiModeInterestedLeadsResponse;
   potential_clients?: AiModeInterestedLeadsResponse;
 }
@@ -2401,6 +2498,8 @@ export interface AiModeAssignmentRow {
   to_user_id: number;
   to_label: string;
   lead_count: number;
+  buyer_ids?: number[];
+  company_names?: string[];
   message: string;
   created_at: string | null;
 }
@@ -2469,6 +2568,18 @@ export interface AiModeInterestedActivitiesResponse {
   latest_id: number;
   by_user: AiModeInterestedUserScore[];
   rows: AiModeInterestedActivityRow[];
+}
+
+export type AiModeNotInterestedActivityRow = AiModeInterestedActivityRow;
+export type AiModeNotInterestedUserScore = AiModeInterestedUserScore;
+
+export interface AiModeNotInterestedActivitiesResponse {
+  total_in_list: number;
+  total_events: number;
+  my_placed_count: number;
+  latest_id: number;
+  by_user: AiModeNotInterestedUserScore[];
+  rows: AiModeNotInterestedActivityRow[];
 }
 
 export interface AiModeInterestedLeadRow {

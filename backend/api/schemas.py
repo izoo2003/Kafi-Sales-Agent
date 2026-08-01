@@ -504,6 +504,47 @@ class LeadTableIdsResponse(BaseModel):
     ids: list[int]
 
 
+class ClientHistoryEntryRead(BaseModel):
+    id: str
+    buyer_id: int
+    company_name: str
+    country: Optional[str] = None
+    assigned_to: Optional[str] = None
+    assigned_to_user_id: Optional[int] = None
+    text: str
+    at: Optional[str] = None
+    by: Optional[str] = None
+    source: str = "remark"
+
+
+class ClientHistoryFeedResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    rows: list[ClientHistoryEntryRead]
+
+
+class ClientHistoryDetailEntryRead(BaseModel):
+    text: str
+    at: Optional[str] = None
+    by: Optional[str] = None
+    source: str = "remark"
+    current: bool = False
+
+
+class ClientHistoryDetailResponse(BaseModel):
+    buyer_id: int
+    company_name: str
+    remarks: Optional[str] = None
+    entries: list[ClientHistoryDetailEntryRead]
+
+
+class ClientHistoryAddRequest(BaseModel):
+    text: str
+    append_to_remarks: bool = True
+
+
 class LeadTableSectionCountsResponse(BaseModel):
     all: int
     old_clients: int

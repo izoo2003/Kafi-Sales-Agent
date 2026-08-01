@@ -28,6 +28,7 @@ import { IndexesPage } from "./pages/IndexesPage";
 import { UserManualPage } from "./pages/UserManualPage";
 import { LeadsPage } from "./pages/LeadsPage";
 import { LeadsTablePage } from "./pages/LeadsTablePage";
+import { ClientHistoryPage } from "./pages/ClientHistoryPage";
 import { ChatbotPage } from "./pages/ChatbotPage";
 import { KpiPage } from "./pages/KpiPage";
 import { LoginPage } from "./pages/LoginPage";
@@ -764,6 +765,7 @@ function DashboardApp() {
       openMailer: true,
     },
     { id: "calls", label: "Calls", count: 0 },
+    { id: "client-history", label: "Client History", count: 0 },
     {
       id: "quotation-agent",
       label: "Quotation agent",
@@ -784,8 +786,10 @@ function DashboardApp() {
     isWideMail ||
     tab === "whatsapp-templates" ||
     tab === "whatsapp-inbox" ||
+    tab === "ai-mode" ||
     (tab === "leads" && selectedLeadId === null) ||
     (tab === "calls" && selectedLeadId === null) ||
+    tab === "client-history" ||
     tab === "chatbot" ||
     tab === "kpi" ||
     tab === "users";
@@ -982,6 +986,15 @@ function DashboardApp() {
                 onError={setError}
                 onSelectLead={handleSelectLead}
                 onCallFollowUpSaved={handleCallFollowUpSaved}
+              />
+            )}
+            {tab === "client-history" && (
+              <ClientHistoryPage
+                onError={setError}
+                onOpenClient={(buyerId) => {
+                  setSelectedLeadId(buyerId);
+                  setTab("table");
+                }}
               />
             )}
             {tab === "chatbot" && <ChatbotPage onError={setError} />}

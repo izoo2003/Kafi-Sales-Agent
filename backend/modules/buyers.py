@@ -313,10 +313,15 @@ def update_buyer(
         new_remarks = data.get("remarks")
         old = (buyer.remarks or "").strip()
         new = (new_remarks or "").strip() if new_remarks is not None else ""
-        if old and old != new:
-            from modules.ai_mode import append_remarks_history
+        if new and new != old:
+            from modules.client_history import append_client_history
 
-            append_remarks_history(buyer, previous_text=old, by_username=remarks_by)
+            append_client_history(
+                buyer,
+                text=new,
+                by_username=remarks_by,
+                source="remark",
+            )
     for key, value in data.items():
         if key in {
             "company_name",

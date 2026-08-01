@@ -712,7 +712,15 @@ def update_call_followup(
                     buyer_id=buyer.id,
                     event_type="placed",
                 )
-        if notes_changed and (new_notes or "").strip():
+        if notes_changed and (new_notes or "").strip() and buyer:
+            from modules.client_history import append_client_history, username_for_user
+
+            append_client_history(
+                buyer,
+                text=(new_notes or "").strip(),
+                by_username=username_for_user(db, app_user_id),
+                source="call",
+            )
             preview = (new_notes or "").strip()
             if len(preview) > 160:
                 preview = preview[:157] + "…"

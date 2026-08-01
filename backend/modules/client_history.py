@@ -1,0 +1,201 @@
+"""Client remark history — timestamped entries per buyer."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from db.models import AppUser, Buyer
+
+MAX_ENTRIES_PER_BUYER = 200
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def append_client_history(
+    buyer: Buyer,
+    *,
+    text: str,
+    by_username: str | None = None,
+    source: str = "remark",
+) -> None:
+    """Append a remark entry if it differs from the latest saved entry."""
+    body = (text or "").strip()
+    if not body:
+        return
+
+    history = list(buyer.remarks_history or [])
+    if history:
+        last = history[-1]
+        if isinstance(last, dict):
+            if (last.get("text") or "").strip() == body and (last.get("source") or "") == source:
+                return
+
+    history.append(
+        {
+            "text": body,
+            "at": _utcnow().isoformat(),
+            "by": by_username,
+            "source": source,
+        }
+    )
+    buyer.remarks_history = history[-MAX_ENTRIES_PER_BUYER:]
+
+
+def buyer_history_entries(buyer: Buyer) -> list[dict[str, Any]]:
+    """Return history oldest → newest, including current remarks if not yet logged."""
+    history = [dict(entry) for entry in (buyer.remarks_history or []) if isinstance(entry, dict)]
+    current = (buyer.remarks or "").strip()
+    if current:
+        if not history or (history[-1].get("text") or "").strip() != current:
+            history.append(
+                {
+                    "text": current,
+                    "at": buyer.updated_at.isoformat() if buyer.updated_at else _utcnow().isoformat(),
+                    "by": None,
+                    "source": "remark",
+                    "current": True,
+                }
+            )
+    return history
+
+
+def list_client_history_feed(
+    db: Session,
+    *,
+    assigned_to_user_id: int | None = None,
+    buyer_id: int | None = None,
+    search: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> dict[str, Any]:
+    """Flatten remark history across buyers, newest first."""
+    query = db.query(Buyer)
+    from sqlalchemy import or_
+
+    query = query.filter(
+        or_(
+            Buyer.remarks_history.isnot(None),
+            Buyer.remarks.isnot(None),
+        )
+    )
+    if assigned_to_user_id is not None:
+        query = query.filter(Buyer.assigned_to_user_id == assigned_to_user_id)
+    if buyer_id is not None:
+        query = query.filter(Buyer.id == buyer_id)
+
+    needle = (search or "").strip().lower()
+    if needle:
+        from sqlalchemy import func as sa_func
+
+        query = query.filter(
+            sa_func.lower(sa_func.coalesce(Buyer.company_name, "")).like(f"%{needle}%")
+        )
+
+    buyers = query.order_by(Buyer.updated_at.desc().nullslast(), Buyer.id.desc()).all()
+
+    flat: list[dict[str, Any]] = []
+    for buyer in buyers:
+        logged = list(buyer.remarks_history or [])
+        for entry in buyer_history_entries(buyer):
+            text = (entry.get("text") or "").strip()
+            if not text:
+                continue
+            is_current_only = bool(entry.get("current"))
+            if is_current_only and logged:
+                continue
+            flat.append(
+                {
+                    "id": f"{buyer.id}:{entry.get('at') or text[:24]}",
+                    "buyer_id": buyer.id,
+                    "company_name": buyer.company_name,
+                    "country": buyer.country,
+                    "assigned_to": buyer.assigned_to,
+                    "assigned_to_user_id": buyer.assigned_to_user_id,
+                    "text": text,
+                    "at": entry.get("at"),
+                    "by": entry.get("by"),
+                    "source": entry.get("source") or "remark",
+                }
+            )
+
+    flat.sort(key=lambda row: row.get("at") or "", reverse=True)
+    total = len(flat)
+    page = max(1, int(page or 1))
+    page_size = max(1, min(int(page_size or 50), 200))
+    start = (page - 1) * page_size
+    rows = flat[start : start + page_size]
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, (total + page_size - 1) // page_size),
+        "rows": rows,
+    }
+
+
+def history_for_buyer(db: Session, buyer_id: int) -> dict[str, Any] | None:
+    buyer = db.get(Buyer, buyer_id)
+    if not buyer:
+        return None
+    entries = buyer_history_entries(buyer)
+    return {
+        "buyer_id": buyer.id,
+        "company_name": buyer.company_name,
+        "remarks": buyer.remarks,
+        "entries": [
+            {
+                "text": e.get("text"),
+                "at": e.get("at"),
+                "by": e.get("by"),
+                "source": e.get("source") or "remark",
+                "current": bool(e.get("current")),
+            }
+            for e in entries
+        ],
+    }
+
+
+def username_for_user(db: Session, user_id: int | None) -> str | None:
+    if not user_id:
+        return None
+    user = db.get(AppUser, user_id)
+    return user.username if user else None
+
+
+def add_client_remark(
+    db: Session,
+    buyer_id: int,
+    text: str,
+    *,
+    by_username: str | None = None,
+    append_to_remarks: bool = True,
+) -> dict[str, Any] | None:
+    """Add a remark entry and optionally append it to the buyer's remarks field."""
+    buyer = db.get(Buyer, buyer_id)
+    if not buyer:
+        return None
+
+    note = (text or "").strip()
+    if not note:
+        raise ValueError("Remark text is required")
+
+    append_client_history(
+        buyer,
+        text=note,
+        by_username=by_username,
+        source="remark",
+    )
+
+    if append_to_remarks:
+        existing = (buyer.remarks or "").strip()
+        buyer.remarks = f"{existing}\n{note}".strip() if existing else note
+
+    db.commit()
+    db.refresh(buyer)
+    return history_for_buyer(db, buyer_id)

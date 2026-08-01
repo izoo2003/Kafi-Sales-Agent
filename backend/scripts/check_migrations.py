@@ -92,6 +92,8 @@ def main() -> None:
         "035_assigned_by_user_id": "assigned_by_user_id" in cols,
         "036_interested_clients_list": "interested_clients_list_at" in cols,
         "037_ai_interested_activity_log": "ai_interested_activity_log" in tables,
+        "039_not_interested_log": "ai_not_interested_activity_log" in tables,
+        "038_ai_mode_enabled_at": "enabled_at" in {c["name"] for c in insp.get_columns("ai_mode_settings")} if "ai_mode_settings" in tables else False,
         "034_ai_follow_up_activity_log": "ai_follow_up_activity_log" in tables,
         "033_ai_call_activity_log": "ai_call_activity_log" in tables,
         "032_ai_lead_transfer_log": "ai_lead_transfer_log" in tables,

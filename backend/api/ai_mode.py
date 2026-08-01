@@ -9,10 +9,20 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from api.deps import get_current_user, get_db
-from db.models import AppUser
+from db.models import AppUser, AppUserRole
 from modules import ai_mode as ai_mode_module
 
 router = APIRouter(prefix="/ai-mode", tags=["ai-mode"])
+
+
+def _is_admin(user: AppUser) -> bool:
+    role = user.role.value if isinstance(user.role, AppUserRole) else str(user.role)
+    return role == AppUserRole.admin.value
+
+
+def _require_admin(user: AppUser) -> None:
+    if not _is_admin(user):
+        raise HTTPException(403, "Only an admin can use AI Mode auto-reply and query AI replies.")
 
 
 class AiModeSettingsUpdate(BaseModel):
@@ -50,9 +60,27 @@ def patch_settings(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ) -> dict[str, Any]:
-    return ai_mode_module.update_settings(
-        db, user.id, payload.model_dump(exclude_unset=True)
-    )
+    data = payload.model_dump(exclude_unset=True)
+    if any(
+        key in data
+        for key in (
+            "enabled",
+            "email_auto_reply_enabled",
+            "whatsapp_auto_reply_enabled",
+            "form_url",
+            "email_subject_template",
+            "email_body_template",
+            "whatsapp_body_template",
+            "query_keywords",
+        )
+    ):
+        _require_admin(user)
+    try:
+        return ai_mode_module.update_settings(
+            db, user.id, data, actor=user
+        )
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
 
 
 @router.post("/process-emails")
@@ -61,6 +89,7 @@ def process_emails(
     user: AppUser = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Manually scan mailbox and auto-reply to query emails (when AI Mode is on)."""
+    _require_admin(user)
     return ai_mode_module.process_email_auto_replies_for_user(db, user)
 
 
@@ -70,6 +99,7 @@ def list_auto_replies(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ) -> dict[str, Any]:
+    _require_admin(user)
     return {"rows": ai_mode_module.list_auto_reply_log(db, user.id, limit=limit)}
 
 
@@ -117,6 +147,22 @@ def get_query_message(
         raise HTTPException(404 if "not found" in str(exc).lower() else 400, str(exc)) from exc
 
 
+@router.post("/queries/{query_id}/generate-reply")
+def generate_query_reply(
+    query_id: int,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """LLM draft for Company lifecycle → New Lead query reply."""
+    _require_admin(user)
+    try:
+        return ai_mode_module.generate_query_reply_draft(db, user, query_id)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(404 if "not found" in str(exc).lower() else 400, str(exc)) from exc
+
+
 @router.get("/lifecycle/stages")
 def lifecycle_stages(
     _user: AppUser = Depends(get_current_user),
@@ -143,6 +189,9 @@ def list_lifecycle(
         db, limit=100
     )
     result["interested_activities"] = ai_mode_module.list_interested_activities(
+        db, viewer=user, limit=100
+    )
+    result["not_interested_activities"] = ai_mode_module.list_not_interested_activities(
         db, viewer=user, limit=100
     )
     result["potential_clients"] = ai_mode_module.list_potential_clients(
@@ -192,6 +241,19 @@ def list_interested_activities(
 ) -> dict[str, Any]:
     """Interested Clients activity for Company lifecycle → Interested."""
     return ai_mode_module.list_interested_activities(
+        db, viewer=user, limit=limit, after_id=after_id
+    )
+
+
+@router.get("/not-interested-activities")
+def list_not_interested_activities(
+    limit: int = Query(100, ge=1, le=500),
+    after_id: Optional[int] = Query(None, ge=0),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Not interested clients activity for Company lifecycle → Not Interested."""
+    return ai_mode_module.list_not_interested_activities(
         db, viewer=user, limit=limit, after_id=after_id
     )
 

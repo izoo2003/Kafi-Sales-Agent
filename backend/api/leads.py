@@ -44,6 +44,9 @@ from api.schemas import (
     InterestedFollowUpRead,
     FollowUpAtUpdate,
     FollowUpAtRead,
+    ClientHistoryFeedResponse,
+    ClientHistoryDetailResponse,
+    ClientHistoryAddRequest,
 )
 from modules.comms_generator import get_comms
 from modules import buyers as buyers_module
@@ -304,6 +307,67 @@ def list_interested_follow_ups(
     from modules.interested_follow_ups import list_due_follow_ups
 
     return list_due_follow_ups(db, assigned_to_user_id=_assignee_scope(user))
+
+
+@router.get("/client-history", response_model=ClientHistoryFeedResponse)
+def list_client_history(
+    buyer_id: int | None = None,
+    search: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    from modules import client_history as client_history_module
+
+    return client_history_module.list_client_history_feed(
+        db,
+        assigned_to_user_id=_assignee_scope(user),
+        buyer_id=buyer_id,
+        search=search,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get("/{lead_id}/client-history", response_model=ClientHistoryDetailResponse)
+def get_client_history(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    from modules import client_history as client_history_module
+
+    _require_buyer_access(db, user, lead_id)
+    detail = client_history_module.history_for_buyer(db, lead_id)
+    if not detail:
+        raise HTTPException(404, "Lead not found")
+    return detail
+
+
+@router.post("/{lead_id}/client-history", response_model=ClientHistoryDetailResponse)
+def add_client_history_remark(
+    lead_id: int,
+    payload: ClientHistoryAddRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    from modules import client_history as client_history_module
+
+    _require_buyer_access(db, user, lead_id)
+    try:
+        detail = client_history_module.add_client_remark(
+            db,
+            lead_id,
+            payload.text,
+            by_username=user.username,
+            append_to_remarks=payload.append_to_remarks,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not detail:
+        raise HTTPException(404, "Lead not found")
+    return detail
 
 
 @router.post(

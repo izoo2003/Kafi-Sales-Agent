@@ -7,6 +7,8 @@ import {
   type AiModeFollowUpActivityRow,
   type AiModeInterestedActivityRow,
   type AiModeInterestedUserScore,
+  type AiModeNotInterestedActivityRow,
+  type AiModeNotInterestedUserScore,
   type AiModeInterestedLeadRow,
   type AiModeLifecycleRow,
   type AiModeQueryRow,
@@ -17,6 +19,7 @@ import {
   AssignedToSelect,
   type AssigneeOption,
 } from "../components/AssignedToSelect";
+import { IconChevronDown, IconChevronRight } from "../components/icons/AppIcons";
 
 interface AiModePageProps {
   onError: (message: string) => void;
@@ -53,9 +56,80 @@ function parseKeywords(text: string): string[] {
     .filter(Boolean);
 }
 
+/** Two-panel AI Mode layout — expands on large monitors instead of staying narrow. */
+const AI_MODE_SPLIT_GRID =
+  "grid w-full gap-5 lg:grid-cols-2 xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]";
+
+function AssignmentTransferRow({ row }: { row: AiModeAssignmentRow }) {
+  const [open, setOpen] = useState(false);
+  const names = row.company_names || [];
+  const canExpand = names.length > 0;
+
+  return (
+    <li className="py-3 px-1">
+      <div className="flex items-start gap-2">
+        {canExpand ? (
+          <button
+            type="button"
+            onClick={() => setOpen((value) => !value)}
+            className="mt-0.5 rounded-md border border-slate-700 bg-slate-900/80 p-1 text-slate-400 hover:text-slate-200 hover:border-slate-600"
+            aria-expanded={open}
+            aria-label={open ? "Hide client names" : "Show client names"}
+            title={open ? "Hide client names" : "Show client names"}
+          >
+            {open ? (
+              <IconChevronDown size="sm" className="text-slate-300" />
+            ) : (
+              <IconChevronRight size="sm" className="text-slate-300" />
+            )}
+          </button>
+        ) : (
+          <span className="w-7 shrink-0" aria-hidden />
+        )}
+        <div className="min-w-0 flex-1">
+          <p className="text-sm text-slate-100">{row.message}</p>
+          <p className="text-xs text-slate-500 mt-1">
+            To {row.to_label}
+            {row.created_at ? ` · ${new Date(row.created_at).toLocaleString()}` : ""}
+            {` · ${row.lead_count} client${row.lead_count === 1 ? "" : "s"}`}
+          </p>
+          {open && canExpand ? (
+            <ul className="mt-2 max-h-48 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950/70 divide-y divide-slate-800/80">
+              {names.map((name, index) => (
+                <li
+                  key={`${row.id}-${index}`}
+                  className="px-3 py-2 text-sm text-slate-300"
+                >
+                  {name}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function CallActivityRow({ row }: { row: AiModeCallActivityRow }) {
+  const company = (row.company_name || "").trim() || "Unknown client";
+  return (
+    <li className="py-3 px-1">
+      <p className="text-sm text-slate-100">
+        <span className="text-slate-300">{row.user_label}</span>
+        {" called "}
+        <span className="font-medium text-emerald-300">{company}</span>
+      </p>
+      <p className="text-xs text-slate-500 mt-1">
+        {row.created_at ? new Date(row.created_at).toLocaleString() : ""}
+      </p>
+    </li>
+  );
+}
+
 export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
   const { isAdmin } = useAuth();
-  const [panel, setPanel] = useState<Panel>("auto-reply");
+  const [panel, setPanel] = useState<Panel>(isAdmin ? "auto-reply" : "lifecycle");
   const [settings, setSettings] = useState<AiModeSettings | null>(null);
   const [draft, setDraft] = useState<DraftFields | null>(null);
   const [loading, setLoading] = useState(true);
@@ -83,6 +157,7 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
   const [queryMessageLoading, setQueryMessageLoading] = useState(false);
   const [replyBody, setReplyBody] = useState("");
   const [replySending, setReplySending] = useState(false);
+  const [replyGenerating, setReplyGenerating] = useState(false);
 
   const [lifecycleRows, setLifecycleRows] = useState<AiModeLifecycleRow[]>([]);
   const [pipeline, setPipeline] = useState<Record<string, number>>({});
@@ -107,6 +182,14 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
   const [interestedMyCount, setInterestedMyCount] = useState(0);
   const [interestedByUser, setInterestedByUser] = useState<
     AiModeInterestedUserScore[]
+  >([]);
+  const [notInterestedActivityRows, setNotInterestedActivityRows] = useState<
+    AiModeNotInterestedActivityRow[]
+  >([]);
+  const [notInterestedInListCount, setNotInterestedInListCount] = useState(0);
+  const [notInterestedMyCount, setNotInterestedMyCount] = useState(0);
+  const [notInterestedByUser, setNotInterestedByUser] = useState<
+    AiModeNotInterestedUserScore[]
   >([]);
   const [potentialRows, setPotentialRows] = useState<PotentialClientRow[]>([]);
   const [potentialCount, setPotentialCount] = useState(0);
@@ -172,7 +255,8 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
         stageFilter === "assigned" ||
         stageFilter === "calling" ||
         stageFilter === "follow_up" ||
-        stageFilter === "interested";
+        stageFilter === "interested" ||
+        stageFilter === "not_interested";
       const [data] = await Promise.all([
         client.listAiModeLifecycle({
           // Activity / grade feeds — other stages list companies.
@@ -198,7 +282,8 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
             r.stage !== "assigned" &&
             r.stage !== "calling" &&
             r.stage !== "follow_up" &&
-            r.stage !== "interested",
+            r.stage !== "interested" &&
+            r.stage !== "not_interested",
         ),
       );
       setPipeline(data.pipeline || {});
@@ -223,6 +308,13 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
       setInterestedInListCount(interested.total_in_list || 0);
       setInterestedMyCount(interested.my_placed_count || 0);
       setInterestedByUser(interested.by_user || []);
+      const notInterested =
+        data.not_interested_activities ||
+        (await client.listAiModeNotInterestedActivities({ limit: 100 }));
+      setNotInterestedActivityRows(notInterested.rows || []);
+      setNotInterestedInListCount(notInterested.total_in_list || 0);
+      setNotInterestedMyCount(notInterested.my_placed_count || 0);
+      setNotInterestedByUser(notInterested.by_user || []);
       const potential =
         data.potential_clients ||
         data.interested_leads ||
@@ -316,6 +408,12 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
   }
 
   useEffect(() => {
+    if (!isAdmin && panel === "auto-reply") {
+      setPanel("lifecycle");
+    }
+  }, [isAdmin, panel]);
+
+  useEffect(() => {
     void loadSettings();
   }, [loadSettings]);
 
@@ -323,7 +421,7 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
     const pending = sessionStorage.getItem("kafi.aiModeStage");
     const pendingPanel = sessionStorage.getItem("kafi.aiModePanel");
     if (pendingPanel === "auto-reply" || pendingPanel === "lifecycle") {
-      setPanel(pendingPanel);
+      setPanel(isAdmin || pendingPanel === "lifecycle" ? pendingPanel : "lifecycle");
       sessionStorage.removeItem("kafi.aiModePanel");
     }
     if (!pending) return;
@@ -369,7 +467,7 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
   async function openQuery(row: AiModeQueryRow) {
     setSelectedQuery(row);
     setQueryMessage(null);
-    setReplyBody(buildReplyDraft(row));
+    setReplyBody(isAdmin ? buildReplyDraft(row) : "");
     setQueryMessageLoading(true);
     try {
       const data = await client.getAiModeQueryMessage(row.id);
@@ -383,8 +481,31 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
     }
   }
 
+  async function generateQueryReply() {
+    if (!selectedQuery || !isAdmin) return;
+    setReplyGenerating(true);
+    setNotice(null);
+    try {
+      const draft = await client.generateAiModeQueryReply(selectedQuery.id);
+      setReplyBody(draft.body || "");
+      if (draft.source === "llm") {
+        setNotice("AI draft generated — review before sending.");
+      } else if (draft.error) {
+        onError(`AI draft unavailable (${draft.error}). Using template.`);
+        setReplyBody(draft.body || buildReplyDraft(selectedQuery));
+      } else {
+        setNotice("Using template reply (AI query key not configured).");
+      }
+      window.setTimeout(() => setNotice(null), 5000);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to generate AI reply");
+    } finally {
+      setReplyGenerating(false);
+    }
+  }
+
   async function sendQueryReply() {
-    if (!selectedQuery) return;
+    if (!selectedQuery || !isAdmin) return;
     const body = replyBody.trim();
     if (!body) {
       onError("Reply body cannot be empty");
@@ -538,39 +659,51 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5 w-full">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="text-lg font-medium text-slate-100">AI Mode</h2>
           <p className="text-sm text-slate-500 mt-1 max-w-2xl">
-            Turn this on when you leave for the day. While enabled, query emails in your inbox
-            and WhatsApp inquiries get the auto-reply drafted below. Company lifecycle tracks
-            each lead — <span className="text-slate-400">New Lead</span> is each user’s query
-            inbox (keyword-matched mail on that user’s mailbox only).
+            {isAdmin ? (
+              <>
+                Turn AI Mode on when you leave for the day. Auto-replies go to any{" "}
+                <span className="text-slate-400">new</span> inbound email from a real person
+                (not newsletters or marketing) received after you enable it — not messages
+                already sitting in the inbox. Company lifecycle tracks each lead for the whole
+                team.
+              </>
+            ) : (
+              <>
+                Company lifecycle tracks leads for the whole team. AI auto-reply and
+                AI query replies are configured by an admin only.
+              </>
+            )}
           </p>
         </div>
-        <button
-          type="button"
-          disabled={saving}
-          onClick={() => void saveChannelFlags({ enabled: !settings.enabled })}
-          className={`relative inline-flex h-10 w-[7.5rem] items-center rounded-full border px-1 transition-colors ${
-            settings.enabled
-              ? "bg-emerald-600/30 border-emerald-500/50"
-              : "bg-slate-900 border-slate-700"
-          }`}
-          aria-pressed={settings.enabled}
-          title={settings.enabled ? "Turn AI Mode off" : "Turn AI Mode on"}
-        >
-          <span
-            className={`inline-flex h-8 w-8 items-center justify-center rounded-full text-[10px] font-semibold transition-transform ${
+        {isAdmin ? (
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => void saveChannelFlags({ enabled: !settings.enabled })}
+            className={`relative inline-flex h-10 w-[7.5rem] items-center rounded-full border px-1 transition-colors ${
               settings.enabled
-                ? "translate-x-[3.85rem] bg-emerald-500 text-slate-950"
-                : "translate-x-0 bg-slate-600 text-slate-100"
+                ? "bg-emerald-600/30 border-emerald-500/50"
+                : "bg-slate-900 border-slate-700"
             }`}
+            aria-pressed={settings.enabled}
+            title={settings.enabled ? "Turn AI Mode off" : "Turn AI Mode on"}
           >
-            {settings.enabled ? "ON" : "OFF"}
-          </span>
-        </button>
+            <span
+              className={`inline-flex h-8 w-8 items-center justify-center rounded-full text-[10px] font-semibold transition-transform ${
+                settings.enabled
+                  ? "translate-x-[3.85rem] bg-emerald-500 text-slate-950"
+                  : "translate-x-0 bg-slate-600 text-slate-100"
+              }`}
+            >
+              {settings.enabled ? "ON" : "OFF"}
+            </span>
+          </button>
+        ) : null}
       </div>
 
       {notice && (
@@ -580,11 +713,12 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
       )}
 
       <div className="flex gap-2 border-b border-slate-800 pb-2">
-        {(
-          [
-            ["auto-reply", "Auto-reply"],
-            ["lifecycle", "Company lifecycle"],
-          ] as const
+        {(isAdmin
+          ? ([
+              ["auto-reply", "Auto-reply"],
+              ["lifecycle", "Company lifecycle"],
+            ] as const)
+          : ([["lifecycle", "Company lifecycle"]] as const)
         ).map(([id, label]) => (
           <button
             key={id}
@@ -601,10 +735,21 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
         ))}
       </div>
 
-      {panel === "auto-reply" && (
-        <div className="grid gap-5 lg:grid-cols-2">
+      {panel === "auto-reply" && isAdmin && (
+        <div className={AI_MODE_SPLIT_GRID}>
           <section className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
             <h3 className="text-sm font-medium text-slate-200">Channels</h3>
+            <p className="text-xs text-slate-500">
+              Auto-replies fire for any{" "}
+              <span className="text-slate-400">new</span> inbound email from a real person
+              (not newsletters, marketing blasts, or system mail) received after you turn AI
+              Mode on
+              {settings.enabled_at
+                ? ` (${new Date(settings.enabled_at).toLocaleString()})`
+                : ""}
+              . Inquiry keywords are not required for auto-reply. Older unread messages are
+              skipped.
+            </p>
             <label className="flex items-center justify-between gap-3 text-sm text-slate-300">
               <span>Email auto-reply (Inbox + Junk)</span>
               <input
@@ -648,9 +793,9 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                 className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
               />
               <p className="mt-1 text-[11px] text-slate-500">
-                Inquiry keywords apply to your mailbox only. Matching emails show under
-                Company lifecycle → New Lead (Queries) for every user the same way. Auto-reply
-                still requires AI Mode on.
+                Inquiry keywords apply to your mailbox only for New Lead detection. Matching
+                emails show under Company lifecycle → New Lead (Queries). Auto-reply uses the
+                rules above (real person mail, not promotional) and still requires AI Mode on.
               </p>
             </div>
             <div className="flex flex-wrap gap-2 pt-1">
@@ -814,6 +959,8 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                           ? followUpCount
                           : s.key === "interested"
                             ? interestedInListCount
+                          : s.key === "not_interested"
+                            ? notInterestedInListCount
                             : (pipeline[s.key] ?? 0);
               return (
                 <button
@@ -840,7 +987,7 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
           </div>
 
           {stageFilter === "new_lead" ? (
-            <div className="grid gap-5 lg:grid-cols-2">
+            <div className={AI_MODE_SPLIT_GRID}>
               <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
@@ -849,20 +996,24 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                       <span className="text-emerald-400/90">({queryCount})</span>
                     </h3>
                     <p className="text-xs text-slate-500 mt-1">
-                      Scan mailbox checks your latest{" "}
+                      Scan mailbox checks the latest{" "}
                       <span className="text-slate-400">10 inbox emails</span> (read or
-                      unread) for real buyer inquiries. Each account only sees its own
-                      mailbox.
+                      unread) for real buyer inquiries.
+                      {isAdmin
+                        ? " AI replies and auto-reply are admin-only."
+                        : " Query replies are handled by an admin."}
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    disabled={queriesLoading}
-                    onClick={() => void loadQueries(true)}
-                    className="rounded-lg bg-violet-700 hover:bg-violet-600 disabled:opacity-50 px-3 py-1.5 text-sm"
-                  >
-                    {queriesLoading ? "Scanning…" : "Scan mailbox"}
-                  </button>
+                  {isAdmin ? (
+                    <button
+                      type="button"
+                      disabled={queriesLoading}
+                      onClick={() => void loadQueries(true)}
+                      className="rounded-lg bg-violet-700 hover:bg-violet-600 disabled:opacity-50 px-3 py-1.5 text-sm"
+                    >
+                      {queriesLoading ? "Scanning…" : "Scan mailbox"}
+                    </button>
+                  ) : null}
                 </div>
                 {queriesLoading && queryRows.length === 0 ? (
                   <p className="text-sm text-slate-500">Scanning mailbox…</p>
@@ -872,7 +1023,7 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                     emails (read or unread).
                   </p>
                 ) : (
-                  <ul className="divide-y divide-slate-800 max-h-[28rem] overflow-y-auto">
+                  <ul className="divide-y divide-slate-800 max-h-[28rem] xl:max-h-[36rem] overflow-y-auto">
                     {queryRows.map((row) => (
                       <li key={row.id}>
                         <button
@@ -898,11 +1049,15 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                 )}
               </section>
 
-              <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 min-h-[16rem]">
-                <h3 className="text-sm font-medium text-slate-200 mb-3">Email & reply</h3>
+              <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 min-h-[16rem] xl:min-h-[24rem]">
+                <h3 className="text-sm font-medium text-slate-200 mb-3">
+                  {isAdmin ? "Email & reply" : "Email preview"}
+                </h3>
                 {!selectedQuery ? (
                   <p className="text-sm text-slate-500">
-                    Select a query to open the email and reply.
+                    {isAdmin
+                      ? "Select a query to open the email and reply."
+                      : "Select a query to preview the email. Replies are admin-only."}
                   </p>
                 ) : queryMessageLoading ? (
                   <p className="text-sm text-slate-500">Loading email…</p>
@@ -921,45 +1076,69 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                           : ""}
                       </p>
                     </div>
-                    <pre className="whitespace-pre-wrap text-sm text-slate-300 font-sans max-h-[12rem] overflow-y-auto rounded-md border border-slate-800 bg-slate-950/50 p-3">
+                    <pre className="whitespace-pre-wrap text-sm text-slate-300 font-sans max-h-[12rem] xl:max-h-[22rem] overflow-y-auto rounded-md border border-slate-800 bg-slate-950/50 p-3">
                       {queryMessage.body || queryMessage.preview || "(empty body)"}
                     </pre>
 
-                    <div className="border-t border-slate-800 pt-3 space-y-2">
-                      <label className="block text-xs text-slate-500">
-                        Your reply (from your mailbox)
-                      </label>
-                      <textarea
-                        value={replyBody}
-                        onChange={(e) => setReplyBody(e.target.value)}
-                        rows={8}
-                        placeholder="Write your reply…"
-                        className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 font-mono"
-                      />
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          disabled={replySending || !replyBody.trim()}
-                          onClick={() => void sendQueryReply()}
-                          className="rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 px-3 py-2 text-sm font-medium"
-                        >
-                          {replySending ? "Sending…" : "Send reply"}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={replySending || !selectedQuery}
-                          onClick={() =>
-                            selectedQuery && setReplyBody(buildReplyDraft(selectedQuery))
-                          }
-                          className="rounded-lg border border-slate-700 hover:bg-slate-800 px-3 py-2 text-sm text-slate-300"
-                        >
-                          Reset to template
-                        </button>
+                    {isAdmin ? (
+                      <div className="border-t border-slate-800 pt-3 space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <label className="block text-xs text-slate-500">
+                            Your reply (from your mailbox)
+                          </label>
+                          {settings?.llm_query_enabled ? (
+                            <button
+                              type="button"
+                              disabled={replyGenerating || replySending}
+                              onClick={() => void generateQueryReply()}
+                              className="rounded-lg border border-violet-500/40 bg-violet-500/10 hover:bg-violet-500/20 disabled:opacity-50 px-2.5 py-1 text-xs text-violet-200"
+                            >
+                              {replyGenerating ? "Generating…" : "Generate with AI"}
+                            </button>
+                          ) : null}
+                        </div>
+                        <textarea
+                          value={replyBody}
+                          onChange={(e) => setReplyBody(e.target.value)}
+                          rows={8}
+                          placeholder="Write your reply…"
+                          className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 font-mono"
+                        />
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={replySending || !replyBody.trim()}
+                            onClick={() => void sendQueryReply()}
+                            className="rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 px-3 py-2 text-sm font-medium"
+                          >
+                            {replySending ? "Sending…" : "Send reply"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={replySending || !selectedQuery}
+                            onClick={() =>
+                              selectedQuery && setReplyBody(buildReplyDraft(selectedQuery))
+                            }
+                            className="rounded-lg border border-slate-700 hover:bg-slate-800 px-3 py-2 text-sm text-slate-300"
+                          >
+                            Reset to template
+                          </button>
+                        </div>
+                        <p className="text-[11px] text-slate-500">
+                          Sends via your company mailbox (Vercel mailer when configured).
+                          {settings?.llm_auto_reply_enabled &&
+                          settings?.serpapi_auto_reply_enabled
+                            ? " After-hours auto-replies use SerpAPI company research + AI on new mail only."
+                            : settings?.llm_auto_reply_enabled
+                              ? " After-hours auto-replies use AI drafting on new mail only."
+                              : ""}
+                        </p>
                       </div>
-                      <p className="text-[11px] text-slate-500">
-                        Sends via your company mailbox (Vercel mailer when configured).
+                    ) : (
+                      <p className="text-xs text-slate-500 border-t border-slate-800 pt-3">
+                        Only an admin can send AI or template replies from this screen.
                       </p>
-                    </div>
+                    )}
                   </div>
                 )}
               </section>
@@ -975,9 +1154,9 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                     </span>
                   </h3>
                   <p className="text-xs text-slate-500 mt-1">
-                    When an admin assigns leads to sales users, each batch is logged here
-                    (e.g. “50 leads transferred to Usman”). The Assigned count is the total
-                    leads transferred across all users.
+                    When an admin assigns clients from Potential Clients, Scrapped Leads,
+                    Old clients, Master table, or any other section, each batch (max 20
+                    per notification) is logged here. Click the arrow to see company names.
                   </p>
                 </div>
                 <button
@@ -997,18 +1176,9 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                   (admin) and they will appear here.
                 </p>
               ) : (
-                <ul className="divide-y divide-slate-800 max-h-[32rem] overflow-y-auto">
+                <ul className="divide-y divide-slate-800 max-h-[32rem] xl:max-h-[40rem] overflow-y-auto">
                   {assignmentRows.map((row) => (
-                    <li key={row.id} className="py-3 px-1">
-                      <p className="text-sm text-slate-100">{row.message}</p>
-                      <p className="text-xs text-slate-500 mt-1">
-                        To {row.to_label}
-                        {row.created_at
-                          ? ` · ${new Date(row.created_at).toLocaleString()}`
-                          : ""}
-                        {` · ${row.lead_count} lead${row.lead_count === 1 ? "" : "s"}`}
-                      </p>
-                    </li>
+                    <AssignmentTransferRow key={row.id} row={row} />
                   ))}
                 </ul>
               )}
@@ -1022,9 +1192,8 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                     <span className="text-emerald-400/90">({callingCount})</span>
                   </h3>
                   <p className="text-xs text-slate-500 mt-1">
-                    Simple statements when anyone places a call — e.g. “Usman called Acme
-                    Trading”. Includes admin and every sales user. The Calling count is the
-                    total across all accounts.
+                    When anyone places a call, it is logged as “User called Company
+                    Name”. Includes admin and every sales user.
                   </p>
                 </div>
                 <button
@@ -1046,16 +1215,7 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
               ) : (
                 <ul className="divide-y divide-slate-800 max-h-[32rem] overflow-y-auto">
                   {callActivityRows.map((row) => (
-                    <li key={row.id} className="py-3 px-1">
-                      <p className="text-sm text-slate-100">{row.message}</p>
-                      <p className="text-xs text-slate-500 mt-1">
-                        {row.user_label}
-                        {row.company_name ? ` · ${row.company_name}` : ""}
-                        {row.created_at
-                          ? ` · ${new Date(row.created_at).toLocaleString()}`
-                          : ""}
-                      </p>
-                    </li>
+                    <CallActivityRow key={row.id} row={row} />
                   ))}
                 </ul>
               )}
@@ -1163,6 +1323,76 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
               ) : (
                 <ul className="divide-y divide-slate-800 max-h-[32rem] overflow-y-auto">
                   {interestedActivityRows.map((row) => (
+                    <li key={row.id} className="py-3 px-1">
+                      <p className="text-sm text-slate-100">{row.message}</p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        {row.user_label}
+                        {row.company_name ? ` · ${row.company_name}` : ""}
+                        {row.created_at
+                          ? ` · ${new Date(row.created_at).toLocaleString()}`
+                          : ""}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          ) : stageFilter === "not_interested" ? (
+            <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-medium text-slate-200">
+                    Not interested clients activity{" "}
+                    <span className="text-rose-400/90">
+                      ({notInterestedInListCount})
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Linked to the Not interested clients leads table. Tracks who marked
+                    each client as not interested from post-call remarks.
+                    {isAdmin
+                      ? " Admin sees every user’s score and full feed."
+                      : ` You have marked ${notInterestedMyCount} client${notInterestedMyCount === 1 ? "" : "s"} as not interested.`}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={lifecycleLoading}
+                  onClick={() => void loadLifecycle()}
+                  className="rounded-lg bg-violet-700 hover:bg-violet-600 disabled:opacity-50 px-3 py-1.5 text-sm"
+                >
+                  {lifecycleLoading ? "Refreshing…" : "Refresh"}
+                </button>
+              </div>
+              {isAdmin && notInterestedByUser.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {notInterestedByUser.map((score) => (
+                    <span
+                      key={score.user_id}
+                      className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-xs text-rose-200"
+                    >
+                      {score.user_label}: {score.placed_count} client
+                      {score.placed_count === 1 ? "" : "s"}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {!isAdmin && notInterestedMyCount > 0 && (
+                <p className="text-xs text-rose-300/90 rounded-lg border border-rose-500/20 bg-rose-500/5 px-3 py-2">
+                  You marked {notInterestedMyCount} client
+                  {notInterestedMyCount === 1 ? "" : "s"} as not interested.
+                </p>
+              )}
+              {lifecycleLoading && notInterestedActivityRows.length === 0 ? (
+                <p className="text-sm text-slate-500">Loading not interested activity…</p>
+              ) : notInterestedActivityRows.length === 0 ? (
+                <p className="text-sm text-slate-500">
+                  No Not interested clients activity yet. Mark a call as Not interested in
+                  post-call remarks — the client appears in the Not interested clients table.
+                </p>
+              ) : (
+                <ul className="divide-y divide-slate-800 max-h-[32rem] overflow-y-auto">
+                  {notInterestedActivityRows.map((row) => (
                     <li key={row.id} className="py-3 px-1">
                       <p className="text-sm text-slate-100">{row.message}</p>
                       <p className="text-xs text-slate-500 mt-1">
@@ -1295,7 +1525,9 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                 <p className="text-sm text-slate-500">
                   {stageFilter === "interested"
                     ? "Select the Interested tab above to see who added clients to Interested Clients."
-                    : "No companies in this stage yet. Use New Lead, Potential Clients, Assigned, Calling, Follow-up, or Interested for the activity / grade feeds — or move a company into this stage from the pipeline."}
+                    : stageFilter === "not_interested"
+                      ? "Select the Not Interested tab above to see who marked clients as not interested."
+                    : "No companies in this stage yet. Use New Lead, Potential Clients, Assigned, Calling, Follow-up, Interested, or Not Interested for the activity / grade feeds — or move a company into this stage from the pipeline."}
                 </p>
               ) : (
                 <div className="overflow-x-auto rounded-xl border border-slate-800">

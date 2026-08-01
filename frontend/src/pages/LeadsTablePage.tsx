@@ -2931,6 +2931,7 @@ export function LeadsTablePage({
                                             ? new Date(entry.at).toLocaleString()
                                             : "—"}
                                           {entry.by ? ` · ${entry.by}` : ""}
+                                          {entry.source === "call" ? " · Call remarks" : ""}
                                         </p>
                                         <p className="text-sm text-slate-300 whitespace-pre-wrap break-words">
                                           {entry.text}

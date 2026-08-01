@@ -136,6 +136,29 @@ def sync_buyer_interested_status(
         buyer.interested_follow_up_ack_at = None
         buyer.follow_up_at = None
         buyer.interested_clients_list_at = None
+        if prev != "not_interested" and user_id is not None:
+            from modules import ai_mode as ai_mode_module
+
+            ai_mode_module.record_not_interested_activity(
+                db,
+                user_id=user_id,
+                company_name=buyer.company_name,
+                buyer_id=buyer.id,
+                source="call",
+                user_label=user_label,
+                note="Call outcome: Not interested",
+                commit=False,
+            )
+        elif prev != "not_interested":
+            from modules import ai_mode as ai_mode_module
+
+            ai_mode_module.mark_buyer_not_interested_stage(
+                db,
+                buyer.id,
+                user_id=user_id,
+                note="Call outcome: Not interested",
+                commit=False,
+            )
     elif prev in {"interested", "follow_up", "not_received_call"} and new not in {
         "interested",
         "follow_up",

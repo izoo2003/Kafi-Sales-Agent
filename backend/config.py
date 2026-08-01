@@ -112,6 +112,21 @@ class Settings(BaseSettings):
     kpi_gemini_fallback_models: str | None = None
     kpi_gemini_max_output_tokens: int = 1024
 
+    # AI Mode — Company lifecycle query replies (New Lead manual reply)
+    ai_mode_query_gemini_api_key: str | None = None
+    ai_mode_query_gemini_model: str = "gemini-3.1-flash-lite"
+    ai_mode_query_gemini_fallback_models: str | None = None
+    ai_mode_query_gemini_max_output_tokens: int = 1024
+
+    # AI Mode — after-hours auto-reply (email + WhatsApp)
+    ai_mode_auto_reply_gemini_api_key: str | None = None
+    ai_mode_auto_reply_gemini_model: str = "gemini-3.1-flash-lite"
+    ai_mode_auto_reply_gemini_fallback_models: str | None = None
+    ai_mode_auto_reply_gemini_max_output_tokens: int = 1024
+
+    # SerpAPI for auto-reply company research only (separate from discover-leads SERPAPI_API_KEY)
+    ai_mode_auto_reply_serpapi_api_key: str | None = None
+
     # Web search — see modules/web_search.py
     brave_api_key: str | None = None
     google_cse_api_key: str | None = None

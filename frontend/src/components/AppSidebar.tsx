@@ -20,6 +20,7 @@ export type Tab =
   | "master-table"
   | "inbox"
   | "calls"
+  | "client-history"
   | "chatbot"
   | "kpi"
   | "ai-mode"

@@ -595,6 +595,7 @@ class AiModeSettings(Base):
     whatsapp_body_template: Mapped[str] = mapped_column(Text, nullable=False, default="")
     query_keywords: Mapped[Optional[list]] = mapped_column(JSONB)
     last_email_processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    enabled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -764,6 +765,28 @@ class AiInterestedActivityLog(Base):
     company_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     event_type: Mapped[str] = mapped_column(String(50), nullable=False, default="placed")
     source: Mapped[str] = mapped_column(String(50), nullable=False, default="manual")
+    message: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class AiNotInterestedActivityLog(Base):
+    """Per-user Not interested clients activity for Company lifecycle → Not Interested."""
+
+    __tablename__ = "ai_not_interested_activity_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_label: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    buyer_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("buyers.id", ondelete="SET NULL"), index=True
+    )
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False, default="placed")
+    source: Mapped[str] = mapped_column(String(50), nullable=False, default="call")
     message: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True

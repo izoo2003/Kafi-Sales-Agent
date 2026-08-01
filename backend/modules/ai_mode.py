@@ -1,7 +1,8 @@
 """AI Mode — after-hours auto-reply + company lifecycle (AISOS Module 3).
 
-When an employee enables AI Mode, inbound query emails (inbox / junk) and
-WhatsApp messages can receive the drafted auto-reply from this module.
+When an employee enables AI Mode, inbound person-to-person emails (inbox / junk)
+and WhatsApp messages can receive the drafted auto-reply from this module.
+Query keywords are used only for New Lead detection — not for auto-reply eligibility.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from db.models import (
     AiCompanyLifecycle,
     AiFollowUpActivityLog,
     AiInterestedActivityLog,
+    AiNotInterestedActivityLog,
     AiLeadTransferLog,
     AiModeAutoReplyLog,
     AiModeQueryLog,
@@ -40,6 +42,7 @@ LIFECYCLE_STAGES: list[dict[str, str]] = [
     {"key": "calling", "label": "Calling"},
     {"key": "follow_up", "label": "Follow-up"},
     {"key": "interested", "label": "Interested"},
+    {"key": "not_interested", "label": "Not Interested"},
     {"key": "quotation_sent", "label": "Quotation Sent"},
     {"key": "negotiation", "label": "Negotiation"},
     {"key": "won", "label": "Won"},
@@ -47,6 +50,8 @@ LIFECYCLE_STAGES: list[dict[str, str]] = [
 ]
 
 LIFECYCLE_STAGE_KEYS = {s["key"] for s in LIFECYCLE_STAGES}
+
+LEAD_TRANSFER_BATCH_SIZE = 20
 
 DEFAULT_QUERY_KEYWORDS = [
     "inquiry",
@@ -111,6 +116,63 @@ _NOISE_MARKERS = (
     "donotreply",
 )
 
+# Bulk marketing / ESP blasts — excluded from auto-reply (not from query scan).
+_PROMOTIONAL_MARKERS = (
+    "email preferences",
+    "manage your preferences",
+    "manage subscription",
+    "view this email in your browser",
+    "view in browser",
+    "view online version",
+    "marketing email",
+    "promotional email",
+    "special offer",
+    "limited time offer",
+    "click here to unsubscribe",
+    "you are receiving this email because",
+    "you received this email because",
+    "add us to your address book",
+    "mailing list",
+    "bulk email",
+    "this is an automated message",
+    "sent from mailchimp",
+    "sent via mailchimp",
+    "constant contact",
+    "campaign monitor",
+    "hubspot email",
+)
+
+# Automated transactional mail — not a person expecting a sales reply.
+_TRANSACTIONAL_MARKERS = (
+    "order confirmation",
+    "your order has been",
+    "your order has shipped",
+    "shipping confirmation",
+    "tracking number",
+    "password reset",
+    "verify your email",
+    "verification code",
+    "one-time passcode",
+    "invoice attached",
+    "payment received",
+    "receipt for your",
+)
+
+_PROMOTIONAL_LOCAL_PARTS = frozenset(
+    {
+        "marketing",
+        "newsletter",
+        "newsletters",
+        "promotions",
+        "promo",
+        "bulk",
+        "campaign",
+        "deals",
+        "offers",
+        "bounce",
+    }
+)
+
 DEFAULT_EMAIL_SUBJECT = "Thank you for your interest in Kafi Commodities"
 
 DEFAULT_EMAIL_BODY = """Dear {name},
@@ -132,6 +194,63 @@ Please fill out this form{form_clause}, or share a suitable date/time for a virt
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _is_admin_user(user: AppUser) -> bool:
+    role = user.role.value if isinstance(user.role, AppUserRole) else str(user.role)
+    return role == AppUserRole.admin.value
+
+
+_AUTO_REPLY_SETTING_KEYS = frozenset(
+    {
+        "enabled",
+        "email_auto_reply_enabled",
+        "whatsapp_auto_reply_enabled",
+        "form_url",
+        "email_subject_template",
+        "email_body_template",
+        "whatsapp_body_template",
+        "query_keywords",
+    }
+)
+
+
+def require_admin_for_auto_reply(user: AppUser) -> None:
+    if not _is_admin_user(user):
+        raise PermissionError("Only an admin can use AI Mode auto-reply and query AI replies.")
+
+
+def _message_received_at(msg: dict[str, Any]) -> datetime | None:
+    from modules.inbox_cutoff import as_utc
+
+    raw = msg.get("date")
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return as_utc(raw)
+    if isinstance(raw, str):
+        from modules.inbox_cutoff import _parse_datetime
+
+        return _parse_datetime(raw)
+    return None
+
+
+def _is_inbound_after_auto_reply_enabled(
+    msg: dict[str, Any],
+    enabled_at: datetime | None,
+) -> bool:
+    """True only for messages received after AI Mode was turned on."""
+    if enabled_at is None:
+        return False
+    received = _message_received_at(msg)
+    if received is None:
+        return False
+    cutoff = enabled_at
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=timezone.utc)
+    else:
+        cutoff = cutoff.astimezone(timezone.utc)
+    return received >= cutoff
 
 
 def _default_settings_payload() -> dict[str, Any]:
@@ -172,6 +291,9 @@ def get_or_create_settings(db: Session, user_id: int) -> AiModeSettings:
 
 
 def settings_to_dict(row: AiModeSettings) -> dict[str, Any]:
+    from modules import ai_mode_company_research as ai_mode_research_module
+    from modules import ai_mode_llm as ai_mode_llm_module
+
     return {
         "user_id": row.user_id,
         "enabled": bool(row.enabled),
@@ -185,15 +307,35 @@ def settings_to_dict(row: AiModeSettings) -> dict[str, Any]:
         "last_email_processed_at": row.last_email_processed_at.isoformat()
         if row.last_email_processed_at
         else None,
+        "enabled_at": row.enabled_at.isoformat() if row.enabled_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         "lifecycle_stages": LIFECYCLE_STAGES,
+        "auto_reply_admin_only": True,
+        "llm_query_enabled": ai_mode_llm_module.query_llm_enabled(),
+        "llm_auto_reply_enabled": ai_mode_llm_module.auto_reply_llm_enabled(),
+        "serpapi_auto_reply_enabled": ai_mode_research_module.auto_reply_serpapi_enabled(),
     }
 
 
-def update_settings(db: Session, user_id: int, data: dict[str, Any]) -> dict[str, Any]:
+def update_settings(
+    db: Session,
+    user_id: int,
+    data: dict[str, Any],
+    *,
+    actor: AppUser | None = None,
+) -> dict[str, Any]:
+    if actor is not None and any(key in data for key in _AUTO_REPLY_SETTING_KEYS):
+        require_admin_for_auto_reply(actor)
+
     row = get_or_create_settings(db, user_id)
+    was_enabled = bool(row.enabled)
     if "enabled" in data and data["enabled"] is not None:
-        row.enabled = bool(data["enabled"])
+        new_enabled = bool(data["enabled"])
+        if new_enabled and not was_enabled:
+            row.enabled_at = _utcnow()
+        elif not new_enabled and was_enabled:
+            row.enabled_at = None
+        row.enabled = new_enabled
     if "email_auto_reply_enabled" in data and data["email_auto_reply_enabled"] is not None:
         row.email_auto_reply_enabled = bool(data["email_auto_reply_enabled"])
     if "whatsapp_auto_reply_enabled" in data and data["whatsapp_auto_reply_enabled"] is not None:
@@ -312,23 +454,118 @@ def looks_like_query(
     return True
 
 
+def looks_like_auto_reply_target(
+    text: str,
+    *,
+    from_email: str | None = None,
+) -> bool:
+    """True for real inbound mail from a person — not newsletters, promos, or system mail."""
+    hay = (text or "").lower()
+    if not hay.strip():
+        return False
+    if _is_noise_message(hay, from_email=from_email):
+        return False
+    if any(m in hay for m in _PROMOTIONAL_MARKERS):
+        return False
+    if any(m in hay for m in _TRANSACTIONAL_MARKERS):
+        return False
+    addr = (from_email or "").strip().lower()
+    if addr:
+        local = addr.split("@", 1)[0]
+        if local in _PROMOTIONAL_LOCAL_PARTS:
+            return False
+        if any(local.startswith(p) for p in _PROMOTIONAL_LOCAL_PARTS):
+            return False
+    return True
+
+
 def _message_key(*parts: str) -> str:
     raw = "|".join(p.strip().lower() for p in parts if p)
     return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:64]
 
 
 def _already_sent(db: Session, user_id: int, message_key: str) -> bool:
-    """Only successful sends block retries — prior errors may be retried."""
-    return (
-        db.query(AiModeAutoReplyLog.id)
+    """Block retries when already sent or another worker is composing a reply."""
+    row = (
+        db.query(AiModeAutoReplyLog)
         .filter(
             AiModeAutoReplyLog.user_id == user_id,
             AiModeAutoReplyLog.message_key == message_key,
-            AiModeAutoReplyLog.status == "sent",
         )
+        .order_by(AiModeAutoReplyLog.id.desc())
         .first()
-        is not None
     )
+    if not row:
+        return False
+    if row.status == "sent":
+        return True
+    if row.status == "processing":
+        # Stale in-flight claim (worker crash) — allow retry after 10 minutes.
+        if row.created_at is not None:
+            age = (_utcnow() - row.created_at).total_seconds()
+            if age > 600:
+                return False
+        return True
+    return False
+
+
+def _try_claim_auto_reply(
+    db: Session,
+    *,
+    user_id: int,
+    channel: str,
+    message_key: str,
+    recipient: str | None,
+    subject: str | None,
+    preview: str | None,
+) -> bool:
+    """Insert or reclaim a processing row so only one worker sends for this message."""
+    from sqlalchemy.exc import IntegrityError
+
+    existing = (
+        db.query(AiModeAutoReplyLog)
+        .filter(
+            AiModeAutoReplyLog.user_id == user_id,
+            AiModeAutoReplyLog.message_key == message_key,
+        )
+        .order_by(AiModeAutoReplyLog.id.desc())
+        .first()
+    )
+    if existing:
+        if existing.status == "sent":
+            return False
+        if existing.status == "processing":
+            if existing.created_at is not None:
+                age = (_utcnow() - existing.created_at).total_seconds()
+                if age <= 600:
+                    return False
+        existing.channel = channel
+        existing.recipient = recipient
+        existing.subject = subject
+        existing.preview = (preview or "")[:2000] or None
+        existing.status = "processing"
+        existing.detail = "composing"
+        db.commit()
+        return True
+
+    try:
+        db.add(
+            AiModeAutoReplyLog(
+                user_id=user_id,
+                channel=channel,
+                message_key=message_key,
+                recipient=recipient,
+                subject=subject,
+                preview=(preview or "")[:2000] or None,
+                status="processing",
+                detail="composing",
+            )
+        )
+        db.commit()
+        return True
+    except IntegrityError:
+        db.rollback()
+        return False
 
 
 def _log_reply(
@@ -544,6 +781,198 @@ def fetch_query_message(db: Session, user: AppUser, query_id: int) -> dict[str, 
     }
 
 
+def generate_query_reply_draft(db: Session, user: AppUser, query_id: int) -> dict[str, Any]:
+    """LLM-generated reply for Company lifecycle → New Lead (falls back to template)."""
+    require_admin_for_auto_reply(user)
+    payload = fetch_query_message(db, user, query_id)
+    query = payload["query"]
+    message = payload["message"] or {}
+    settings = get_or_create_settings(db, user.id)
+
+    sender_email = (message.get("from_email") or query.get("from_email") or "").strip()
+    subject = (message.get("subject") or query.get("subject") or "").strip()
+    inbound_body = (
+        (message.get("body_text") or message.get("body") or message.get("preview") or "")
+        .strip()
+        or (query.get("preview") or "").strip()
+    )
+
+    from modules.ai_mode_sender import resolve_sender_context
+
+    sender_ctx = resolve_sender_context(
+        from_name=(message.get("from_name") or query.get("from_name") or "").strip() or None,
+        from_email=sender_email or None,
+        subject=subject,
+        inbound_body=inbound_body,
+    )
+    greeting_name = sender_ctx["greeting_name"]
+    display_name = (
+        (message.get("from_name") or query.get("from_name") or "").strip()
+        or greeting_name
+    )
+
+    fallback = render_template(
+        settings.email_body_template,
+        name=greeting_name,
+        form_url=settings.form_url,
+        subject=subject,
+    )
+
+    from modules import ai_mode_llm as ai_mode_llm_module
+
+    draft = ai_mode_llm_module.draft_query_email_reply(
+        sender_name=display_name,
+        sender_email=sender_email,
+        greeting_name=greeting_name,
+        subject=subject,
+        inbound_body=inbound_body,
+        form_url=settings.form_url,
+        template_hint=settings.email_body_template or DEFAULT_EMAIL_BODY.strip(),
+        fallback_body=fallback,
+    )
+
+    reply_subject = render_template(
+        settings.email_subject_template or DEFAULT_EMAIL_SUBJECT,
+        name=greeting_name,
+        form_url=settings.form_url,
+        subject=subject,
+    )
+    if subject and not reply_subject.lower().startswith("re:"):
+        if "{subject}" not in (settings.email_subject_template or ""):
+            reply_subject = f"Re: {subject}" if subject else reply_subject
+
+    return {
+        "query_id": query_id,
+        "body": draft.get("body") or fallback,
+        "subject": reply_subject,
+        "source": draft.get("source") or "template",
+        "llm_enabled": draft.get("llm_enabled", False),
+        "model": draft.get("model"),
+        "error": draft.get("error"),
+        "fallback_reason": draft.get("fallback_reason"),
+        "greeting_name": greeting_name,
+    }
+
+
+def _compose_auto_reply_email_body(
+    *,
+    settings: AiModeSettings,
+    sender_name: str,
+    sender_email: str,
+    subject: str,
+    inbound_preview: str,
+    inbound_body: str | None = None,
+) -> dict[str, Any]:
+    """SerpAPI company research + LLM auto-reply (falls back to template on LLM failure)."""
+    from modules.ai_mode_sender import resolve_sender_context
+
+    body_text = inbound_body or inbound_preview
+    sender_ctx = resolve_sender_context(
+        from_name=sender_name or None,
+        from_email=sender_email or None,
+        subject=subject,
+        inbound_body=body_text,
+    )
+    greeting_name = sender_ctx["greeting_name"]
+
+    fallback = render_template(
+        settings.email_body_template,
+        name=greeting_name,
+        form_url=settings.form_url,
+        subject=subject,
+    )
+
+    from modules import ai_mode_company_research as ai_mode_research_module
+    from modules import ai_mode_llm as ai_mode_llm_module
+
+    research = ai_mode_research_module.research_inbound_sender(
+        from_name=sender_name,
+        from_email=sender_email,
+        subject=subject,
+        body=body_text,
+    )
+    research_text = ai_mode_research_module.format_research_for_llm(research)
+    sender_ctx = resolve_sender_context(
+        from_name=sender_name or None,
+        from_email=sender_email or None,
+        subject=subject,
+        inbound_body=body_text,
+        company_research=research_text,
+    )
+
+    draft = ai_mode_llm_module.draft_auto_reply_message(
+        channel="email",
+        sender_name=sender_name,
+        sender_email=sender_email,
+        greeting_name=sender_ctx["greeting_name"],
+        company_name=sender_ctx["company_name"],
+        inbound_body=body_text,
+        company_research=research_text,
+        form_url=settings.form_url,
+        template_hint=settings.email_body_template or DEFAULT_EMAIL_BODY.strip(),
+        fallback_body=fallback,
+    )
+    draft["company_research"] = research
+    draft["greeting_name"] = sender_ctx["greeting_name"]
+    return draft
+
+
+def _compose_auto_reply_whatsapp_body(
+    *,
+    settings: AiModeSettings,
+    sender_name: str,
+    inbound_text: str,
+    sender_email: str | None = None,
+) -> dict[str, Any]:
+    from modules.ai_mode_sender import resolve_sender_context
+
+    sender_ctx = resolve_sender_context(
+        from_name=sender_name or None,
+        from_email=sender_email,
+        inbound_body=inbound_text,
+    )
+    greeting_name = sender_ctx["greeting_name"]
+
+    fallback = render_template(
+        settings.whatsapp_body_template,
+        name=greeting_name,
+        form_url=settings.form_url,
+    )
+
+    from modules import ai_mode_company_research as ai_mode_research_module
+    from modules import ai_mode_llm as ai_mode_llm_module
+
+    research = ai_mode_research_module.research_inbound_sender(
+        from_name=sender_name,
+        from_email=sender_email,
+        subject=None,
+        body=inbound_text,
+    )
+    research_text = ai_mode_research_module.format_research_for_llm(research)
+    sender_ctx = resolve_sender_context(
+        from_name=sender_name or None,
+        from_email=sender_email,
+        inbound_body=inbound_text,
+        company_research=research_text,
+    )
+
+    draft = ai_mode_llm_module.draft_auto_reply_message(
+        channel="whatsapp",
+        sender_name=sender_name,
+        sender_email=sender_email or "",
+        greeting_name=sender_ctx["greeting_name"],
+        company_name=sender_ctx["company_name"],
+        inbound_body=inbound_text,
+        company_research=research_text,
+        form_url=settings.form_url,
+        template_hint=settings.whatsapp_body_template or DEFAULT_WHATSAPP_BODY.strip(),
+        fallback_body=fallback,
+    )
+    draft["company_research"] = research
+    draft["greeting_name"] = sender_ctx["greeting_name"]
+    return draft
+
+
 def scan_queries_for_user(
     db: Session,
     user: AppUser,
@@ -720,12 +1149,25 @@ def process_email_auto_replies_for_user(
     *,
     scan_queries: bool = True,
 ) -> dict[str, Any]:
-    """Auto-reply to the latest matching unread query email (one per run).
+    """Auto-reply to the latest eligible unread inbound email (one per run).
 
-    Scans inbox, picks the newest inbound unread that matches keywords
-    and has not already been sent successfully, then sends a single reply via
-    the configured outbound path (Vercel mailer when set).
+    Scans inbox + junk, picks the newest inbound unread from a real person
+    (not promotional/newsletter/system mail) that has not already been sent
+    successfully, then sends a single reply via the configured outbound path.
+
+    Admin only. Only messages received after AI Mode was enabled are eligible.
+    Query keywords are not required — they only drive New Lead detection.
     """
+    if not _is_admin_user(user):
+        return {
+            "processed": 0,
+            "replied": 0,
+            "skipped": 0,
+            "enabled": False,
+            "error": "Admin only",
+            "queries": {"skipped": True},
+        }
+
     # Always refresh query detections first (count does not require auto-reply on).
     query_scan = (
         scan_queries_for_user(db, user, deep=False, limit=40)
@@ -763,9 +1205,16 @@ def process_email_auto_replies_for_user(
     skip_reasons: dict[str, int] = {
         "outbound": 0,
         "missing_fields": 0,
-        "not_a_query": 0,
+        "promotional_or_noise": 0,
         "already_sent": 0,
+        "before_enabled_at": 0,
     }
+
+    enabled_at = settings.enabled_at
+    if settings.enabled and enabled_at is None:
+        enabled_at = _utcnow()
+        settings.enabled_at = enabled_at
+        db.commit()
 
     for folder in folders:
         try:
@@ -789,13 +1238,13 @@ def process_email_auto_replies_for_user(
                 skip_reasons["missing_fields"] += 1
                 continue
 
+            if not _is_inbound_after_auto_reply_enabled(msg, enabled_at):
+                skip_reasons["before_enabled_at"] += 1
+                continue
+
             blob = f"{subject}\n{preview}"
-            if not looks_like_query(
-                blob,
-                resolve_query_keywords(settings.query_keywords),
-                from_email=from_email,
-            ):
-                skip_reasons["not_a_query"] += 1
+            if not looks_like_auto_reply_target(blob, from_email=from_email):
+                skip_reasons["promotional_or_noise"] += 1
                 continue
 
             key = _message_key("email", folder, uid, from_email, subject)
@@ -837,16 +1286,11 @@ def process_email_auto_replies_for_user(
     from_email = (msg.get("from_email") or "").strip()
     uid = str(msg.get("uid") or "")
     key = str(msg.get("_ai_key") or "")
-    name = (msg.get("from_name") or "").strip() or from_email.split("@")[0]
-    body = render_template(
-        settings.email_body_template,
-        name=name,
-        form_url=settings.form_url,
-        subject=subject,
-    )
+    display_name = (msg.get("from_name") or "").strip()
+
     reply_subject = render_template(
         settings.email_subject_template or DEFAULT_EMAIL_SUBJECT,
-        name=name,
+        name=display_name or from_email.split("@")[0],
         form_url=settings.form_url,
         subject=subject,
     )
@@ -854,8 +1298,65 @@ def process_email_auto_replies_for_user(
         if "{subject}" not in (settings.email_subject_template or ""):
             reply_subject = f"Re: {subject}" if subject else reply_subject
 
+    if not _try_claim_auto_reply(
+        db,
+        user_id=user.id,
+        channel="email",
+        message_key=key,
+        recipient=from_email,
+        subject=reply_subject,
+        preview=preview[:400],
+    ):
+        return {
+            "processed": scanned,
+            "replied": 0,
+            "skipped": scanned,
+            "enabled": True,
+            "mode": "latest_one",
+            "message": "Another worker is already replying to this message.",
+            "skip_reasons": {**skip_reasons, "already_sent": skip_reasons["already_sent"] + 1},
+            "errors": errors[:5],
+            "queries": query_scan,
+        }
+
+    reply_detail = "source=unknown"
     remaining_skipped = scanned - 1  # others in the scan pool not attempted this run
     try:
+        draft_result = _compose_auto_reply_email_body(
+            settings=settings,
+            sender_name=display_name,
+            sender_email=from_email,
+            subject=subject,
+            inbound_preview=preview,
+            inbound_body=preview,
+        )
+        greeting_name = (
+            draft_result.get("greeting_name") or display_name or from_email.split("@")[0]
+        )
+        body = draft_result.get("body") or render_template(
+            settings.email_body_template,
+            name=greeting_name,
+            form_url=settings.form_url,
+            subject=subject,
+        )
+        reply_source = draft_result.get("source") or "template"
+        reply_detail = f"source={reply_source}"
+        if draft_result.get("fallback_reason"):
+            reply_detail += f"; fallback={draft_result['fallback_reason']}"
+        if draft_result.get("error"):
+            reply_detail += f"; error={draft_result['error'][:200]}"
+
+        if greeting_name and reply_source == "template":
+            reply_subject = render_template(
+                settings.email_subject_template or DEFAULT_EMAIL_SUBJECT,
+                name=greeting_name,
+                form_url=settings.form_url,
+                subject=subject,
+            )
+            if subject and not reply_subject.lower().startswith("re:"):
+                if "{subject}" not in (settings.email_subject_template or ""):
+                    reply_subject = f"Re: {subject}" if subject else reply_subject
+
         result = inbox_module.reply(
             user,
             uid,
@@ -876,7 +1377,7 @@ def process_email_auto_replies_for_user(
             subject=reply_subject,
             preview=preview[:400],
             status="sent" if status == "sent" else status,
-            detail=detail,
+            detail=f"{detail or ''}; {reply_detail}".strip("; "),
         )
         if status == "sent":
             return {
@@ -909,6 +1410,17 @@ def process_email_auto_replies_for_user(
         }
     except Exception as exc:  # noqa: BLE001
         errors.append(f"{from_email}: {exc}")
+        _log_reply(
+            db,
+            user_id=user.id,
+            channel="email",
+            message_key=key,
+            recipient=from_email,
+            subject=reply_subject,
+            preview=preview[:400],
+            status="error",
+            detail=f"{exc}; {reply_detail}".strip("; "),
+        )
         return {
             "processed": scanned,
             "replied": 0,
@@ -936,6 +1448,7 @@ def process_all_enabled_email_users(db: Session) -> dict[str, Any]:
             AiModeSettings.enabled.is_(True),
             AiModeSettings.email_auto_reply_enabled.is_(True),
             AppUser.is_active.is_(True),
+            AppUser.role == AppUserRole.admin,
         )
         .all()
     )
@@ -962,13 +1475,18 @@ def _settings_for_whatsapp_contact(db: Session, contact: Contact) -> tuple[AppUs
     buyer = db.get(Buyer, contact.buyer_id) if contact.buyer_id else None
     candidate_ids: list[int] = []
     if buyer and buyer.assigned_to_user_id:
-        candidate_ids.append(buyer.assigned_to_user_id)
+        assignee = db.get(AppUser, buyer.assigned_to_user_id)
+        if assignee and _is_admin_user(assignee):
+            candidate_ids.append(buyer.assigned_to_user_id)
     # Fallback: any user with AI Mode + WhatsApp auto-reply on
     enabled_users = (
         db.query(AiModeSettings.user_id)
+        .join(AppUser, AppUser.id == AiModeSettings.user_id)
         .filter(
             AiModeSettings.enabled.is_(True),
             AiModeSettings.whatsapp_auto_reply_enabled.is_(True),
+            AppUser.is_active.is_(True),
+            AppUser.role == AppUserRole.admin,
         )
         .all()
     )
@@ -979,7 +1497,13 @@ def _settings_for_whatsapp_contact(db: Session, contact: Contact) -> tuple[AppUs
     for uid in candidate_ids:
         settings = db.get(AiModeSettings, uid)
         user = db.get(AppUser, uid)
-        if settings and user and settings.enabled and settings.whatsapp_auto_reply_enabled:
+        if (
+            settings
+            and user
+            and settings.enabled
+            and settings.whatsapp_auto_reply_enabled
+            and _is_admin_user(user)
+        ):
             return user, settings
     return None
 
@@ -996,10 +1520,8 @@ def maybe_auto_reply_whatsapp(
     if not matched:
         return None
     user, settings = matched
-    if not looks_like_query(
-        message_text, resolve_query_keywords(settings.query_keywords)
-    ):
-        return {"status": "skipped", "reason": "not_a_query"}
+    if not looks_like_auto_reply_target(message_text):
+        return {"status": "skipped", "reason": "promotional_or_noise"}
 
     key = _message_key(
         "whatsapp",
@@ -1010,11 +1532,32 @@ def maybe_auto_reply_whatsapp(
     if _already_sent(db, user.id, key):
         return {"status": "skipped", "reason": "already_replied"}
 
-    body = render_template(
+    sender_name = (contact.full_name or "").strip()
+    if not _try_claim_auto_reply(
+        db,
+        user_id=user.id,
+        channel="whatsapp",
+        message_key=key,
+        recipient=contact.phone or contact.wa_id,
+        subject=None,
+        preview=message_text[:400],
+    ):
+        return {"status": "skipped", "reason": "already_replied"}
+
+    body_result = _compose_auto_reply_whatsapp_body(
+        settings=settings,
+        sender_name=sender_name,
+        inbound_text=message_text,
+        sender_email=contact.email,
+    )
+    greeting_name = body_result.get("greeting_name") or sender_name or "there"
+    body = body_result.get("body") or render_template(
         settings.whatsapp_body_template,
-        name=(contact.full_name or "").strip() or "there",
+        name=greeting_name,
         form_url=settings.form_url,
     )
+    reply_source = body_result.get("source") or "template"
+    reply_detail = f"source={reply_source}"
     phone = contact.phone or contact.wa_id
     if not phone:
         return {"status": "error", "reason": "no_phone"}
@@ -1055,7 +1598,7 @@ def maybe_auto_reply_whatsapp(
         subject=None,
         preview=message_text[:400],
         status=status,
-        detail=send_result.get("message"),
+        detail=f"{send_result.get('message') or ''}; {reply_detail}".strip("; "),
     )
     return {"status": status, "user_id": user.id, "send_result": send_result}
 
@@ -1192,6 +1735,8 @@ def lifecycle_pipeline_counts(db: Session) -> dict[str, int]:
     counts["follow_up"] = int(follow_ups.get("total_events") or 0)
     # Interested chip = buyers currently on Interested Clients table.
     counts["interested"] = _interested_clients_list_count(db)
+    # Not Interested chip = buyers on Not interested clients table (latest call outcome).
+    counts["not_interested"] = _not_interested_clients_count(db)
     # Potential Clients = Scrapped Leads with company + AI grade AA/AAA.
     potential = list_potential_clients(db, limit=1)
     counts["potential_clients"] = int(potential.get("total") or 0)
@@ -1368,45 +1913,80 @@ def record_lead_transfer(
     by_user_id: int | None = None,
     commit: bool = True,
 ) -> dict[str, Any] | None:
-    """Log an admin → sales-user lead transfer for the Assigned tab.
-
-    Returns the event dict, or None if nothing to record (empty / unassign).
-    """
+    """Log admin → sales-user lead transfers for the Assigned tab (max 20 clients per row)."""
     ids = sorted({int(b) for b in buyer_ids if b is not None})
     if not ids or to_user_id is None:
         return None
 
     label = (to_label or "").strip() or f"user #{to_user_id}"
-    count = len(ids)
-    noun = "lead" if count == 1 else "leads"
-    message = f"{count} {noun} transferred to {label}"
+    name_by_id: dict[int, str] = {
+        int(row.id): (row.company_name or f"Lead #{row.id}")
+        for row in db.query(Buyer.id, Buyer.company_name).filter(Buyer.id.in_(ids)).all()
+    }
+    ordered_ids = [bid for bid in ids if bid in name_by_id]
 
-    row = AiLeadTransferLog(
-        by_user_id=by_user_id,
-        to_user_id=to_user_id,
-        to_label=label,
-        lead_count=count,
-        buyer_ids=ids[:500],
-        message=message,
-    )
-    db.add(row)
     _mark_buyers_assigned_stage(
         db,
-        ids,
+        ordered_ids,
         user_id=by_user_id,
-        note=message,
+        note=f"{len(ordered_ids)} clients sent to {label}",
     )
+
+    events: list[dict[str, Any]] = []
+    created_rows: list[AiLeadTransferLog] = []
+    for offset in range(0, len(ordered_ids), LEAD_TRANSFER_BATCH_SIZE):
+        batch_ids = ordered_ids[offset : offset + LEAD_TRANSFER_BATCH_SIZE]
+        batch_names = [name_by_id[bid] for bid in batch_ids]
+        count = len(batch_ids)
+        noun = "client" if count == 1 else "clients"
+        message = f"{count} {noun} sent to {label}"
+        row = AiLeadTransferLog(
+            by_user_id=by_user_id,
+            to_user_id=to_user_id,
+            to_label=label,
+            lead_count=count,
+            buyer_ids=batch_ids,
+            message=message,
+        )
+        db.add(row)
+        created_rows.append(row)
+        events.append(
+            {
+                "to_user_id": to_user_id,
+                "to_label": label,
+                "lead_count": count,
+                "buyer_ids": batch_ids,
+                "company_names": batch_names,
+                "message": message,
+            }
+        )
+
     if commit:
         db.commit()
-        db.refresh(row)
+        for row in created_rows:
+            db.refresh(row)
+
+    total = len(ordered_ids)
+    batch_count = len(events)
+    summary = (
+        f"{total} client sent to {label}"
+        if total == 1
+        else f"{total} clients sent to {label}"
+    )
+    if batch_count > 1:
+        summary = f"{summary} ({batch_count} batches)"
+
+    first = created_rows[0] if created_rows else None
     return {
-        "id": row.id if commit else None,
+        "id": first.id if first and commit else None,
         "by_user_id": by_user_id,
         "to_user_id": to_user_id,
         "to_label": label,
-        "lead_count": count,
-        "message": message,
-        "created_at": row.created_at.isoformat() if commit and row.created_at else None,
+        "lead_count": total,
+        "batch_count": batch_count,
+        "events": events,
+        "message": summary,
+        "created_at": first.created_at.isoformat() if first and commit and first.created_at else None,
     }
 
 
@@ -1423,6 +2003,28 @@ def list_lead_transfers(db: Session, *, limit: int = 100) -> dict[str, Any]:
         .limit(limit)
         .all()
     )
+    all_ids: set[int] = set()
+    for row in rows:
+        for bid in row.buyer_ids or []:
+            try:
+                all_ids.add(int(bid))
+            except (TypeError, ValueError):
+                continue
+    name_by_id: dict[int, str] = {}
+    if all_ids:
+        for bid, name in db.query(Buyer.id, Buyer.company_name).filter(Buyer.id.in_(all_ids)):
+            name_by_id[int(bid)] = name or f"Lead #{bid}"
+
+    def names_for(buyer_ids: list | None) -> list[str]:
+        out: list[str] = []
+        for raw in buyer_ids or []:
+            try:
+                bid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            out.append(name_by_id.get(bid, f"Lead #{bid}"))
+        return out
+
     return {
         "total_leads": int(total_leads),
         "total_events": int(total_events),
@@ -1433,6 +2035,8 @@ def list_lead_transfers(db: Session, *, limit: int = 100) -> dict[str, Any]:
                 "to_user_id": r.to_user_id,
                 "to_label": r.to_label,
                 "lead_count": r.lead_count,
+                "buyer_ids": r.buyer_ids or [],
+                "company_names": names_for(r.buyer_ids),
                 "message": r.message,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }
@@ -1501,6 +2105,27 @@ def _mark_buyer_calling_stage(
     row.updated_at = now
 
 
+def _resolve_call_company_name(
+    db: Session,
+    *,
+    company_name: str | None,
+    buyer_id: int | None,
+) -> str:
+    name = (company_name or "").strip()
+    weak = {"", "a company", "unknown", "manual dial", "unknown client"}
+    if name.lower() not in weak:
+        return name
+    if buyer_id:
+        buyer = db.get(Buyer, buyer_id)
+        if buyer and (buyer.company_name or "").strip():
+            return buyer.company_name.strip()
+    return name or "Unknown client"
+
+
+def _call_activity_message(user_label: str, company_name: str) -> str:
+    return f"{user_label} called {company_name}"
+
+
 def record_call_activity(
     db: Session,
     *,
@@ -1514,8 +2139,10 @@ def record_call_activity(
     """Log a call statement for Company lifecycle → Calling."""
     user = db.get(AppUser, user_id)
     label = _caller_label(user, user_label)
-    company = (company_name or "").strip() or "a company"
-    message = f"{label} called {company}"
+    company = _resolve_call_company_name(
+        db, company_name=company_name, buyer_id=buyer_id
+    )
+    message = _call_activity_message(label, company)
 
     row = AiCallActivityLog(
         user_id=user_id,
@@ -1557,21 +2184,27 @@ def list_call_activities(db: Session, *, limit: int = 100) -> dict[str, Any]:
         .limit(limit)
         .all()
     )
-    return {
-        "total_calls": int(total_calls),
-        "rows": [
+    out_rows: list[dict[str, Any]] = []
+    for r in rows:
+        company = _resolve_call_company_name(
+            db, company_name=r.company_name, buyer_id=r.buyer_id
+        )
+        label = (r.user_label or "").strip() or "Someone"
+        out_rows.append(
             {
                 "id": r.id,
                 "user_id": r.user_id,
-                "user_label": r.user_label,
+                "user_label": label,
                 "buyer_id": r.buyer_id,
-                "company_name": r.company_name,
+                "company_name": company,
                 "interaction_id": r.interaction_id,
-                "message": r.message,
+                "message": _call_activity_message(label, company),
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }
-            for r in rows
-        ],
+        )
+    return {
+        "total_calls": int(total_calls),
+        "rows": out_rows,
     }
 
 
@@ -1692,6 +2325,72 @@ def mark_buyer_interested_stage(
         db.commit()
 
 
+def mark_buyer_not_interested_stage(
+    db: Session,
+    buyer_id: int | None,
+    *,
+    user_id: int | None,
+    note: str | None = None,
+    commit: bool = False,
+) -> None:
+    """Advance lifecycle to `not_interested` when call outcome is Not interested."""
+    if not buyer_id:
+        return
+    now = _utcnow()
+    advance_from = {
+        "new_lead",
+        "assigned",
+        "calling",
+        "follow_up",
+        "potential_clients",
+        "interested",
+    }
+    row = (
+        db.query(AiCompanyLifecycle)
+        .filter(AiCompanyLifecycle.buyer_id == buyer_id)
+        .one_or_none()
+    )
+    if not row:
+        row = AiCompanyLifecycle(
+            buyer_id=buyer_id,
+            stage="not_interested",
+            stage_entered_at=now,
+            history=[
+                {
+                    "stage": "not_interested",
+                    "at": now.isoformat(),
+                    "notes": note,
+                    "by_user_id": user_id,
+                }
+            ],
+            updated_by_user_id=user_id,
+        )
+        db.add(row)
+        if commit:
+            db.commit()
+        return
+    if row.stage == "not_interested":
+        return
+    if row.stage not in advance_from:
+        return
+    history = list(row.history or [])
+    history.append(
+        {
+            "stage": "not_interested",
+            "at": now.isoformat(),
+            "notes": note,
+            "by_user_id": user_id,
+        }
+    )
+    row.stage = "not_interested"
+    row.stage_entered_at = now
+    row.history = history
+    row.updated_by_user_id = user_id
+    row.updated_at = now
+    if commit:
+        db.commit()
+
+
 def record_follow_up_activity(
     db: Session,
     *,
@@ -1795,11 +2494,6 @@ def _interested_clients_list_count(db: Session) -> int:
         .scalar()
         or 0
     )
-
-
-def _is_admin_user(user: AppUser) -> bool:
-    role = user.role.value if isinstance(user.role, AppUserRole) else str(user.role)
-    return role == AppUserRole.admin.value
 
 
 def record_interested_activity(
@@ -1947,24 +2641,152 @@ def list_interested_activities(
     }
 
 
-# ── Remarks history helpers ───────────────────────────────────────────────────
+def _not_interested_clients_count(db: Session) -> int:
+    from modules.calls import buyer_ids_with_latest_call_outcome
+
+    return len(buyer_ids_with_latest_call_outcome(db, "not_interested"))
 
 
-def append_remarks_history(
-    buyer: Buyer,
+def record_not_interested_activity(
+    db: Session,
     *,
-    previous_text: str,
-    by_username: str | None = None,
-) -> None:
-    text = (previous_text or "").strip()
-    if not text:
-        return
-    history = list(buyer.remarks_history or [])
-    history.append(
-        {
-            "text": text,
-            "at": _utcnow().isoformat(),
-            "by": by_username,
-        }
+    user_id: int,
+    company_name: str,
+    buyer_id: int | None = None,
+    event_type: str = "placed",
+    source: str = "call",
+    user_label: str | None = None,
+    note: str | None = None,
+    commit: bool = True,
+) -> dict[str, Any]:
+    """Log Not interested clients activity for Company lifecycle → Not Interested."""
+    user = db.get(AppUser, user_id)
+    label = _caller_label(user, user_label)
+    company = (company_name or "").strip() or "a company"
+    kind = (event_type or "placed").strip().lower() or "placed"
+    src = (source or "call").strip().lower() or "call"
+
+    if kind == "placed":
+        message = f"{label} marked {company} as Not interested"
+        if buyer_id:
+            mark_buyer_not_interested_stage(
+                db,
+                buyer_id,
+                user_id=user_id,
+                note=note or message,
+                commit=False,
+            )
+    else:
+        kind = "removed"
+        message = f"{label} removed {company} from Not interested clients"
+
+    row = AiNotInterestedActivityLog(
+        user_id=user_id,
+        user_label=label,
+        buyer_id=buyer_id,
+        company_name=company[:255],
+        event_type=kind,
+        source=src[:50],
+        message=message[:500],
     )
-    buyer.remarks_history = history[-100:]
+    db.add(row)
+    if commit:
+        db.commit()
+        db.refresh(row)
+    return {
+        "id": row.id if commit else None,
+        "user_id": user_id,
+        "user_label": label,
+        "buyer_id": buyer_id,
+        "company_name": company,
+        "event_type": kind,
+        "source": src,
+        "message": message,
+        "created_at": row.created_at.isoformat() if commit and row.created_at else None,
+    }
+
+
+def list_not_interested_activities(
+    db: Session,
+    *,
+    viewer: AppUser,
+    limit: int = 100,
+    after_id: int | None = None,
+) -> dict[str, Any]:
+    from sqlalchemy import func
+
+    is_admin = _is_admin_user(viewer)
+    total_in_list = _not_interested_clients_count(db)
+
+    placed_filter = AiNotInterestedActivityLog.event_type == "placed"
+    total_events = (
+        db.query(func.count(AiNotInterestedActivityLog.id)).filter(placed_filter).scalar()
+        or 0
+    )
+
+    by_user_rows = (
+        db.query(
+            AiNotInterestedActivityLog.user_id,
+            AiNotInterestedActivityLog.user_label,
+            func.count(AiNotInterestedActivityLog.id),
+        )
+        .filter(placed_filter)
+        .group_by(
+            AiNotInterestedActivityLog.user_id,
+            AiNotInterestedActivityLog.user_label,
+        )
+        .order_by(func.count(AiNotInterestedActivityLog.id).desc())
+        .all()
+    )
+    by_user = [
+        {
+            "user_id": uid,
+            "user_label": label,
+            "placed_count": int(cnt),
+        }
+        for uid, label, cnt in by_user_rows
+    ]
+    my_placed = next(
+        (item["placed_count"] for item in by_user if item["user_id"] == viewer.id),
+        0,
+    )
+
+    feed_query = db.query(AiNotInterestedActivityLog).filter(placed_filter)
+    if not is_admin:
+        feed_query = feed_query.filter(AiNotInterestedActivityLog.user_id == viewer.id)
+    if after_id is not None:
+        feed_query = feed_query.filter(AiNotInterestedActivityLog.id > after_id).order_by(
+            AiNotInterestedActivityLog.id.asc()
+        )
+    else:
+        feed_query = feed_query.order_by(
+            AiNotInterestedActivityLog.created_at.desc(),
+            AiNotInterestedActivityLog.id.desc(),
+        )
+
+    rows = feed_query.limit(limit).all()
+    latest_id = (
+        db.query(func.max(AiNotInterestedActivityLog.id)).scalar() or 0
+    )
+
+    return {
+        "total_in_list": total_in_list,
+        "total_events": int(total_events),
+        "my_placed_count": my_placed,
+        "by_user": by_user if is_admin else [],
+        "latest_id": int(latest_id),
+        "rows": [
+            {
+                "id": r.id,
+                "user_id": r.user_id,
+                "user_label": r.user_label,
+                "buyer_id": r.buyer_id,
+                "company_name": r.company_name,
+                "event_type": r.event_type,
+                "source": r.source,
+                "message": r.message,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ],
+    }
