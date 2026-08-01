@@ -12,9 +12,10 @@ interface QuotationMeetingControlProps {
 }
 
 const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
-const DEFAULT_TIME = "10:00";
-const HOURS = Array.from({ length: 24 }, (_, index) => String(index).padStart(2, "0"));
-const MINUTES = Array.from({ length: 60 }, (_, index) => String(index).padStart(2, "0"));
+const DEFAULT_TIME_TEXT = "10:00";
+const DEFAULT_MERIDIEM = "AM" as const;
+
+type Meridiem = "AM" | "PM";
 
 function startOfMonth(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), 1);
@@ -39,25 +40,81 @@ function parseLocalDate(iso: string | null | undefined): Date | null {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
 
-function parseLocalTime(iso: string | null | undefined): string {
-  if (!iso) return DEFAULT_TIME;
+function parseTimeParts(iso: string | null | undefined): { timeText: string; meridiem: Meridiem } {
+  if (!iso) {
+    return { timeText: DEFAULT_TIME_TEXT, meridiem: DEFAULT_MERIDIEM };
+  }
   const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return DEFAULT_TIME;
-  const h = String(date.getHours()).padStart(2, "0");
-  const m = String(date.getMinutes()).padStart(2, "0");
-  return `${h}:${m}`;
-}
-
-function splitTime(value: string): { hour: string; minute: string } {
-  const [hour = "10", minute = "00"] = value.split(":");
+  if (Number.isNaN(date.getTime())) {
+    return { timeText: DEFAULT_TIME_TEXT, meridiem: DEFAULT_MERIDIEM };
+  }
+  const hours24 = date.getHours();
+  const meridiem: Meridiem = hours24 >= 12 ? "PM" : "AM";
+  let hour12 = hours24 % 12;
+  if (hour12 === 0) hour12 = 12;
   return {
-    hour: HOURS.includes(hour) ? hour : "10",
-    minute: MINUTES.includes(minute) ? minute : "00",
+    timeText: `${hour12}:${String(date.getMinutes()).padStart(2, "0")}`,
+    meridiem,
   };
 }
 
-function joinTime(hour: string, minute: string): string {
-  return `${hour}:${minute}`;
+/** Parse user-typed time: 10:30, 10.30, 10, 10:5, 10:30 am, etc. */
+function normalizeTimeInput(raw: string): { timeText: string; meridiem?: Meridiem } {
+  const trimmed = raw.trim();
+  const ampmMatch = trimmed.match(/\s*(am|pm)\s*$/i);
+  if (ampmMatch) {
+    const nextMeridiem = ampmMatch[1].toUpperCase() as Meridiem;
+    const timeText = trimmed.replace(/\s*(am|pm)\s*$/i, "").trim();
+    return { timeText, meridiem: nextMeridiem };
+  }
+  return { timeText: trimmed };
+}
+
+function parseTimeText(text: string): { hour: number; minute: number } | null {
+  const { timeText } = normalizeTimeInput(text);
+  const cleaned = timeText.trim();
+  if (!cleaned) return null;
+
+  const withMinutes = cleaned.match(/^(\d{1,2})[:.](\d{1,2})$/);
+  if (withMinutes) {
+    return { hour: Number(withMinutes[1]), minute: Number(withMinutes[2]) };
+  }
+
+  const hourOnly = cleaned.match(/^(\d{1,2})$/);
+  if (hourOnly) {
+    return { hour: Number(hourOnly[1]), minute: 0 };
+  }
+
+  return null;
+}
+
+function to24HourString(timeText: string, meridiem: Meridiem): string | null {
+  const parsed = parseTimeText(timeText);
+  if (!parsed) return null;
+
+  const { minute } = parsed;
+  let hour = parsed.hour;
+  if (hour < 1 || hour > 12 || minute < 0 || minute > 59) return null;
+
+  if (meridiem === "AM") {
+    if (hour === 12) hour = 0;
+  } else if (hour !== 12) {
+    hour += 12;
+  }
+
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function formatTimePreview(timeText: string, meridiem: Meridiem): string {
+  const hhmm = to24HourString(timeText, meridiem);
+  if (!hhmm) return "Enter a valid time";
+  const [h, m] = hhmm.split(":").map(Number);
+  const preview = new Date(2000, 0, 1, h, m);
+  return preview.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
 }
 
 function combineDateAndTime(date: Date, timeHHMM: string): string {
@@ -100,9 +157,11 @@ export function QuotationMeetingControl({
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const selectedDate = parseLocalDate(meetingAt);
+  const initialTime = parseTimeParts(meetingAt);
   const [pendingDate, setPendingDate] = useState<Date | null>(selectedDate);
-  const [pendingTime, setPendingTime] = useState(() => parseLocalTime(meetingAt));
-  const { hour: pendingHour, minute: pendingMinute } = splitTime(pendingTime);
+  const [timeText, setTimeText] = useState(initialTime.timeText);
+  const [meridiem, setMeridiem] = useState<Meridiem>(initialTime.meridiem);
+  const [timeError, setTimeError] = useState<string | null>(null);
   const [viewMonth, setViewMonth] = useState(() => startOfMonth(selectedDate ?? new Date()));
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -116,7 +175,10 @@ export function QuotationMeetingControl({
 
   useEffect(() => {
     setPendingDate(selectedDate);
-    setPendingTime(parseLocalTime(meetingAt));
+    const next = parseTimeParts(meetingAt);
+    setTimeText(next.timeText);
+    setMeridiem(next.meridiem);
+    setTimeError(null);
   }, [meetingAt, selectedDate]);
 
   useEffect(() => {
@@ -124,7 +186,9 @@ export function QuotationMeetingControl({
     setViewMonth(startOfMonth(pendingDate ?? selectedDate ?? new Date()));
     if (!pendingDate && !selectedDate) {
       setPendingDate(today);
-      setPendingTime(DEFAULT_TIME);
+      setTimeText(DEFAULT_TIME_TEXT);
+      setMeridiem(DEFAULT_MERIDIEM);
+      setTimeError(null);
     }
   }, [open, pendingDate, selectedDate, today]);
 
@@ -135,7 +199,7 @@ export function QuotationMeetingControl({
       if (!buttonRef.current) return;
       const rect = buttonRef.current.getBoundingClientRect();
       const panel = panelRef.current;
-      const width = 300;
+      const width = 320;
       const height = panel?.offsetHeight ?? 420;
       const margin = 12;
       const gap = 8;
@@ -171,7 +235,7 @@ export function QuotationMeetingControl({
       window.removeEventListener("scroll", place, true);
       window.removeEventListener("resize", place);
     };
-  }, [open, pendingDate, pendingTime, viewMonth]);
+  }, [open, pendingDate, timeText, meridiem, viewMonth]);
 
   useEffect(() => {
     if (!open) return;
@@ -211,9 +275,15 @@ export function QuotationMeetingControl({
 
   async function saveSchedule() {
     if (!pendingDate) return;
+    const hhmm = to24HourString(timeText, meridiem);
+    if (!hhmm) {
+      setTimeError("Enter a valid time (e.g. 10:30) and choose AM or PM.");
+      return;
+    }
+    setTimeError(null);
     setSaving(true);
     try {
-      await onSchedule(combineDateAndTime(pendingDate, pendingTime));
+      await onSchedule(combineDateAndTime(pendingDate, hhmm));
       setOpen(false);
     } finally {
       setSaving(false);
@@ -239,7 +309,7 @@ export function QuotationMeetingControl({
             ref={panelRef}
             role="dialog"
             aria-label="Choose meeting date and time"
-            className="fixed z-[120] w-[300px] max-h-[min(440px,calc(100dvh-1.5rem))] overflow-y-auto rounded-xl border border-slate-600 bg-slate-900 shadow-2xl shadow-black/50 p-3 pb-4"
+            className="fixed z-[120] w-[320px] max-h-[min(440px,calc(100dvh-1.5rem))] overflow-y-auto rounded-xl border border-slate-600 bg-slate-900 shadow-2xl shadow-black/50 p-3 pb-4"
             style={{ top: panelPos.top, left: panelPos.left }}
             onClick={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
@@ -300,47 +370,69 @@ export function QuotationMeetingControl({
               })}
             </div>
             <div className="mt-3 border-t border-slate-800 pt-3 space-y-2">
-              <div className="block text-xs text-slate-400">
+              <div
+                className="block text-xs text-slate-400"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+              >
                 Meeting time
-                <div
-                  className="mt-1 grid grid-cols-2 gap-2"
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <label className="block">
-                    <span className="sr-only">Hour</span>
-                    <select
-                      value={pendingHour}
+                <div className="mt-1 flex gap-2">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder="10:30"
+                    value={timeText}
+                    disabled={busy}
+                    onChange={(e) => {
+                      const next = normalizeTimeInput(e.target.value);
+                      setTimeText(next.timeText);
+                      if (next.meridiem) setMeridiem(next.meridiem);
+                      setTimeError(null);
+                    }}
+                    className="min-w-0 flex-1 rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-slate-100 placeholder:text-slate-600 disabled:opacity-50"
+                    aria-label="Meeting time"
+                  />
+                  <div className="inline-flex shrink-0 rounded-md border border-slate-700 overflow-hidden">
+                    <button
+                      type="button"
                       disabled={busy}
-                      onChange={(e) => setPendingTime(joinTime(e.target.value, pendingMinute))}
-                      className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-slate-100 disabled:opacity-50"
+                      onClick={() => {
+                        setMeridiem("AM");
+                        setTimeError(null);
+                      }}
+                      className={`px-3 py-2 text-xs font-semibold transition ${
+                        meridiem === "AM"
+                          ? "bg-violet-600 text-white"
+                          : "bg-slate-950 text-slate-400 hover:text-slate-200 hover:bg-slate-800"
+                      } disabled:opacity-50`}
                     >
-                      {HOURS.map((hour) => (
-                        <option key={hour} value={hour}>
-                          {hour}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="block">
-                    <span className="sr-only">Minute</span>
-                    <select
-                      value={pendingMinute}
+                      AM
+                    </button>
+                    <button
+                      type="button"
                       disabled={busy}
-                      onChange={(e) => setPendingTime(joinTime(pendingHour, e.target.value))}
-                      className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-slate-100 disabled:opacity-50"
+                      onClick={() => {
+                        setMeridiem("PM");
+                        setTimeError(null);
+                      }}
+                      className={`px-3 py-2 text-xs font-semibold transition ${
+                        meridiem === "PM"
+                          ? "bg-violet-600 text-white"
+                          : "bg-slate-950 text-slate-400 hover:text-slate-200 hover:bg-slate-800"
+                      } disabled:opacity-50`}
                     >
-                      {MINUTES.map((minute) => (
-                        <option key={minute} value={minute}>
-                          {minute}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                      PM
+                    </button>
+                  </div>
                 </div>
-                <p className="mt-1 text-[11px] text-slate-500">
-                  Selected: {pendingHour}:{pendingMinute}
+                <p className="mt-1.5 text-[11px] text-slate-500">
+                  Type time yourself (e.g. <span className="text-slate-400">2:15</span> or{" "}
+                  <span className="text-slate-400">10</span>) then pick AM/PM —{" "}
+                  <span className="text-slate-400">{formatTimePreview(timeText, meridiem)}</span>
                 </p>
+                {timeError && <p className="mt-1 text-[11px] text-red-400">{timeError}</p>}
               </div>
               {!pendingDate && (
                 <p className="text-[11px] text-amber-300/90">Select a date above to schedule.</p>
@@ -351,7 +443,9 @@ export function QuotationMeetingControl({
                   disabled={busy}
                   onClick={() => {
                     setPendingDate(today);
-                    setPendingTime(DEFAULT_TIME);
+                    setTimeText(DEFAULT_TIME_TEXT);
+                    setMeridiem(DEFAULT_MERIDIEM);
+                    setTimeError(null);
                   }}
                   className="text-xs text-violet-300 hover:text-violet-200 disabled:opacity-50"
                 >
