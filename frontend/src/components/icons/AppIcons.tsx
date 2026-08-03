@@ -134,19 +134,44 @@ export function IconTemplate({ size, className }: IconProps) {
 }
 
 export function IconInbox({ size, className }: IconProps) {
+  /** Classic envelope — used for Mail / Inbox. */
   return (
     <Svg size={size} className={className}>
-      <path d="M22 12h-6l-2 3H10l-2-3H2" />
-      <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
+      <rect x="2" y="4" width="20" height="16" rx="2" />
+      <path d="M22 7l-10 7L2 7" />
     </Svg>
   );
 }
 
 export function IconMail({ size, className }: IconProps) {
+  /** Same envelope mark as Inbox for consistent mail branding. */
   return (
     <Svg size={size} className={className}>
       <rect x="2" y="4" width="20" height="16" rx="2" />
       <path d="M22 7l-10 7L2 7" />
+    </Svg>
+  );
+}
+
+export function IconMailStack({ size, className }: IconProps) {
+  /** Stacked envelopes — Email Activity. */
+  return (
+    <Svg size={size} className={className}>
+      <rect x="6" y="3" width="15" height="11" rx="1.5" />
+      <path d="M21 5.2 13.5 10 6 5.2" />
+      <rect x="2" y="9" width="15" height="12" rx="1.5" />
+      <path d="M17 11.5 9.5 16.5 2 11.5" />
+    </Svg>
+  );
+}
+
+export function IconCalendar({ size, className }: IconProps) {
+  /** Calendar — Client History timeline. */
+  return (
+    <Svg size={size} className={className}>
+      <rect x="3" y="5" width="18" height="16" rx="2" />
+      <path d="M3 10h18M8 3v4M16 3v4" />
+      <path d="M8 14h.01M12 14h.01M16 14h.01M8 17h.01M12 17h.01" />
     </Svg>
   );
 }
@@ -214,12 +239,7 @@ export function IconExternal({ size, className }: IconProps) {
 }
 
 export function IconCall({ size, className }: IconProps) {
-  return (
-    <Svg size={size} className={className}>
-      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-      <path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8" />
-    </Svg>
-  );
+  return <IconPhone size={size} className={className} />;
 }
 
 export function IconQuote({ size, className }: IconProps) {
@@ -475,23 +495,23 @@ export function NavIcon({
   if (navId === "not_interested_clients") return <IconXCircle {...props} />;
   if (navId === "not_received_call_clients") return <IconPhoneMissed {...props} />;
   if (navId.startsWith("assigned:")) return <IconUser {...props} />;
-  if (navId === "inbox") return <IconInbox {...props} />;
+  if (navId === "inbox") return <IconMail {...props} />;
   if (navId === "sent") return <IconSend {...props} />;
   if (navId === "drafts") return <IconDraft {...props} />;
   if (navId === "trash") return <IconTrash {...props} />;
   if (navId === "archive") return <IconArchive {...props} />;
-  if (navId === "activity") return <IconActivity {...props} />;
+  if (navId === "activity") return <IconMailStack {...props} />;
   if (navId === "email-templates") return <IconTemplate {...props} />;
   if (navId === "personalized-emails") return <IconSparkles {...props} />;
   if (navId.startsWith("label:")) return <IconTag {...props} />;
   if (navId === "mail") return <IconExternal {...props} />;
   if (navId === "calls") return <IconCall {...props} />;
-  if (navId === "client-history") return <IconActivity {...props} />;
+  if (navId === "client-history") return <IconCalendar {...props} />;
   if (navId === "quotation-agent") return <IconQuote {...props} />;
   if (navId === "chatbot") return <IconRobot {...props} />;
   if (navId === "ai-mode") return <IconSparkles {...props} />;
   if (navId === "kpi") return <IconChart {...props} />;
-  if (navId === "users") return <IconSettings {...props} />;
+  if (navId === "users") return <IconUser {...props} />;
 
   return <IconMail {...props} />;
 }
@@ -515,7 +535,7 @@ export function IndexSectionIcon({
     7: <IconRobot size={size} className={className} />,
     8: <IconSparkles size={size} className={className} />,
     9: <IconChart size={size} className={className} />,
-    10: <IconSettings size={size} className={className} />,
+    10: <IconUser size={size} className={className} />,
   };
   return map[sectionNumber] ?? <IconList size={size} className={className} />;
 }
@@ -537,6 +557,8 @@ export function IndexIcon({
       return <IconTable {...props} />;
     case "users":
       return <IconUsers {...props} />;
+    case "user":
+      return <IconUser {...props} />;
     case "heart":
       return <IconHeart {...props} />;
     case "phone":
@@ -548,11 +570,15 @@ export function IndexIcon({
     case "template":
       return <IconTemplate {...props} />;
     case "inbox":
-      return <IconInbox {...props} />;
+      return <IconMail {...props} />;
     case "activity":
       return <IconActivity {...props} />;
     case "mail":
       return <IconMail {...props} />;
+    case "mail-stack":
+      return <IconMailStack {...props} />;
+    case "calendar":
+      return <IconCalendar {...props} />;
     case "call":
       return <IconCall {...props} />;
     case "robot":
