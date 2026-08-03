@@ -143,31 +143,72 @@ class VoiceClient:
         jwt = token.to_jwt()
         return jwt.decode("utf-8") if isinstance(jwt, bytes) else str(jwt)
 
+    def say_twiml(self, message: str) -> str:
+        """Safe spoken TwiML (never let Twilio fall back to 'application error')."""
+        import html
+
+        text = html.escape((message or "Call could not be completed.").strip()[:500])
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            f"<Response><Say voice=\"alice\">{text}</Say><Hangup/></Response>"
+        )
+
     def client_dial_twiml(self, lead_phone: str, interaction_id: int) -> str:
         """TwiML for browser-initiated outbound calls — dials the lead directly."""
         import html
 
-        lead = normalize_e164(lead_phone) or lead_phone
-        caller_id = settings.twilio_phone_number or ""
-        status_url = self.webhook_url(
-            f"/api/webhooks/twilio/voice/status?interaction_id={interaction_id}"
-        )
-        recording_url = self.webhook_url(
-            f"/api/webhooks/twilio/voice/recording?interaction_id={interaction_id}"
-        )
+        lead = normalize_e164(lead_phone)
+        if not lead:
+            return self.say_twiml(
+                "The phone number is invalid. Please check the lead number and try again."
+            )
+        caller_id = normalize_e164(settings.twilio_phone_number) or (
+            settings.twilio_phone_number or ""
+        ).strip()
+        if not caller_id.startswith("+"):
+            return self.say_twiml(
+                "Caller ID is not configured. Set TWILIO_PHONE_NUMBER on the server."
+            )
+
+        # Status/recording callbacks need a public base URL. If missing, still Dial
+        # so the call can ring — omit callbacks rather than crashing TwiML fetch.
+        status_url = ""
+        recording_url = ""
+        if settings.twilio_webhook_base_url:
+            status_url = self.webhook_url(
+                f"/api/webhooks/twilio/voice/status?interaction_id={interaction_id}"
+            )
+            recording_url = self.webhook_url(
+                f"/api/webhooks/twilio/voice/recording?interaction_id={interaction_id}"
+            )
+
         lead_xml = html.escape(lead, quote=True)
         caller_xml = html.escape(caller_id, quote=True)
-        status_xml = html.escape(status_url, quote=True)
-        recording_xml = html.escape(recording_url, quote=True)
+        # timeout lets unanswered calls end cleanly (voicemail / no-answer) instead
+        # of hanging the browser leg with a gateway error.
+        dial_attrs = [
+            f'callerId="{caller_xml}"',
+            'answerOnBridge="true"',
+            'timeout="45"',
+            'record="record-from-answer"',
+        ]
+        if recording_url:
+            recording_xml = html.escape(recording_url, quote=True)
+            dial_attrs.extend(
+                [
+                    f'recordingStatusCallback="{recording_xml}"',
+                    'recordingStatusCallbackMethod="POST"',
+                    'recordingStatusCallbackEvent="completed"',
+                ]
+            )
+        if status_url:
+            status_xml = html.escape(status_url, quote=True)
+            dial_attrs.extend([f'action="{status_xml}"', 'method="POST"'])
+
         return (
             '<?xml version="1.0" encoding="UTF-8"?>'
             "<Response>"
-            f'<Dial callerId="{caller_xml}" answerOnBridge="true" '
-            f'record="record-from-answer" '
-            f'recordingStatusCallback="{recording_xml}" '
-            f'recordingStatusCallbackMethod="POST" '
-            f'recordingStatusCallbackEvent="completed" '
-            f'action="{status_xml}" method="POST">'
+            f'<Dial {" ".join(dial_attrs)}>'
             f"<Number>{lead_xml}</Number>"
             "</Dial>"
             "</Response>"

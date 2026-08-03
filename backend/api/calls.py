@@ -450,50 +450,92 @@ def initiate_manual_call(
 webhooks_router = APIRouter(prefix="/webhooks/twilio", tags=["twilio-webhooks"])
 
 
+def _twiml_response(xml: str) -> Response:
+    # text/xml is what Twilio's debugger expects most reliably.
+    return Response(content=xml, media_type="text/xml")
+
+
 @webhooks_router.post("/voice/client-dial")
 async def twilio_client_dial(request: Request):
-    """TwiML: browser client connects → dial the lead directly."""
+    """TwiML: browser client connects → dial the lead directly.
+
+    Must always return valid TwiML — any non-XML / 5xx makes Twilio play
+    “An application error has occurred” and the SDK reports 31005.
+    """
+    import logging
+
+    log = logging.getLogger("twilio.webhook")
     try:
-        params = await _twilio_form(request)
-    except HTTPException as exc:
-        if exc.status_code == 403:
-            # Twilio plays this instead of a generic "application error".
-            return Response(
-                content=(
-                    '<?xml version="1.0" encoding="UTF-8"?>'
-                    "<Response><Say>Webhook signature check failed. "
-                    "Confirm TWILIO_AUTH_TOKEN and TWILIO_WEBHOOK_BASE_URL on Railway "
-                    "match the TwiML App voice URL.</Say></Response>"
-                ),
-                media_type="application/xml",
-            )
-        raise
+        try:
+            params = await _twilio_form(request)
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                log.warning("client-dial signature rejected")
+                return _twiml_response(
+                    voice_client.say_twiml(
+                        "Webhook signature check failed. "
+                        "Confirm TWILIO_AUTH_TOKEN and TWILIO_WEBHOOK_BASE_URL on Railway "
+                        "match the TwiML App voice URL."
+                    )
+                )
+            raise
 
-    lead_phone = params.get("To") or request.query_params.get("To")
-    interaction_id = params.get("interaction_id") or request.query_params.get("interaction_id")
-
-    if not lead_phone:
-        return Response(
-            content='<?xml version="1.0" encoding="UTF-8"?><Response><Say>Missing lead number.</Say></Response>',
-            media_type="application/xml",
+        # Voice SDK custom params + common Twilio aliases.
+        lead_phone = (
+            params.get("To")
+            or params.get("to")
+            or params.get("Called")
+            or request.query_params.get("To")
+            or request.query_params.get("to")
+        )
+        interaction_id = (
+            params.get("interaction_id")
+            or params.get("InteractionId")
+            or request.query_params.get("interaction_id")
         )
 
-    iid = 0
-    if interaction_id:
-        try:
-            iid = int(interaction_id)
-        except ValueError:
-            iid = 0
+        if not lead_phone:
+            log.warning("client-dial missing To param keys=%s", sorted(params.keys()))
+            return _twiml_response(
+                voice_client.say_twiml("Missing lead number for this call.")
+            )
 
-    return Response(
-        content=voice_client.client_dial_twiml(str(lead_phone), iid),
-        media_type="application/xml",
-    )
+        iid = 0
+        if interaction_id:
+            try:
+                iid = int(str(interaction_id))
+            except ValueError:
+                iid = 0
+
+        xml = voice_client.client_dial_twiml(str(lead_phone), iid)
+        log.info(
+            "client-dial ok to=%s interaction_id=%s twiml_bytes=%s",
+            str(lead_phone)[-4:],
+            iid,
+            len(xml),
+        )
+        return _twiml_response(xml)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("client-dial failed: %s", exc)
+        return _twiml_response(
+            voice_client.say_twiml(
+                "The dial webhook failed on the server. Check Railway logs and Twilio debugger."
+            )
+        )
 
 
 @webhooks_router.post("/voice/status")
-async def twilio_call_status(request: Request, db: Session = Depends(get_db)):
-    form = await _twilio_form(request)
+async def twilio_call_status(request: Request):
+    """Dial action / status callback — never 5xx (Twilio retries / Debugger noise)."""
+    import logging
+
+    from sqlalchemy.exc import TimeoutError as SATimeoutError
+
+    try:
+        form = await _twilio_form(request)
+    except HTTPException:
+        return {"ok": True, "skipped": "signature"}
+
     interaction_id = request.query_params.get("interaction_id")
     if not interaction_id:
         return {"ok": True}
@@ -510,14 +552,26 @@ async def twilio_call_status(request: Request, db: Session = Depends(get_db)):
     duration = str(form.get("DialCallDuration") or form.get("CallDuration") or "") or None
     call_sid = str(form.get("CallSid") or "") or None
 
-    calls_module.update_call_status(
-        db,
-        interaction_id=iid,
-        call_status=status,
-        call_duration=duration,
-        call_sid=call_sid,
-    )
-    return {"ok": True}
+    db = SessionLocal()
+    try:
+        calls_module.update_call_status(
+            db,
+            interaction_id=iid,
+            call_status=status,
+            call_duration=duration,
+            call_sid=call_sid,
+        )
+        return {"ok": True}
+    except SATimeoutError:
+        logging.getLogger("twilio.webhook").warning(
+            "voice/status DB pool busy interaction_id=%s status=%s", iid, status
+        )
+        return {"ok": True, "skipped": "db_busy"}
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("twilio.webhook").exception("voice/status failed: %s", exc)
+        return {"ok": True, "skipped": "error"}
+    finally:
+        db.close()
 
 
 @webhooks_router.post("/voice/recording")

@@ -1283,6 +1283,9 @@ export interface WhatsAppConfig {
   missing_env: string[];
   meta_api_ok?: boolean | null;
   meta_api_message?: string | null;
+  webhook_callback_url?: string | null;
+  webhook_verify_token_set?: boolean;
+  ready_for_two_way?: boolean;
 }
 
 export interface WhatsAppTestSendResult {

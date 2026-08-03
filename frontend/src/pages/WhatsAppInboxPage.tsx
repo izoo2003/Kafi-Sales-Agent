@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   client,
   type DraftInteraction,
+  type WhatsAppConfig,
   type WhatsAppConversation,
   type WhatsAppTemplate,
 } from "../api/client";
@@ -9,6 +10,8 @@ import {
 interface WhatsAppInboxPageProps {
   onError: (message: string) => void;
 }
+
+const POLL_MS = 12_000;
 
 function formatDate(value: string | null | undefined): string {
   if (!value) return "";
@@ -33,40 +36,80 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
   const [templates, setTemplates] = useState<WhatsAppTemplate[]>([]);
   const [templateId, setTemplateId] = useState("");
   const [variables, setVariables] = useState<string[]>([]);
+  const [config, setConfig] = useState<WhatsAppConfig | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  const refreshConversations = useCallback(async () => {
-    setLoadingList(true);
-    try {
-      const result = await client.listWhatsAppConversations({ page: 1, page_size: 50 });
-      setConversations(result.rows);
-    } catch (e) {
-      onError(e instanceof Error ? e.message : "Failed to load WhatsApp conversations");
-    } finally {
-      setLoadingList(false);
-    }
-  }, [onError]);
-
-  useEffect(() => {
-    void refreshConversations();
-  }, [refreshConversations]);
-
-  const loadThread = useCallback(
-    async (conversation: WhatsAppConversation) => {
-      setSelected(conversation);
-      setNeedsTemplate(false);
-      setReply("");
-      setLoadingThread(true);
+  const refreshConversations = useCallback(
+    async (options?: { silent?: boolean }) => {
+      if (!options?.silent) setLoadingList(true);
       try {
-        const rows = await client.listWhatsAppConversationMessages(conversation.contact_id);
-        setMessages(rows);
+        const result = await client.listWhatsAppConversations({ page: 1, page_size: 50 });
+        setConversations(result.rows);
+        setSelected((prev) => {
+          if (!prev) return prev;
+          return result.rows.find((r) => r.contact_id === prev.contact_id) || prev;
+        });
       } catch (e) {
-        onError(e instanceof Error ? e.message : "Failed to load conversation");
+        if (!options?.silent) {
+          onError(e instanceof Error ? e.message : "Failed to load WhatsApp conversations");
+        }
       } finally {
-        setLoadingThread(false);
+        if (!options?.silent) setLoadingList(false);
       }
     },
     [onError],
   );
+
+  const loadConfig = useCallback(async () => {
+    try {
+      setConfig(await client.getWhatsAppConfig());
+    } catch {
+      /* optional */
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshConversations();
+    void loadConfig();
+  }, [refreshConversations, loadConfig]);
+
+  // Live refresh so inbound webhook messages appear without a manual reload.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      void refreshConversations({ silent: true });
+    }, POLL_MS);
+    return () => window.clearInterval(id);
+  }, [refreshConversations]);
+
+  const loadThread = useCallback(
+    async (conversation: WhatsAppConversation, options?: { silent?: boolean }) => {
+      if (!options?.silent) {
+        setSelected(conversation);
+        setNeedsTemplate(false);
+        setReply("");
+        setLoadingThread(true);
+      }
+      try {
+        const rows = await client.listWhatsAppConversationMessages(conversation.contact_id);
+        setMessages(rows);
+      } catch (e) {
+        if (!options?.silent) {
+          onError(e instanceof Error ? e.message : "Failed to load conversation");
+        }
+      } finally {
+        if (!options?.silent) setLoadingThread(false);
+      }
+    },
+    [onError],
+  );
+
+  useEffect(() => {
+    if (!selected) return;
+    const id = window.setInterval(() => {
+      void loadThread(selected, { silent: true });
+    }, POLL_MS);
+    return () => window.clearInterval(id);
+  }, [selected, loadThread]);
 
   const selectedTemplate = templates.find((t) => String(t.id) === templateId);
 
@@ -88,12 +131,26 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
   async function handleSend() {
     if (!selected || !reply.trim()) return;
     setSending(true);
+    setNotice(null);
     try {
-      await client.replyToWhatsAppConversation(selected.contact_id, { content: reply, send: true });
+      const result = await client.replyToWhatsAppConversation(selected.contact_id, {
+        content: reply,
+        send: true,
+      });
+      if (!result.sent) {
+        const message =
+          result.send_message || "Send did not complete — Meta may require a template.";
+        if (/template|24|window/i.test(message)) {
+          setNeedsTemplate(true);
+        }
+        onError(message);
+        return;
+      }
       setReply("");
       setNeedsTemplate(false);
+      setNotice("Message sent.");
       await loadThread(selected);
-      await refreshConversations();
+      await refreshConversations({ silent: true });
     } catch (e) {
       const message = e instanceof Error ? e.message : "Failed to send reply";
       if (/template|24|window/i.test(message)) {
@@ -112,6 +169,7 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
       return;
     }
     setSending(true);
+    setNotice(null);
     try {
       await client.replyToWhatsAppConversation(selected.contact_id, {
         content: reply || selectedTemplate.body_text || selectedTemplate.name,
@@ -122,8 +180,9 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
       });
       setReply("");
       setNeedsTemplate(false);
+      setNotice("Template message sent.");
       await loadThread(selected);
-      await refreshConversations();
+      await refreshConversations({ silent: true });
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to send with template");
     } finally {
@@ -131,15 +190,79 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
     }
   }
 
+  const setupIncomplete =
+    config &&
+    (!config.configured ||
+      !config.webhook_configured ||
+      !config.app_secret_set ||
+      config.meta_api_ok === false);
+
   return (
     <section className="space-y-6 w-full min-w-0">
-      <div>
-        <h2 className="text-lg font-medium text-slate-100">WhatsApp inbox</h2>
-        <p className="text-sm text-slate-500 mt-1 max-w-2xl">
-          Two-way WhatsApp conversations. Replies within 24h of the customer's last message send as
-          free text; outside that window Meta requires an approved template.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-medium text-slate-100">WhatsApp inbox</h2>
+          <p className="text-sm text-slate-500 mt-1 max-w-2xl">
+            Two-way WhatsApp on your Business number
+            {config?.display_number ? ` (${config.display_number})` : ""}. Replies within 24h of the
+            customer&apos;s last message send as free text; outside that window Meta requires an
+            approved template.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            void refreshConversations();
+            if (selected) void loadThread(selected);
+            void loadConfig();
+          }}
+          className="rounded-lg border border-slate-700 hover:bg-slate-800 px-3 py-2 text-sm text-slate-300"
+        >
+          Refresh
+        </button>
       </div>
+
+      {setupIncomplete ? (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100 space-y-2">
+          <p className="font-medium">WhatsApp setup incomplete</p>
+          {config?.missing_env?.length ? (
+            <p className="text-amber-200/90">
+              Missing on the server: {config.missing_env.join(", ")}. Add them to Railway Variables
+              (and local <code className="text-amber-100">backend/.env</code>), then restart.
+            </p>
+          ) : null}
+          {config?.meta_api_ok === false ? (
+            <p className="text-amber-200/90">
+              Meta API check failed: {config.meta_api_message || "invalid token / WABA"}.
+            </p>
+          ) : null}
+          {config?.webhook_callback_url ? (
+            <p className="text-amber-200/80 text-xs">
+              In Meta App → WhatsApp → Configuration → Webhook, set Callback URL to{" "}
+              <code className="text-amber-100 break-all">{config.webhook_callback_url}</code>{" "}
+              with your verify token, and subscribe to <strong>messages</strong> +{" "}
+              <strong>message_template_status_update</strong>.
+            </p>
+          ) : (
+            <p className="text-amber-200/80 text-xs">
+              Set a public API base URL (same as TWILIO_WEBHOOK_BASE_URL) so the webhook callback
+              URL can be shown here, then subscribe that URL in Meta.
+            </p>
+          )}
+        </div>
+      ) : config?.ready_for_two_way ? (
+        <p className="text-xs text-emerald-300/90 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2">
+          WhatsApp Cloud API connected
+          {config.meta_api_message ? ` — ${config.meta_api_message}` : ""}. Inbound messages appear
+          here automatically when Meta delivers webhooks.
+        </p>
+      ) : null}
+
+      {notice ? (
+        <p className="text-sm text-emerald-300/90 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
+          {notice}
+        </p>
+      ) : null}
 
       <div className="grid grid-cols-1 md:grid-cols-[minmax(280px,360px)_1fr] gap-0 rounded-xl border border-slate-800 bg-slate-900/50 overflow-hidden min-h-[min(78vh,640px)]">
         <div
@@ -155,8 +278,9 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
             <p className="text-sm text-slate-400 p-4">Loading…</p>
           ) : conversations.length === 0 ? (
             <p className="text-sm text-slate-500 p-4">
-              No WhatsApp conversations yet. They appear here once a contact messages you or you
-              send an approved campaign.
+              No WhatsApp conversations yet. Ask a contact to message{" "}
+              {config?.display_number || "your Business number"}, or send an approved template from
+              a lead — threads appear here for two-way chat.
             </p>
           ) : (
             conversations.map((conv) => (
@@ -244,7 +368,9 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
                       <p className="whitespace-pre-wrap">{msg.content}</p>
                       <p className="text-[10px] text-slate-500 mt-1">
                         {formatDate(msg.created_at)}
-                        {msg.direction === "outbound" && msg.wa_status ? ` · ${msg.wa_status}` : ""}
+                        {msg.direction === "outbound" && msg.wa_status
+                          ? ` · ${msg.wa_status}`
+                          : ""}
                       </p>
                     </div>
                   ))
@@ -305,7 +431,11 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
                   value={reply}
                   onChange={(e) => setReply(e.target.value)}
                   rows={2}
-                  placeholder="Type a reply…"
+                  placeholder={
+                    selected.within_session_window
+                      ? "Type a personal reply…"
+                      : "24h window closed — use a template, or wait for them to message again"
+                  }
                   className="flex-1 rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200"
                 />
                 <button
