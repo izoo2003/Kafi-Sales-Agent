@@ -3,6 +3,7 @@ import {
   client,
   type WhatsAppConfig,
   type WhatsAppTemplate,
+  type WhatsAppTemplateCreatePayload,
   type WhatsAppTemplateNotification,
 } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
@@ -20,9 +21,11 @@ const STATUS_STYLES: Record<string, string> = {
   disabled: "bg-slate-700/50 border-slate-600 text-slate-400",
 };
 
-const DEFAULT_CREATE_FORM = {
+type WhatsAppTemplateCategory = WhatsAppTemplateCreatePayload["category"];
+
+const DEFAULT_CREATE_FORM: WhatsAppTemplateCreatePayload = {
   name: "kafi_product_intro",
-  category: "UTILITY" as const,
+  category: "UTILITY",
   language: "en_US",
   body:
     "Dear {{1}},\n\n" +
@@ -61,7 +64,8 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const [showCreator, setShowCreator] = useState(false);
-  const [createForm, setCreateForm] = useState(DEFAULT_CREATE_FORM);
+  const [createForm, setCreateForm] =
+    useState<WhatsAppTemplateCreatePayload>(DEFAULT_CREATE_FORM);
   const [submitting, setSubmitting] = useState(false);
 
   const [testPhone, setTestPhone] = useState("");
@@ -348,7 +352,7 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
                 onChange={(e) =>
                   setCreateForm((f) => ({
                     ...f,
-                    category: e.target.value as "MARKETING" | "UTILITY" | "AUTHENTICATION",
+                    category: e.target.value as WhatsAppTemplateCategory,
                   }))
                 }
                 className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
