@@ -45,13 +45,16 @@ interface TwilioVoiceContextValue {
 }
 
 function friendlyCallError(err: unknown): string {
-  const raw =
-    (err &&
-      typeof err === "object" &&
-      "message" in err &&
-      String((err as { message: unknown }).message)) ||
-    (err instanceof Error ? err.message : "") ||
-    "Call failed";
+  let raw = "Call failed";
+  if (err instanceof Error && err.message) {
+    raw = err.message;
+  } else if (typeof err === "string" && err.trim()) {
+    raw = err;
+  } else if (err && typeof err === "object" && "message" in err) {
+    const msg = (err as { message: unknown }).message;
+    if (typeof msg === "string" && msg.trim()) raw = msg;
+    else if (msg != null && msg !== "") raw = String(msg);
+  }
   if (/31005|gateway in HANGUP|application error/i.test(raw)) {
     return (
       "Call ended before connect (Twilio 31005). Usually the TwiML Voice URL failed, " +
