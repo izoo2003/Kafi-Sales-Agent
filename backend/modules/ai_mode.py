@@ -1086,23 +1086,20 @@ def scan_queries_for_user(
     }
 
 
-def scan_queries_for_all_mailbox_users(db: Session) -> dict[str, Any]:
+def scan_queries_for_all_mailbox_users(db: Session | None = None) -> dict[str, Any]:
     """Scan every active user with a configured mailbox (AI Mode not required).
 
     Same inquiry filter for all accounts — each user's New Lead (Queries) is
     isolated to their own inbox + keywords.
+
+    When ``db`` is omitted, opens a short-lived session per user so IMAP work
+    does not pin one pool connection for the whole mailbox sweep.
     """
     from modules.mailbox_accounts import hosts_enabled, resolve_user_mailbox
 
     if not hosts_enabled():
         return {"users": 0, "matched": 0, "created": 0, "purged": 0, "errors": []}
 
-    users = (
-        db.query(AppUser)
-        .filter(AppUser.is_active.is_(True))
-        .order_by(AppUser.id.asc())
-        .all()
-    )
     totals: dict[str, Any] = {
         "users": 0,
         "matched": 0,
@@ -1110,13 +1107,13 @@ def scan_queries_for_all_mailbox_users(db: Session) -> dict[str, Any]:
         "purged": 0,
         "errors": [],
     }
-    for user in users:
+
+    def _scan_one(session: Session, user: AppUser) -> None:
         if not resolve_user_mailbox(user):
-            continue
+            return
         totals["users"] += 1
-        # Ensure each account has settings + default inquiry keywords.
-        get_or_create_settings(db, user.id)
-        result = scan_queries_for_user(db, user, deep=False, limit=40)
+        get_or_create_settings(session, user.id)
+        result = scan_queries_for_user(session, user, deep=False, limit=40)
         totals["matched"] += int(result.get("matched") or 0)
         totals["created"] += int(result.get("created") or 0)
         totals["purged"] += int(result.get("purged") or 0)
@@ -1125,6 +1122,46 @@ def scan_queries_for_all_mailbox_users(db: Session) -> dict[str, Any]:
             totals["errors"].append(f"user {user.id}: {err}")
         for e in result.get("errors") or []:
             totals["errors"].append(f"user {user.id}: {e}")
+
+    if db is not None:
+        users = (
+            db.query(AppUser)
+            .filter(AppUser.is_active.is_(True))
+            .order_by(AppUser.id.asc())
+            .all()
+        )
+        for user in users:
+            _scan_one(db, user)
+    else:
+        from db.session import SessionLocal
+
+        list_db = SessionLocal()
+        try:
+            user_ids = [
+                int(uid)
+                for (uid,) in list_db.query(AppUser.id)
+                .filter(AppUser.is_active.is_(True))
+                .order_by(AppUser.id.asc())
+                .all()
+            ]
+        finally:
+            list_db.close()
+
+        for uid in user_ids:
+            session = SessionLocal()
+            try:
+                user = session.get(AppUser, uid)
+                if user:
+                    _scan_one(session, user)
+            except Exception as exc:  # noqa: BLE001
+                totals["errors"].append(f"user {uid}: {exc}")
+            finally:
+                try:
+                    session.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+                session.close()
+
     totals["errors"] = totals["errors"][:20]
     return totals
 
@@ -1431,21 +1468,11 @@ def process_email_auto_replies_for_user(
         }
 
 
-def process_all_enabled_email_users(db: Session) -> dict[str, Any]:
+def process_all_enabled_email_users(db: Session | None = None) -> dict[str, Any]:
     # Keep New Lead (Queries) fresh for every mailbox user, not only AI Mode ON.
+    # Prefer per-user sessions (db=None) so IMAP does not pin one connection.
     query_totals = scan_queries_for_all_mailbox_users(db)
 
-    rows = (
-        db.query(AiModeSettings, AppUser)
-        .join(AppUser, AppUser.id == AiModeSettings.user_id)
-        .filter(
-            AiModeSettings.enabled.is_(True),
-            AiModeSettings.email_auto_reply_enabled.is_(True),
-            AppUser.is_active.is_(True),
-            AppUser.role == AppUserRole.admin,
-        )
-        .all()
-    )
     totals = {
         "users": 0,
         "processed": 0,
@@ -1453,15 +1480,69 @@ def process_all_enabled_email_users(db: Session) -> dict[str, Any]:
         "skipped": 0,
         "queries": query_totals,
     }
-    for settings, user in rows:
-        totals["users"] += 1
-        # Query scan already ran for all mailbox users above.
-        result = process_email_auto_replies_for_user(
-            db, user, scan_queries=False
+
+    if db is not None:
+        rows = (
+            db.query(AiModeSettings, AppUser)
+            .join(AppUser, AppUser.id == AiModeSettings.user_id)
+            .filter(
+                AiModeSettings.enabled.is_(True),
+                AiModeSettings.email_auto_reply_enabled.is_(True),
+                AppUser.is_active.is_(True),
+                AppUser.role == AppUserRole.admin,
+            )
+            .all()
         )
-        totals["processed"] += int(result.get("processed") or 0)
-        totals["replied"] += int(result.get("replied") or 0)
-        totals["skipped"] += int(result.get("skipped") or 0)
+        for _settings, user in rows:
+            totals["users"] += 1
+            result = process_email_auto_replies_for_user(
+                db, user, scan_queries=False
+            )
+            totals["processed"] += int(result.get("processed") or 0)
+            totals["replied"] += int(result.get("replied") or 0)
+            totals["skipped"] += int(result.get("skipped") or 0)
+        return totals
+
+    from db.session import SessionLocal
+
+    list_db = SessionLocal()
+    try:
+        admin_ids = [
+            int(uid)
+            for (uid,) in list_db.query(AiModeSettings.user_id)
+            .join(AppUser, AppUser.id == AiModeSettings.user_id)
+            .filter(
+                AiModeSettings.enabled.is_(True),
+                AiModeSettings.email_auto_reply_enabled.is_(True),
+                AppUser.is_active.is_(True),
+                AppUser.role == AppUserRole.admin,
+            )
+            .all()
+        ]
+    finally:
+        list_db.close()
+
+    for uid in admin_ids:
+        session = SessionLocal()
+        try:
+            user = session.get(AppUser, uid)
+            if not user:
+                continue
+            totals["users"] += 1
+            result = process_email_auto_replies_for_user(
+                session, user, scan_queries=False
+            )
+            totals["processed"] += int(result.get("processed") or 0)
+            totals["replied"] += int(result.get("replied") or 0)
+            totals["skipped"] += int(result.get("skipped") or 0)
+        except Exception as exc:  # noqa: BLE001
+            print(f"AI Mode auto-reply failed for user {uid}: {exc}", flush=True)
+        finally:
+            try:
+                session.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            session.close()
     return totals
 
 

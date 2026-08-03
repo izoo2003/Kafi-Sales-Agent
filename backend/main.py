@@ -53,13 +53,12 @@ def _run_daily_job():
 
 
 def _run_ai_mode_email_job():
-    # Use a short-lived session so IMAP/LLM work does not pin a pool connection
-    # for the whole job (that was exhausting QueuePool under CRM polling).
-    db = SessionLocal()
+    # One short DB session per mailbox user — never hold a pool connection across
+    # every IMAP scan (that exhausted QueuePool under CRM polling on Railway).
     try:
         from modules import ai_mode as ai_mode_module
 
-        result = ai_mode_module.process_all_enabled_email_users(db)
+        result = ai_mode_module.process_all_enabled_email_users()
         q = result.get("queries") or {}
         if q.get("created") or q.get("matched") or result.get("replied"):
             print(
@@ -70,12 +69,6 @@ def _run_ai_mode_email_job():
             )
     except Exception as exc:  # noqa: BLE001
         print(f"AI Mode email job failed: {exc}", flush=True)
-    finally:
-        try:
-            db.rollback()
-        except Exception:  # noqa: BLE001
-            pass
-        db.close()
 
 
 @asynccontextmanager
@@ -227,15 +220,22 @@ async def require_api_auth(request, call_next):
         request.state.user_role = cached[1]
         return await call_next(request)
 
+    from fastapi.responses import JSONResponse
+    from sqlalchemy.exc import TimeoutError as SATimeoutError
+
     db = SessionLocal()
     try:
         user = auth_module.get_user_by_token(db, token)
         if not user:
-            from fastapi.responses import JSONResponse
-
             return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
         request.state.user_id = user.id
         request.state.user_role = user.role.value if hasattr(user.role, "value") else str(user.role)
+    except SATimeoutError:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Database busy — retry shortly"},
+            headers={"Retry-After": "2"},
+        )
     finally:
         db.close()
 
