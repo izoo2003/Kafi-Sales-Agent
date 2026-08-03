@@ -5,4 +5,8 @@ Context: {buyer_context}
 Goal of this email: {goal}
 Relevant product info: {product_specs}
 Do not reference internal pricing logic or competitor names.
-Keep it concise — under 200 words unless a quotation table is needed.
+
+Email reply standards:
+- Concise, specific, and directly related to the buyer’s inquiry / stated goal.
+- Prefer ~80–120 words. Longer only if the goal requires a quotation table or they asked for detail.
+- Avoid long explanations and generic product essays unless specifically requested.

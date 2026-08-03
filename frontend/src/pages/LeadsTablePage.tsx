@@ -32,6 +32,22 @@ import { WhatsAppLeadButton } from "../components/WhatsAppLeadButton";
 import { DialpadPhoneText } from "../components/DialpadPhoneText";
 import { EmailComposeButton } from "../components/EmailComposeLink";
 import { Pagination } from "../components/Pagination";
+import { ActionButton } from "../components/ui/ActionButton";
+import {
+  IconCheck,
+  IconCheckSquare,
+  IconDownload,
+  IconEdit,
+  IconHeart,
+  IconMail,
+  IconRefresh,
+  IconSearch,
+  IconTrash,
+  IconUpload,
+  IconWhatsApp,
+  IconX,
+  IconXCircle,
+} from "../components/icons/AppIcons";
 import { exportLeadsTableCsv } from "../utils/exportCsv";
 import { UNASSIGNED } from "../utils/leadAssignees";
 import {
@@ -1810,17 +1826,18 @@ export function LeadsTablePage({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {canImportSpreadsheet && (
-            <button
-              type="button"
+            <ActionButton
+              icon={IconUpload}
+              variant="violet"
               onClick={() => setShowCsvImport(true)}
               disabled={bulkOnboarding || deletingSelected || deletingId !== null || editMode}
-              className="px-3 py-1.5 rounded-lg bg-violet-700 hover:bg-violet-600 border border-violet-600/50 text-sm font-medium disabled:opacity-50"
+              title="Import spreadsheet"
             >
               Import spreadsheet
-            </button>
+            </ActionButton>
           )}
-          <button
-            type="button"
+          <ActionButton
+            icon={IconCheckSquare}
             onClick={() => void selectAllMatching()}
             disabled={
               filteredCount === 0 ||
@@ -1831,26 +1848,27 @@ export function LeadsTablePage({
               deletingId !== null ||
               editMode
             }
-            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm font-medium disabled:opacity-50"
+            title="Select all matching"
           >
             {selectingAll
               ? "Selecting all…"
               : allMatchingAreSelected
                 ? `All ${filteredCount} selected`
-                : `Select all matching (${filteredCount})`}
-          </button>
+                : `Select all (${filteredCount})`}
+          </ActionButton>
           {selected.size > 0 && (
-            <button
-              type="button"
+            <ActionButton
+              icon={IconX}
               onClick={clearSelection}
               disabled={bulkOnboarding || deletingSelected || deletingId !== null || editMode}
-              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm disabled:opacity-50"
+              title="Clear selection"
             >
-              Clear selection
-            </button>
+              Clear
+            </ActionButton>
           )}
-          <button
-            type="button"
+          <ActionButton
+            icon={IconMail}
+            variant="sky"
             onClick={() => void openBulkMailer()}
             disabled={
               selected.size === 0 ||
@@ -1860,14 +1878,13 @@ export function LeadsTablePage({
               editMode ||
               openingMailer
             }
-            className="px-3 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-600 border border-sky-600/50 text-sm font-medium disabled:opacity-50"
+            title="Send emails"
           >
-            {openingMailer
-              ? "Opening mailer…"
-              : `Send emails (${selected.size})`}
-          </button>
-          <button
-            type="button"
+            {openingMailer ? "Opening mailer…" : `Send emails (${selected.size})`}
+          </ActionButton>
+          <ActionButton
+            icon={IconWhatsApp}
+            variant="emerald"
             onClick={() => {
               setWhatsappTargetIds([...selected]);
               setShowBulkWhatsApp(true);
@@ -1879,13 +1896,14 @@ export function LeadsTablePage({
               deletingId !== null ||
               editMode
             }
-            className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 border border-emerald-600/50 text-sm font-medium disabled:opacity-50 inline-flex items-center gap-1.5"
+            title="Send WhatsApp"
           >
-            Send WhatsApp ({selected.size})
-          </button>
+            WhatsApp ({selected.size})
+          </ActionButton>
           {canMoveToInterestedClients && (
-            <button
-              type="button"
+            <ActionButton
+              icon={IconHeart}
+              variant="violet"
               onClick={() => void moveSelectedToInterestedClients(true)}
               disabled={
                 selected.size === 0 ||
@@ -1894,14 +1912,14 @@ export function LeadsTablePage({
                 deletingId !== null ||
                 editMode
               }
-              className="px-3 py-1.5 rounded-lg bg-violet-700 hover:bg-violet-600 border border-violet-600/50 text-sm font-medium disabled:opacity-50"
+              title="Move to Interested Clients"
             >
-              Move to Interested Clients ({selected.size})
-            </button>
+              To Interested ({selected.size})
+            </ActionButton>
           )}
           {section === "sales_interested_clients" && (
-            <button
-              type="button"
+            <ActionButton
+              icon={IconXCircle}
               onClick={() => void moveSelectedToInterestedClients(false)}
               disabled={
                 selected.size === 0 ||
@@ -1910,13 +1928,14 @@ export function LeadsTablePage({
                 deletingId !== null ||
                 editMode
               }
-              className="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 border border-slate-600/50 text-sm font-medium disabled:opacity-50"
+              title="Remove from Interested Clients"
             >
-              Remove from Interested Clients ({selected.size})
-            </button>
+              Remove Interested ({selected.size})
+            </ActionButton>
           )}
-          <button
-            type="button"
+          <ActionButton
+            icon={IconSearch}
+            variant="emerald"
             onClick={() => void bulkResearchAndScore()}
             disabled={
               selected.size === 0 ||
@@ -1926,16 +1945,17 @@ export function LeadsTablePage({
               deduping ||
               editMode
             }
-            className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 border border-emerald-600/50 text-sm font-medium disabled:opacity-50"
+            title="Research and score"
           >
             {bulkOnboarding
               ? actionProgress?.mode === "determinate" && actionProgress.total
                 ? `Researching ${actionProgress.current ?? 0}/${actionProgress.total}…`
                 : "Starting…"
-              : `Research & score (${selected.size})`}
-          </button>
-          <button
-            type="button"
+              : `Research (${selected.size})`}
+          </ActionButton>
+          <ActionButton
+            icon={IconTrash}
+            variant="danger"
             onClick={() => void deleteRows([...selected])}
             disabled={
               selected.size === 0 ||
@@ -1944,17 +1964,18 @@ export function LeadsTablePage({
               bulkOnboarding ||
               deduping
             }
-            className="px-3 py-1.5 rounded-lg bg-red-900/60 hover:bg-red-800 border border-red-800/60 text-sm text-red-200 disabled:opacity-50"
+            title="Delete selected"
           >
             {deletingSelected
               ? actionProgress?.mode === "determinate" && actionProgress.total
                 ? `Deleting ${actionProgress.current ?? 0}/${actionProgress.total}…`
                 : "Deleting…"
-              : `Delete selected (${selected.size})`}
-          </button>
+              : `Delete (${selected.size})`}
+          </ActionButton>
           {isOldClients && (
-            <button
-              type="button"
+            <ActionButton
+              icon={IconTrash}
+              variant="amber"
               onClick={() => void removeEmptyImports()}
               disabled={
                 deduping ||
@@ -1963,16 +1984,17 @@ export function LeadsTablePage({
                 bulkOnboarding ||
                 deletingSelected
               }
-              className="px-3 py-1.5 rounded-lg bg-amber-900/60 hover:bg-amber-800 border border-amber-800/60 text-sm text-amber-100 disabled:opacity-50"
+              title="Remove empty imports"
             >
               {deduping && actionProgress?.title.includes("empty")
                 ? "Cleaning…"
-                : "Remove empty imports"}
-            </button>
+                : "Remove empty"}
+            </ActionButton>
           )}
           {isOldClients && (
-            <button
-              type="button"
+            <ActionButton
+              icon={IconEdit}
+              variant="sky"
               onClick={() => void repairLocationAsCompanyNames()}
               disabled={
                 deduping ||
@@ -1981,16 +2003,15 @@ export function LeadsTablePage({
                 bulkOnboarding ||
                 deletingSelected
               }
-              className="px-3 py-1.5 rounded-lg bg-sky-900/60 hover:bg-sky-800 border border-sky-800/60 text-sm text-sky-100 disabled:opacity-50"
               title="Move city/country/address out of Company Name and recover the real company"
             >
               {deduping && actionProgress?.title.includes("location-as-company")
                 ? "Fixing names…"
-                : "Fix location names"}
-            </button>
+                : "Fix names"}
+            </ActionButton>
           )}
-          <button
-            type="button"
+          <ActionButton
+            icon={IconRefresh}
             onClick={() => void removeDuplicates()}
             disabled={
               deduping ||
@@ -1999,15 +2020,16 @@ export function LeadsTablePage({
               bulkOnboarding ||
               deletingSelected
             }
-            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm disabled:opacity-50"
+            title="Remove duplicates"
           >
             {deduping && actionProgress?.title.includes("duplicate")
               ? "Removing duplicates…"
-              : "Remove duplicates"}
-          </button>
+              : "Deduplicate"}
+          </ActionButton>
           {isAdmin && section === "all" && (
-            <button
-              type="button"
+            <ActionButton
+              icon={IconXCircle}
+              variant="violet"
               onClick={() => void removeOldClientOverlaps()}
               disabled={
                 deduping ||
@@ -2015,24 +2037,24 @@ export function LeadsTablePage({
                 bulkOnboarding ||
                 deletingSelected
               }
-              className="px-3 py-1.5 rounded-lg bg-violet-900/60 hover:bg-violet-800 border border-violet-700/50 text-sm text-violet-100 disabled:opacity-50"
               title="Delete Scrapped Leads rows that match Old clients by name or website"
             >
               {deduping && actionProgress?.title.includes("Old clients")
                 ? "Cleaning overlaps…"
-                : "Remove old-client overlaps"}
-            </button>
+                : "Remove overlaps"}
+            </ActionButton>
           )}
-          <button
-            type="button"
+          <ActionButton
+            icon={IconDownload}
             onClick={() => exportLeadsTableCsv(rows)}
             disabled={rows.length === 0}
-            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm disabled:opacity-50"
+            title="Export Excel"
           >
-            Export Excel
-          </button>
-          <button
-            type="button"
+            Export
+          </ActionButton>
+          <ActionButton
+            icon={editMode ? IconCheck : IconEdit}
+            variant={editMode ? "amber" : "primary"}
             onClick={() => {
               if (editMode) {
                 void finishEditing();
@@ -2041,14 +2063,10 @@ export function LeadsTablePage({
               }
             }}
             disabled={savingAll}
-            className={`px-3 py-1.5 rounded-lg text-sm font-medium disabled:opacity-50 ${
-              editMode
-                ? "bg-amber-600 hover:bg-amber-500"
-                : "bg-emerald-600 hover:bg-emerald-500"
-            }`}
+            title={editMode ? "Done editing" : "Edit table"}
           >
-            {savingAll ? "Saving…" : editMode ? "Done editing" : "Edit table"}
-          </button>
+            {savingAll ? "Saving…" : editMode ? "Done" : "Edit"}
+          </ActionButton>
         </div>
       </div>
 

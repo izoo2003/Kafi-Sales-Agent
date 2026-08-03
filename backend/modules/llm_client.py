@@ -69,6 +69,34 @@ def _load_prompt(filename: str) -> str:
     return ""
 
 
+_EMAIL_REPLY_STANDARDS_FALLBACK = (
+    "## Email reply standards (mandatory)\n"
+    "1. Concise — Prefer short replies (about 80–120 words). Longer only when the "
+    "customer clearly asked for detail, specs, or a full quotation explanation.\n"
+    "2. Specific — Address their actual question or next step; reference a concrete "
+    "point from their message when useful.\n"
+    "3. Inquiry-related — Stay on this customer’s inquiry; do not pad with generic "
+    "catalogs or company history.\n"
+    "4. No unsolicited essays — Avoid long explanations unless specifically requested.\n"
+    "5. Professional plain text — no invented prices, MOQs, or commitments."
+)
+
+
+def email_reply_standards() -> str:
+    """Shared rules for every customer-facing email reply / draft."""
+    text = _load_prompt("email_reply_standards.md").strip()
+    return text or _EMAIL_REPLY_STANDARDS_FALLBACK
+
+
+def with_email_reply_standards(prompt: str) -> str:
+    """Prepend mandatory reply standards to an LLM email prompt."""
+    body = (prompt or "").strip()
+    standards = email_reply_standards()
+    if not body:
+        return standards
+    return f"{standards}\n\n---\n\n{body}"
+
+
 def _parse_csv_env(value: str | None) -> list[str]:
     if not value or not value.strip():
         return []
@@ -388,16 +416,24 @@ class LLMClient:
         if not self.enabled:
             return fallback_body
         template = _load_prompt("email_draft_prompt.md")
-        prompt = _apply_prompt_template(
-            template,
-            buyer_country=buyer_country or "International",
-            target_language=target_language or "English",
-            buyer_context=buyer_context[:1200],
-            goal=goal,
-            product_specs=product_specs[:800],
+        prompt = with_email_reply_standards(
+            _apply_prompt_template(
+                template,
+                buyer_country=buyer_country or "International",
+                target_language=target_language or "English",
+                buyer_context=buyer_context[:1200],
+                goal=goal,
+                product_specs=product_specs[:800],
+            )
         )
         try:
-            return self.generate(prompt)
+            return self.generate(
+                prompt,
+                system=(
+                    "You write concise, inquiry-specific B2B emails for Kafi Commodities. "
+                    "Avoid long explanations unless the buyer asked for detail."
+                ),
+            )
         except Exception:
             return fallback_body
 

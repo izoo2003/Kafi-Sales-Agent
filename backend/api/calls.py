@@ -229,10 +229,24 @@ def list_lead_calls(
     )
 
 
+def _generate_personalized_followup(draft_id: int) -> None:
+    from db.session import SessionLocal
+    from modules import personalized_followups as pf_module
+
+    db = SessionLocal()
+    try:
+        pf_module.generate_draft_content(db, draft_id)
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        db.close()
+
+
 @router.patch("/calls/{interaction_id}/notes", response_model=CallHistoryItem)
 def update_call_notes(
     interaction_id: int,
     payload: CallNotesRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
@@ -246,6 +260,19 @@ def update_call_notes(
         )
     except ValueError as exc:
         raise HTTPException(400 if "Invalid call outcome" in str(exc) else 404, str(exc)) from exc
+
+    outcome = (result.get("call_outcome") or "").strip().lower()
+    if outcome in {"interested", "follow_up"}:
+        from db.models import PersonalizedFollowupDraft
+
+        draft = (
+            db.query(PersonalizedFollowupDraft)
+            .filter(PersonalizedFollowupDraft.interaction_id == interaction_id)
+            .one_or_none()
+        )
+        if draft and draft.status in {"awaiting_transcript", "failed", "generating"}:
+            background_tasks.add_task(_generate_personalized_followup, draft.id)
+
     return CallHistoryItem(**result)
 
 

@@ -6,6 +6,14 @@ import {
   type WhatsAppCampaignDraftResponse,
   type WhatsAppTemplate,
 } from "../api/client";
+import { ActionButton } from "./ui/ActionButton";
+import {
+  IconExternal,
+  IconSend,
+  IconTemplate,
+  IconWhatsApp,
+  IconX,
+} from "./icons/AppIcons";
 
 type ComposeTab = "personal" | "template";
 
@@ -399,53 +407,57 @@ export function LeadWhatsAppComposeModal({
         </div>
 
         <div className="p-5 border-t border-slate-800 flex flex-wrap justify-end gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm"
-          >
+          <ActionButton icon={IconX} size="md" onClick={onClose} title="Cancel">
             Cancel
-          </button>
+          </ActionButton>
           {tab === "personal" ? (
             <>
               {!withinSessionWindow && (
-                <button
-                  type="button"
+                <ActionButton
+                  icon={IconTemplate}
+                  size="md"
                   onClick={() => setTab("template")}
-                  className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm"
+                  title="Use approved template"
                 >
-                  Use approved template
-                </button>
+                  Use template
+                </ActionButton>
               )}
               {!withinSessionWindow ? (
                 <a
                   href={waDeepLink}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium inline-flex items-center"
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium text-white border border-emerald-500/40"
+                  title="Open in WhatsApp"
                 >
+                  <IconWhatsApp size="sm" />
                   Open in WhatsApp
+                  <IconExternal size="xs" className="opacity-80" />
                 </a>
               ) : (
-                <button
-                  type="button"
+                <ActionButton
+                  icon={IconSend}
+                  variant="primary"
+                  size="md"
                   onClick={() => void handleSendPersonal()}
                   disabled={sending || resolvingContact || !canSendPersonalViaApi}
-                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium disabled:opacity-50"
+                  title="Send message"
                 >
                   {sending ? "Sending…" : "Send message"}
-                </button>
+                </ActionButton>
               )}
             </>
           ) : (
-            <button
-              type="button"
+            <ActionButton
+              icon={IconSend}
+              variant="primary"
+              size="md"
               onClick={() => void handleSendTemplate()}
               disabled={sending || !templateId || templates.length === 0}
-              className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium disabled:opacity-50"
+              title="Send from template"
             >
-              {sending ? "Sending…" : "Send from template"}
-            </button>
+              {sending ? "Sending…" : "Send template"}
+            </ActionButton>
           )}
         </div>
       </div>

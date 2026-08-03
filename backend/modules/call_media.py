@@ -246,4 +246,15 @@ def transcribe_call_recording(db: Session, *, interaction_id: int) -> dict[str, 
     _set_call_media(interaction, media)
     db.commit()
     db.refresh(interaction)
+
+    try:
+        from modules.personalized_followups import maybe_generate_for_interaction
+
+        maybe_generate_for_interaction(db, interaction_id)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Personalized follow-up draft generation failed for interaction %s",
+            interaction_id,
+        )
+
     return media

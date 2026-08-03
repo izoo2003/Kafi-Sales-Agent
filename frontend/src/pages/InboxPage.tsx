@@ -17,6 +17,20 @@ import {
   type MailSection,
 } from "../components/AppSidebar";
 import { ComposeMailModal } from "../components/ComposeMailModal";
+import { ActionButton } from "../components/ui/ActionButton";
+import {
+  IconArchive,
+  IconFilter,
+  IconInbox,
+  IconPlus,
+  IconRefresh,
+  IconReply,
+  IconSend,
+  IconSparkles,
+  IconTag,
+  IconTrash,
+  IconX,
+} from "../components/icons/AppIcons";
 import { alertNewInboxMessage, unlockNotificationAudio } from "../utils/notify";
 
 interface InboxPageProps {
@@ -797,7 +811,11 @@ export function InboxPage({
     return date.toLocaleString();
   }
 
-  if (section === "activity" || section === "email-templates") {
+  if (
+    section === "activity" ||
+    section === "email-templates" ||
+    section === "personalized-emails"
+  ) {
     return null;
   }
 
@@ -927,8 +945,10 @@ export function InboxPage({
           )}
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <button
-            type="button"
+          <ActionButton
+            icon={IconPlus}
+            variant="primary"
+            size="md"
             onClick={() => {
               if (onOpenMailerCompose) {
                 onOpenMailerCompose();
@@ -937,10 +957,10 @@ export function InboxPage({
               setComposeDraft(null);
               setShowCompose(true);
             }}
-            className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium"
+            title="Compose"
           >
             Compose
-          </button>
+          </ActionButton>
           <form
             className="flex flex-wrap items-center gap-2"
             onSubmit={(e) => {
@@ -963,33 +983,37 @@ export function InboxPage({
               title="e.g. amazon.com or https://amazon.com — matching mail leaves Inbox"
               className="w-44 sm:w-52 rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-2 text-sm text-slate-100 placeholder:text-slate-600"
             />
-            <button
+            <ActionButton
+              icon={IconTag}
               type="submit"
+              size="md"
               disabled={creatingLabel || !newLabelName.trim()}
-              className="px-3 py-2 rounded-lg border border-slate-700 text-slate-300 text-sm hover:bg-slate-800 disabled:opacity-50"
+              title="Create label"
             >
               {creatingLabel ? "…" : "Create label"}
-            </button>
+            </ActionButton>
           </form>
           {section === "trash" && (
-            <button
-              type="button"
+            <ActionButton
+              icon={IconTrash}
+              variant="danger"
+              size="md"
               onClick={() => void handleEmptyTrash()}
               disabled={emptyingTrash || messages.length === 0}
-              className="px-3 py-2 rounded-lg bg-red-900/50 hover:bg-red-800 border border-red-800/50 text-red-100 text-sm disabled:opacity-50"
+              title="Empty Trash"
             >
               {emptyingTrash ? "Emptying…" : "Empty Trash"}
-            </button>
+            </ActionButton>
           )}
           {section === "inbox" && (
-            <button
-              type="button"
+            <ActionButton
+              icon={IconFilter}
+              size="md"
               onClick={() => void resetCutoff()}
-              className="px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-sm"
               title="Hide mail received before right now"
             >
               New mail only
-            </button>
+            </ActionButton>
           )}
           {isFolderMail && section !== "sent" && !isDraftsView && (
             <label className="flex items-center gap-2 text-sm text-slate-400">
@@ -1002,13 +1026,14 @@ export function InboxPage({
               Unread only
             </label>
           )}
-          <button
-            type="button"
+          <ActionButton
+            icon={IconRefresh}
+            size="md"
             onClick={() => void loadList()}
-            className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm"
+            title="Refresh"
           >
             Refresh
-          </button>
+          </ActionButton>
           {section === "inbox" && (
             <button
               type="button"
@@ -1286,30 +1311,32 @@ export function InboxPage({
                           </div>
                         )}
                       </div>
-                      <button
-                        type="button"
+                      <ActionButton
+                        icon={IconArchive}
                         onClick={() => void moveThread("archive")}
                         disabled={moving}
-                        className="shrink-0 px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 text-sm hover:bg-slate-900 disabled:opacity-50"
+                        title="Archive"
                       >
                         Archive
-                      </button>
-                      <button
-                        type="button"
+                      </ActionButton>
+                      <ActionButton
+                        icon={IconTrash}
+                        variant="rose"
                         onClick={() => void moveThread("trash")}
                         disabled={moving}
-                        className="shrink-0 px-3 py-1.5 rounded-lg border border-red-800/50 text-red-200 text-sm hover:bg-red-950/40 disabled:opacity-50"
+                        title="Move to Trash"
                       >
-                        Move to Trash
-                      </button>
+                        Trash
+                      </ActionButton>
                       {!showReplyForm && (
-                        <button
-                          type="button"
+                        <ActionButton
+                          icon={aiAnalysis?.draft_reply ? IconSparkles : IconReply}
+                          variant="primary"
                           onClick={startReply}
-                          className="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium"
+                          title={aiAnalysis?.draft_reply ? "Use AI draft" : "Reply"}
                         >
-                          {aiAnalysis?.draft_reply ? "Use AI draft" : "Reply"}
-                        </button>
+                          {aiAnalysis?.draft_reply ? "AI draft" : "Reply"}
+                        </ActionButton>
                       )}
                     </div>
                   </div>
@@ -1332,23 +1359,27 @@ export function InboxPage({
                       </div>
                       <div className="flex flex-wrap gap-2">
                         {selectedThreadId && (
-                          <button
-                            type="button"
+                          <ActionButton
+                            icon={IconRefresh}
+                            size="sm"
                             onClick={() => void runThreadAnalyze(selectedThreadId)}
                             disabled={aiLoading}
-                            className="px-2.5 py-1 rounded-lg border border-sky-500/40 text-sky-200 text-xs hover:bg-sky-500/10 disabled:opacity-50"
+                            title="Refresh analysis"
+                            className="border-sky-500/40 text-sky-200"
                           >
                             Refresh analysis
-                          </button>
+                          </ActionButton>
                         )}
                         {aiAnalysis?.draft_reply && !showReplyForm && (
-                          <button
-                            type="button"
+                          <ActionButton
+                            icon={IconSparkles}
+                            variant="primary"
+                            size="sm"
                             onClick={() => applyAiDraftToReplyForm(aiAnalysis)}
-                            className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium"
+                            title="Edit and send draft"
                           >
-                            Edit &amp; send draft
-                          </button>
+                            Edit &amp; send
+                          </ActionButton>
                         )}
                       </div>
                     </div>
@@ -1456,25 +1487,28 @@ export function InboxPage({
                       autoFocus
                     />
                     <div className="flex justify-end gap-2">
-                      <button
-                        type="button"
+                      <ActionButton
+                        icon={IconX}
+                        size="md"
                         onClick={() => {
                           setShowReplyForm(false);
                           setReplyBody("");
                           setNotice(null);
                         }}
-                        className="px-3 py-2 rounded-lg border border-slate-700 text-slate-300 text-sm hover:bg-slate-900"
+                        title="Cancel"
                       >
                         Cancel
-                      </button>
-                      <button
-                        type="button"
+                      </ActionButton>
+                      <ActionButton
+                        icon={IconSend}
+                        variant="primary"
+                        size="md"
                         onClick={() => void sendReply()}
                         disabled={sending || !replyBody.trim() || !replyTo.trim()}
-                        className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium disabled:opacity-50"
+                        title="Send reply"
                       >
                         {sending ? "Sending…" : "Send reply"}
-                      </button>
+                      </ActionButton>
                     </div>
                   </div>
                 )}
@@ -1562,53 +1596,56 @@ export function InboxPage({
                       )}
                     </div>
                     {(section === "trash" || section === "archive") && (
-                      <button
-                        type="button"
+                      <ActionButton
+                        icon={IconInbox}
                         onClick={() => void moveSelectedMessage("inbox")}
                         disabled={moving}
-                        className="shrink-0 px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 text-sm hover:bg-slate-900 disabled:opacity-50"
+                        title="Restore to Inbox"
                       >
-                        Restore to Inbox
-                      </button>
+                        Restore
+                      </ActionButton>
                     )}
                     {section === "archive" && (
-                      <button
-                        type="button"
+                      <ActionButton
+                        icon={IconTrash}
+                        variant="rose"
                         onClick={() => void moveSelectedMessage("trash")}
                         disabled={moving}
-                        className="shrink-0 px-3 py-1.5 rounded-lg border border-red-800/50 text-red-200 text-sm hover:bg-red-950/40 disabled:opacity-50"
+                        title="Move to Trash"
                       >
-                        Move to Trash
-                      </button>
+                        Trash
+                      </ActionButton>
                     )}
                     {section === "sent" && (
                       <>
-                        <button
-                          type="button"
+                        <ActionButton
+                          icon={IconArchive}
                           onClick={() => void moveSelectedMessage("archive")}
                           disabled={moving}
-                          className="shrink-0 px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 text-sm hover:bg-slate-900 disabled:opacity-50"
+                          title="Archive"
                         >
                           Archive
-                        </button>
-                        <button
-                          type="button"
+                        </ActionButton>
+                        <ActionButton
+                          icon={IconTrash}
+                          variant="rose"
                           onClick={() => void moveSelectedMessage("trash")}
                           disabled={moving}
-                          className="shrink-0 px-3 py-1.5 rounded-lg border border-red-800/50 text-red-200 text-sm hover:bg-red-950/40 disabled:opacity-50"
+                          title="Move to Trash"
                         >
-                          Move to Trash
-                        </button>
+                          Trash
+                        </ActionButton>
                       </>
                     )}
                     {section !== "sent" && !showReplyForm && (
-                      <button
-                        type="button"
+                      <ActionButton
+                        icon={aiAnalysis?.draft_reply ? IconSparkles : IconReply}
+                        variant="primary"
                         onClick={startReply}
-                        className="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium"
+                        title={aiAnalysis?.draft_reply ? "Use AI draft" : "Reply"}
                       >
-                        {aiAnalysis?.draft_reply ? "Use AI draft" : "Reply"}
-                      </button>
+                        {aiAnalysis?.draft_reply ? "AI draft" : "Reply"}
+                      </ActionButton>
                     )}
                   </div>
                 </div>
@@ -1732,25 +1769,28 @@ export function InboxPage({
                     autoFocus
                   />
                   <div className="flex justify-end gap-2">
-                    <button
-                      type="button"
+                    <ActionButton
+                      icon={IconX}
+                      size="md"
                       onClick={() => {
                         setShowReplyForm(false);
                         setReplyBody("");
                         setNotice(null);
                       }}
-                      className="px-3 py-2 rounded-lg border border-slate-700 text-slate-300 text-sm hover:bg-slate-900"
+                      title="Cancel"
                     >
                       Cancel
-                    </button>
-                    <button
-                      type="button"
+                    </ActionButton>
+                    <ActionButton
+                      icon={IconSend}
+                      variant="primary"
+                      size="md"
                       onClick={() => void sendReply()}
                       disabled={sending || !replyBody.trim() || !replyTo.trim()}
-                      className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium disabled:opacity-50"
+                      title="Send reply"
                     >
                       {sending ? "Sending…" : "Send reply"}
-                    </button>
+                    </ActionButton>
                   </div>
                 </div>
               )}

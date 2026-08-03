@@ -3,6 +3,8 @@ import { client } from "../api/client";
 import { useTwilioVoice } from "../hooks/useTwilioVoice";
 import { type CallOutcome, callOutcomeSectionHint } from "../utils/callOutcomes";
 import { CallRemarksForm } from "./CallRemarksForm";
+import { ActionButton } from "./ui/ActionButton";
+import { IconX } from "./icons/AppIcons";
 
 interface PostCallRemarksModalProps {
   onError: (message: string) => void;
@@ -76,13 +78,15 @@ export function PostCallRemarksModal({ onError, onSaved }: PostCallRemarksModalP
           saveLabel="Save and close"
           compact
         />
-        <button
-          type="button"
+        <ActionButton
+          icon={IconX}
+          variant="ghost"
           onClick={dismiss}
-          className="text-sm text-slate-400 hover:text-slate-200"
+          title="Skip for now"
+          className="text-slate-400"
         >
           Skip for now
-        </button>
+        </ActionButton>
       </div>
     </div>
   );

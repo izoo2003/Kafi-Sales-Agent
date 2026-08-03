@@ -18,6 +18,7 @@ from modules.llm_client import (
     _is_retryable_model_error,
     _load_prompt,
     _resolve_model_name,
+    with_email_reply_standards,
 )
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
@@ -158,18 +159,22 @@ def draft_query_email_reply(
         )
 
     form_clause = (form_url or "").strip() or "our team will share the form link with you shortly"
-    prompt = _apply_prompt_template(
-        template,
-        sender_name=sender_name or greeting_name or "Sir/Madam",
-        greeting_name=greeting_name or "Sir/Madam",
-        sender_email=sender_email or "",
-        subject=subject or "(no subject)",
-        inbound_body=(inbound_body or subject or "")[:4000],
-        form_url=form_clause,
-        template_hint=(template_hint or "")[:1500],
+    prompt = with_email_reply_standards(
+        _apply_prompt_template(
+            template,
+            sender_name=sender_name or greeting_name or "Sir/Madam",
+            greeting_name=greeting_name or "Sir/Madam",
+            sender_email=sender_email or "",
+            subject=subject or "(no subject)",
+            inbound_body=(inbound_body or subject or "")[:4000],
+            form_url=form_clause,
+            template_hint=(template_hint or "")[:1500],
+        )
     )
     system = (
         "You write B2B export sales emails for Kafi Commodities. "
+        "Keep replies concise, specific, and inquiry-related; "
+        "avoid long explanations unless the customer asked for detail. "
         "Output plain text email body only."
     )
 
@@ -233,21 +238,25 @@ def draft_auto_reply_message(
         )
 
     form_clause = (form_url or "").strip() or "our team will share the form link with you shortly"
-    prompt = _apply_prompt_template(
-        template,
-        channel=channel,
-        sender_name=sender_name or greeting_name or "there",
-        sender_email=sender_email or "",
-        greeting_name=greeting_name or "Sir/Madam",
-        person_name=greeting_name or "",
-        company_name=company_name or "",
-        inbound_body=(inbound_body or "")[:3500],
-        company_research=(company_research or "No additional company information found.")[:2500],
-        form_url=form_clause,
-        template_hint=(template_hint or "")[:1200],
+    prompt = with_email_reply_standards(
+        _apply_prompt_template(
+            template,
+            channel=channel,
+            sender_name=sender_name or greeting_name or "there",
+            sender_email=sender_email or "",
+            greeting_name=greeting_name or "Sir/Madam",
+            person_name=greeting_name or "",
+            company_name=company_name or "",
+            inbound_body=(inbound_body or "")[:3500],
+            company_research=(company_research or "No additional company information found.")[:2500],
+            form_url=form_clause,
+            template_hint=(template_hint or "")[:1200],
+        )
     )
     system = (
         "You write after-hours auto-replies for Kafi Commodities export sales. "
+        "Keep replies concise, specific, and directly related to the inquiry; "
+        "avoid long explanations unless requested. "
         "Output plain text only."
     )
     max_tokens = 768 if channel == "whatsapp" else int(

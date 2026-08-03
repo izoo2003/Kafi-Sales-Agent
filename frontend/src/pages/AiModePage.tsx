@@ -27,6 +27,7 @@ import {
   QuotationMeetingControl,
   type QuotationMeetingStatus,
 } from "../components/QuotationMeetingControl";
+import { deriveWhatsAppFromEmail } from "../utils/channelSync";
 
 interface AiModePageProps {
   onError: (message: string) => void;
@@ -987,28 +988,34 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
             </div>
             <div>
               <label className="block text-xs text-slate-500 mb-1">
-                Email body — placeholders: {"{name}"}, {"{form_clause}"}, {"{form_url}"}
+                Email body (source of truth) — placeholders: {"{name}"}, {"{form_clause}"},{" "}
+                {"{form_url}"}
               </label>
               <textarea
                 value={draft.email_body_template}
-                onChange={(e) =>
-                  setDraft({ ...draft, email_body_template: e.target.value })
-                }
+                onChange={(e) => {
+                  const email_body_template = e.target.value;
+                  setDraft({
+                    ...draft,
+                    email_body_template,
+                    // Keep WhatsApp synchronized with the same information.
+                    whatsapp_body_template: deriveWhatsAppFromEmail(email_body_template),
+                  });
+                }}
                 rows={8}
                 className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 font-mono"
               />
             </div>
             <div>
               <label className="block text-xs text-slate-500 mb-1">
-                WhatsApp body — same placeholders
+                WhatsApp body — synced from email (same information on both channels)
               </label>
               <textarea
                 value={draft.whatsapp_body_template}
-                onChange={(e) =>
-                  setDraft({ ...draft, whatsapp_body_template: e.target.value })
-                }
+                readOnly
                 rows={6}
-                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 font-mono"
+                title="Mirrors the email body so customers get the same information"
+                className="w-full rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-sm text-slate-300 font-mono"
               />
             </div>
             <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
