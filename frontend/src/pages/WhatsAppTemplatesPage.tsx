@@ -23,7 +23,15 @@ const STATUS_STYLES: Record<string, string> = {
 
 type WhatsAppTemplateCategory = WhatsAppTemplateCreatePayload["category"];
 
-const DEFAULT_CREATE_FORM: WhatsAppTemplateCreatePayload = {
+interface WhatsAppTemplateCreateForm {
+  name: string;
+  category: WhatsAppTemplateCategory;
+  language: string;
+  body: string;
+  footer: string;
+}
+
+const DEFAULT_CREATE_FORM: WhatsAppTemplateCreateForm = {
   name: "kafi_product_intro",
   category: "UTILITY",
   language: "en_US",
@@ -65,7 +73,7 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
 
   const [showCreator, setShowCreator] = useState(false);
   const [createForm, setCreateForm] =
-    useState<WhatsAppTemplateCreatePayload>(DEFAULT_CREATE_FORM);
+    useState<WhatsAppTemplateCreateForm>(DEFAULT_CREATE_FORM);
   const [submitting, setSubmitting] = useState(false);
 
   const [testPhone, setTestPhone] = useState("");
