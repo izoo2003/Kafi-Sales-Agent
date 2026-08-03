@@ -6,7 +6,7 @@ from fastapi import Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from db.models import AppUser, AppUserRole
-from db.session import get_db
+from db.session import SessionLocal, get_db
 from modules import auth as auth_module
 
 __all__ = [
@@ -14,6 +14,7 @@ __all__ = [
     "get_session_token",
     "get_bearer_token",
     "get_current_user",
+    "get_current_user_released",
     "require_admin",
 ]
 
@@ -54,6 +55,43 @@ def get_current_user(
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return user
+
+
+def get_current_user_released(
+    request: Request,
+    token: str | None = Depends(get_session_token),
+) -> AppUser:
+    """Load the user then close the DB session before the route runs.
+
+    Use on IMAP/SMTP/LLM routes so long I/O does not pin a QueuePool connection
+    (that was exhausting the pool under CRM + inbox polling on Railway).
+    """
+    db = SessionLocal()
+    try:
+        user_id = getattr(request.state, "user_id", None)
+        user: AppUser | None = None
+        if user_id is not None:
+            user = db.get(AppUser, int(user_id))
+            if user and not user.is_active:
+                user = None
+        if user is None:
+            user = auth_module.get_user_by_token(db, token)
+        if not user:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        # Touch column attrs so they remain available after expunge.
+        _ = (
+            user.id,
+            user.username,
+            user.role,
+            user.mailbox_email,
+            user.mailbox_password_encrypted,
+            user.mailbox_display_name,
+            user.mailbox_enabled,
+        )
+        db.expunge(user)
+        return user
+    finally:
+        db.close()
 
 
 def require_admin(user: AppUser = Depends(get_current_user)) -> AppUser:

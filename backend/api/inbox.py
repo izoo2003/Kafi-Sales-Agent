@@ -1,9 +1,9 @@
 """Inbox API — per-user IMAP mailbox and replies from the dashboard."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
 
-from api.deps import get_current_user, get_db
+from api.deps import get_current_user_released
+from db.session import SessionLocal
 from api.schemas import (
     InboxAnalyzeRequest,
     InboxAnalyzeResponse,
@@ -51,28 +51,28 @@ def _inbox_error_message(exc: Exception) -> str:
 
 
 @router.get("/status", response_model=InboxStatus)
-def inbox_status(user: AppUser = Depends(get_current_user)):
+def inbox_status(user: AppUser = Depends(get_current_user_released)):
     return inbox_module.status(user)
 
 
 @router.get("/folders", response_model=InboxFoldersResponse)
-def inbox_folders(user: AppUser = Depends(get_current_user)):
+def inbox_folders(user: AppUser = Depends(get_current_user_released)):
     return inbox_module.list_folders(user)
 
 
 @router.get("/unread-count", response_model=InboxUnreadCount)
-def inbox_unread_count(user: AppUser = Depends(get_current_user)):
+def inbox_unread_count(user: AppUser = Depends(get_current_user_released)):
     return {"count": inbox_module.unread_count(user)}
 
 
 @router.post("/reset-cutoff")
-def reset_inbox_cutoff(user: AppUser = Depends(get_current_user)):
+def reset_inbox_cutoff(user: AppUser = Depends(get_current_user_released)):
     _guard_configured(user)
     return inbox_module.reset_cutoff(user)
 
 
 @router.post("/clear-cutoff")
-def clear_inbox_cutoff(user: AppUser = Depends(get_current_user)):
+def clear_inbox_cutoff(user: AppUser = Depends(get_current_user_released)):
     """Show all mailbox mail again (undo 'New mail only')."""
     _guard_configured(user)
     return inbox_module.clear_cutoff(user)
@@ -82,7 +82,7 @@ def clear_inbox_cutoff(user: AppUser = Depends(get_current_user)):
 def list_inbox_threads(
     limit: int = Query(default=30, ge=1, le=100),
     unread_only: bool = Query(default=False),
-    user: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user_released),
 ):
     _guard_configured(user)
     try:
@@ -92,7 +92,7 @@ def list_inbox_threads(
 
 
 @router.get("/threads/{thread_id}", response_model=InboxThreadDetail)
-def get_inbox_thread(thread_id: str, user: AppUser = Depends(get_current_user)):
+def get_inbox_thread(thread_id: str, user: AppUser = Depends(get_current_user_released)):
     _guard_configured(user)
     try:
         thread = inbox_module.get_thread(user, thread_id)
@@ -106,8 +106,7 @@ def get_inbox_thread(thread_id: str, user: AppUser = Depends(get_current_user)):
 @router.post("/compose", response_model=InboxComposeResponse)
 def compose_inbox_mail(
     payload: InboxComposeRequest,
-    db: Session = Depends(get_db),
-    user: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user_released),
 ):
     """Compose and send a new email from the logged-in user's mailbox."""
     from modules import activity as activity_module
@@ -128,20 +127,25 @@ def compose_inbox_mail(
 
     subject = result.get("subject") or payload.subject or "(no subject)"
     to_addr = result.get("to") or payload.to
-    activity_module.log_activity(
-        db,
-        user_id=user.id,
-        activity_type=activity_module.INBOX_REPLIED,
-        title="Compose email sent",
-        summary=f"Sent “{subject}” → {to_addr}",
-        entity_type="inbox_compose",
-        entity_id=None,
-        details={
-            "subject": subject,
-            "to": to_addr,
-            "from": result.get("from"),
-        },
-    )
+    db = SessionLocal()
+    try:
+        activity_module.log_activity(
+            db,
+            user_id=user.id,
+            activity_type=activity_module.INBOX_REPLIED,
+            title="Compose email sent",
+            summary=f"Sent “{subject}” → {to_addr}",
+            entity_type="inbox_compose",
+            entity_id=None,
+            details={
+                "subject": subject,
+                "to": to_addr,
+                "from": result.get("from"),
+            },
+        )
+        db.commit()
+    finally:
+        db.close()
     return {
         "status": result.get("status", "sent"),
         "message": result.get("message", "Sent"),
@@ -155,8 +159,7 @@ def compose_inbox_mail(
 def reply_inbox_thread(
     thread_id: str,
     payload: InboxReplyRequest,
-    db: Session = Depends(get_db),
-    user: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user_released),
 ):
     from modules import activity as activity_module
 
@@ -177,16 +180,21 @@ def reply_inbox_thread(
 
     subject = result.get("subject") or payload.subject or "(no subject)"
     to_addr = result.get("to") or payload.to or ""
-    activity_module.log_activity(
-        db,
-        user_id=user.id,
-        activity_type=activity_module.INBOX_REPLIED,
-        title="Inbox reply sent",
-        summary=f"Replied to “{subject}”" + (f" → {to_addr}" if to_addr else ""),
-        entity_type="inbox_thread",
-        entity_id=None,
-        details={"thread_id": thread_id, "subject": subject, "to": to_addr},
-    )
+    db = SessionLocal()
+    try:
+        activity_module.log_activity(
+            db,
+            user_id=user.id,
+            activity_type=activity_module.INBOX_REPLIED,
+            title="Inbox reply sent",
+            summary=f"Replied to “{subject}”" + (f" → {to_addr}" if to_addr else ""),
+            entity_type="inbox_thread",
+            entity_id=None,
+            details={"thread_id": thread_id, "subject": subject, "to": to_addr},
+        )
+        db.commit()
+    finally:
+        db.close()
     return result
 
 
@@ -194,7 +202,7 @@ def reply_inbox_thread(
 def move_inbox_thread(
     thread_id: str,
     payload: InboxThreadMoveRequest,
-    user: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user_released),
 ):
     _guard_configured(user)
     to_folder = payload.to_folder.strip().lower()
@@ -219,7 +227,7 @@ def move_inbox_thread(
 def analyze_inbox_thread(
     thread_id: str,
     payload: InboxAnalyzeRequest = InboxAnalyzeRequest(),
-    user: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user_released),
 ):
     """Summarize a conversation and draft a reply the rep can edit before sending."""
     _guard_configured(user)
@@ -238,7 +246,7 @@ def analyze_inbox_thread(
 def analyze_inbox_message(
     uid: str,
     payload: InboxAnalyzeRequest = InboxAnalyzeRequest(),
-    user: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user_released),
 ):
     """Summarize a single message and draft a reply."""
     _guard_configured(user)
@@ -259,7 +267,7 @@ def list_inbox_messages(
     limit: int = Query(default=25, ge=1, le=100),
     unread_only: bool = Query(default=False),
     folder: str = Query(default="inbox", description="Logical folder: inbox|sent|trash|archive"),
-    user: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user_released),
 ):
     _guard_configured(user)
     key = folder.strip().lower()
@@ -279,7 +287,7 @@ def list_inbox_messages(
 def get_inbox_message(
     uid: str,
     folder: str = Query(default="INBOX"),
-    user: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user_released),
 ):
     _guard_configured(user)
     try:
@@ -295,7 +303,7 @@ def get_inbox_message(
 def mark_inbox_message_read(
     uid: str,
     folder: str = Query(default="INBOX"),
-    user: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user_released),
 ):
     _guard_configured(user)
     try:
@@ -309,7 +317,7 @@ def mark_inbox_message_read(
 def move_inbox_message(
     uid: str,
     payload: InboxMoveRequest,
-    user: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user_released),
 ):
     _guard_configured(user)
     to_folder = payload.to_folder.strip().lower()
@@ -337,7 +345,7 @@ def move_inbox_message(
 
 
 @router.post("/trash/empty", response_model=InboxEmptyTrashResponse)
-def empty_inbox_trash(user: AppUser = Depends(get_current_user)):
+def empty_inbox_trash(user: AppUser = Depends(get_current_user_released)):
     _guard_configured(user)
     try:
         result = inbox_module.empty_trash(user)
@@ -352,8 +360,7 @@ def empty_inbox_trash(user: AppUser = Depends(get_current_user)):
 def reply_inbox_message(
     uid: str,
     payload: InboxReplyRequest,
-    db: Session = Depends(get_db),
-    user: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user_released),
 ):
     from modules import activity as activity_module
 
@@ -375,14 +382,19 @@ def reply_inbox_message(
 
     subject = result.get("subject") or payload.subject or "(no subject)"
     to_addr = result.get("to") or payload.to or ""
-    activity_module.log_activity(
-        db,
-        user_id=user.id,
-        activity_type=activity_module.INBOX_REPLIED,
-        title="Inbox reply sent",
-        summary=f"Replied to “{subject}”" + (f" → {to_addr}" if to_addr else ""),
-        entity_type="inbox_message",
-        entity_id=None,
-        details={"uid": uid, "subject": subject, "to": to_addr},
-    )
+    db = SessionLocal()
+    try:
+        activity_module.log_activity(
+            db,
+            user_id=user.id,
+            activity_type=activity_module.INBOX_REPLIED,
+            title="Inbox reply sent",
+            summary=f"Replied to “{subject}”" + (f" → {to_addr}" if to_addr else ""),
+            entity_type="inbox_message",
+            entity_id=None,
+            details={"uid": uid, "subject": subject, "to": to_addr},
+        )
+        db.commit()
+    finally:
+        db.close()
     return result

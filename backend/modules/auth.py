@@ -21,7 +21,7 @@ SESSION_COOKIE_NAME = "kafi_session"
 _PBKDF2_ITERATIONS = 120_000
 # Longer than frontend poll intervals (inbox ~20s, meeting alerts ~60s) so
 # middleware + get_current_user rarely open a second DB session per request.
-_TOKEN_CACHE_TTL_SECONDS = 180
+_TOKEN_CACHE_TTL_SECONDS = 300
 _token_user_cache: dict[str, tuple[float, int, str]] = {}
 
 
