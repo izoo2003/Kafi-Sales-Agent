@@ -749,11 +749,12 @@ class CommsGenerator:
                 email_activity.record_event(
                     db,
                     event_type="invalid_recipient",
-                    title=f"Invalid recipient — {buyer.company_name if buyer else 'lead'}",
+                    title=f"WhatsApp invalid recipient — {buyer.company_name if buyer else 'lead'}",
                     message="Contact has no phone number — cannot send WhatsApp message.",
                     buyer_id=contact.buyer_id if contact else None,
                     contact_id=draft.contact_id,
                     interaction_id=draft.id,
+                    details={"channel": "whatsapp"},
                 )
             raise ValueError("Contact has no phone number — cannot send WhatsApp message")
 

@@ -606,6 +606,8 @@ class EmailActivityListResponse(BaseModel):
 class EmailActivityMarkReadRequest(BaseModel):
     event_ids: list[int] = Field(default_factory=list)
     mark_all: bool = False
+    # When mark_all=true, limit to this channel ("email" | "whatsapp").
+    channel: Optional[str] = None
 
 
 class EmailActivityCatalogItem(BaseModel):

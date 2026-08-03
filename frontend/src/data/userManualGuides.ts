@@ -6,7 +6,7 @@ export interface UserManualGuide {
 }
 
 export const SECTION_MANUAL_OVERVIEWS: Record<number, string> = {
-  1: "WhatsApp is listed first in the sidebar. Use templates for outbound; inbox for conversations on the Essence brand number.",
+  1: "WhatsApp is listed first in the sidebar: inbox, templates, and WhatsApp Activity (send log). Use templates for cold outbound; inbox for conversations.",
   2: "Discover Leads and Master table follow WhatsApp. Under Master table the sidebar lists Scrapped Leads, client outcome buckets, then Leads Sent To each sales user — in that order.",
   3: "Mail folders match the sidebar: Inbox, Sent, Drafts, Trash, Archive, Email Activity, Email templates, Personalized Emails, then any custom labels you create.",
   4: "Vercel mailer sits below Mail in the sidebar — a separate full mailer app with the same login session.",
@@ -42,6 +42,19 @@ export const USER_MANUAL_GUIDES: Record<string, UserManualGuide> = {
       "Skipped sends usually mean missing phone number or opt-in — check the lead contact.",
     ],
     tips: ["Templates must be approved in Meta Business Manager before they appear here."],
+  },
+  "1.3": {
+    whoFor: "Admin and sales users",
+    overview: "WhatsApp send activity — successes, failures, and bulk batches (not under Email Activity).",
+    steps: [
+      "Open WhatsApp → WhatsApp Activity in the sidebar.",
+      "Review sent / failed / bulk events for WhatsApp only.",
+      "Use Mark read or Insights the same way as Email Activity.",
+    ],
+    tips: [
+      "Email Activity under Mail no longer shows WhatsApp events.",
+      "If you see “Cloud API is not configured”, set WHATSAPP_ACCESS_TOKEN on Railway.",
+    ],
   },
   "2.1": {
     whoFor: "Admin only",

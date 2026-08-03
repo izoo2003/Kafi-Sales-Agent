@@ -12,6 +12,8 @@ import { useAuth } from "../auth/AuthContext";
 interface EmailActivityPageProps {
   onError: (message: string) => void;
   onUnreadChange?: (count: number) => void;
+  /** email = Mail → Email Activity; whatsapp = WhatsApp → WhatsApp Activity */
+  channel?: "email" | "whatsapp";
 }
 
 const PAGE_SIZE = 25;
@@ -108,8 +110,13 @@ function ModeBlock({
   );
 }
 
-export function EmailActivityPage({ onError, onUnreadChange }: EmailActivityPageProps) {
+export function EmailActivityPage({
+  onError,
+  onUnreadChange,
+  channel = "email",
+}: EmailActivityPageProps) {
   const { isAdmin } = useAuth();
+  const isWhatsApp = channel === "whatsapp";
   const [page, setPage] = useState(1);
   const [rows, setRows] = useState<EmailActivityEvent[]>([]);
   const [total, setTotal] = useState(0);
@@ -131,6 +138,7 @@ export function EmailActivityPage({ onError, onUnreadChange }: EmailActivityPage
         page,
         page_size: PAGE_SIZE,
         unread_only: unreadOnly,
+        channel,
       });
       setRows(result.rows);
       setTotal(result.total);
@@ -138,23 +146,39 @@ export function EmailActivityPage({ onError, onUnreadChange }: EmailActivityPage
       setUnreadCount(result.unread_count);
       onUnreadChange?.(result.unread_count);
     } catch (e) {
-      onError(e instanceof Error ? e.message : "Failed to load email activity");
+      onError(
+        e instanceof Error
+          ? e.message
+          : isWhatsApp
+            ? "Failed to load WhatsApp activity"
+            : "Failed to load email activity",
+      );
     } finally {
       setLoading(false);
     }
-  }, [onError, onUnreadChange, page, unreadOnly]);
+  }, [channel, isWhatsApp, onError, onUnreadChange, page, unreadOnly]);
 
   const refreshInsights = useCallback(async () => {
     setInsightsLoading(true);
     try {
-      const result = await client.getEmailActivityInsights(insightsPeriod);
+      const result = await client.getEmailActivityInsights(insightsPeriod, channel);
       setInsights(result);
     } catch (e) {
-      onError(e instanceof Error ? e.message : "Failed to load email insights");
+      onError(
+        e instanceof Error
+          ? e.message
+          : isWhatsApp
+            ? "Failed to load WhatsApp insights"
+            : "Failed to load email insights",
+      );
     } finally {
       setInsightsLoading(false);
     }
-  }, [insightsPeriod, onError]);
+  }, [channel, insightsPeriod, isWhatsApp, onError]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [channel]);
 
   useEffect(() => {
     void refresh();
@@ -173,7 +197,7 @@ export function EmailActivityPage({ onError, onUnreadChange }: EmailActivityPage
 
   async function markAllRead() {
     try {
-      await client.markEmailActivityRead({ mark_all: true });
+      await client.markEmailActivityRead({ mark_all: true, channel });
       await refresh();
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to mark notifications read");
@@ -182,7 +206,7 @@ export function EmailActivityPage({ onError, onUnreadChange }: EmailActivityPage
 
   async function markOneRead(eventId: number) {
     try {
-      await client.markEmailActivityRead({ event_ids: [eventId] });
+      await client.markEmailActivityRead({ event_ids: [eventId], channel });
       await refresh();
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to mark notification read");
@@ -193,11 +217,17 @@ export function EmailActivityPage({ onError, onUnreadChange }: EmailActivityPage
     <section className="space-y-5 w-full min-w-0">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-lg font-medium text-slate-100">Email Activity</h2>
+          <h2 className="text-lg font-medium text-slate-100">
+            {isWhatsApp ? "WhatsApp Activity" : "Email Activity"}
+          </h2>
           <p className="text-sm text-slate-500 mt-1 max-w-2xl">
-            {isAdmin
-              ? "Outbound email notifications for all users — sent, failed, bulk batches, and engagement."
-              : "Your outbound email notifications — sent, failed, bulk batches, and engagement. Other users’ activity is hidden."}
+            {isWhatsApp
+              ? isAdmin
+                ? "Outbound WhatsApp notifications for all users — sent, failed, and bulk batches."
+                : "Your outbound WhatsApp notifications — sent, failed, and bulk batches."
+              : isAdmin
+                ? "Outbound email notifications for all users — sent, failed, bulk batches, and engagement."
+                : "Your outbound email notifications — sent, failed, bulk batches, and engagement. Other users’ activity is hidden."}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">

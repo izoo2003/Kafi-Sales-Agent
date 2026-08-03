@@ -112,6 +112,7 @@ function DashboardApp() {
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [emailActivityUnread, setEmailActivityUnread] = useState(0);
+  const [whatsappActivityUnread, setWhatsappActivityUnread] = useState(0);
   const [emailTemplateCount, setEmailTemplateCount] = useState(0);
   const [personalizedEmailCount, setPersonalizedEmailCount] = useState(0);
   const [whatsappTemplateCount, setWhatsappTemplateCount] = useState(0);
@@ -421,9 +422,13 @@ function DashboardApp() {
     void loadEmailTemplateCount();
     void loadWhatsappTemplateCount();
     client
-      .getEmailActivityUnreadCount()
+      .getEmailActivityUnreadCount("email")
       .then((r) => setEmailActivityUnread(r.unread_count))
       .catch(() => setEmailActivityUnread(0));
+    client
+      .getEmailActivityUnreadCount("whatsapp")
+      .then((r) => setWhatsappActivityUnread(r.unread_count))
+      .catch(() => setWhatsappActivityUnread(0));
     pollInbox();
     pollInterestedFollowUps();
     pollQuotationMeetings();
@@ -461,9 +466,13 @@ function DashboardApp() {
     pollQuotationMeetings();
     pollInterestedClientsActivity();
     client
-      .getEmailActivityUnreadCount()
+      .getEmailActivityUnreadCount("email")
       .then((r) => setEmailActivityUnread(r.unread_count))
       .catch(() => setEmailActivityUnread(0));
+    client
+      .getEmailActivityUnreadCount("whatsapp")
+      .then((r) => setWhatsappActivityUnread(r.unread_count))
+      .catch(() => setWhatsappActivityUnread(0));
     const inboxTimer = window.setInterval(pollInbox, INBOX_POLL_INTERVAL_MS);
     const followUpTimer = window.setInterval(pollInterestedFollowUps, FOLLOW_UP_POLL_INTERVAL_MS);
     const meetingTimer = window.setInterval(pollQuotationMeetings, MEETING_POLL_INTERVAL_MS);
@@ -473,8 +482,12 @@ function DashboardApp() {
     );
     const activityTimer = window.setInterval(() => {
       client
-        .getEmailActivityUnreadCount()
+        .getEmailActivityUnreadCount("email")
         .then((r) => setEmailActivityUnread(r.unread_count))
+        .catch(() => undefined);
+      client
+        .getEmailActivityUnreadCount("whatsapp")
+        .then((r) => setWhatsappActivityUnread(r.unread_count))
         .catch(() => undefined);
     }, INBOX_POLL_INTERVAL_MS);
     return () => {
@@ -755,13 +768,19 @@ function DashboardApp() {
     {
       id: "whatsapp-inbox",
       label: "WhatsApp",
-      count: whatsappTemplateCount,
+      count: whatsappTemplateCount + whatsappActivityUnread,
+      alert: whatsappActivityUnread > 0,
       children: [
         { id: "whatsapp-inbox", label: "WhatsApp inbox", count: 0 },
         {
           id: "whatsapp-templates",
           label: "WhatsApp templates",
           count: whatsappTemplateCount,
+        },
+        {
+          id: "whatsapp-activity",
+          label: "WhatsApp Activity",
+          count: whatsappActivityUnread,
         },
       ],
     },
@@ -946,7 +965,11 @@ function DashboardApp() {
               />
             )}
             {tab === "activity" && (
-              <EmailActivityPage onError={setError} onUnreadChange={setEmailActivityUnread} />
+              <EmailActivityPage
+                channel="email"
+                onError={setError}
+                onUnreadChange={setEmailActivityUnread}
+              />
             )}
             {tab === "email-templates" && (
               <EmailTemplatesPage
@@ -964,6 +987,13 @@ function DashboardApp() {
               <WhatsAppTemplatesPage
                 onError={setError}
                 onCountChange={setWhatsappTemplateCount}
+              />
+            )}
+            {tab === "whatsapp-activity" && (
+              <EmailActivityPage
+                channel="whatsapp"
+                onError={setError}
+                onUnreadChange={setWhatsappActivityUnread}
               />
             )}
             {tab === "whatsapp-inbox" && <WhatsAppInboxPage onError={setError} />}

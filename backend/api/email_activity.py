@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Literal, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from api.deps import get_current_user, get_db
@@ -13,10 +15,21 @@ from modules import email_activity
 
 router = APIRouter(prefix="/email-activity", tags=["email-activity"])
 
+ChannelParam = Literal["email", "whatsapp"]
+
 
 def _is_admin(user: AppUser) -> bool:
     role = user.role.value if isinstance(user.role, AppUserRole) else str(user.role)
     return role == AppUserRole.admin.value
+
+
+def _parse_channel(channel: Optional[str]) -> Optional[email_activity.ActivityChannel]:
+    if channel is None or not str(channel).strip():
+        return "email"
+    key = str(channel).strip().lower()
+    if key not in {"email", "whatsapp"}:
+        raise HTTPException(400, "channel must be 'email' or 'whatsapp'")
+    return key  # type: ignore[return-value]
 
 
 @router.get("", response_model=EmailActivityListResponse)
@@ -24,10 +37,12 @@ def list_email_activity(
     page: int = 1,
     page_size: int = email_activity.DEFAULT_PAGE_SIZE,
     unread_only: bool = False,
+    channel: Optional[ChannelParam] = Query("email"),
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
     is_admin = _is_admin(user)
+    ch = _parse_channel(channel)
     rows, total, unread = email_activity.list_events(
         db,
         page=page,
@@ -35,6 +50,7 @@ def list_email_activity(
         unread_only=unread_only,
         user_id=user.id,
         is_admin=is_admin,
+        channel=ch,
     )
     page = max(1, page)
     page_size = min(max(1, page_size), 100)
@@ -56,6 +72,7 @@ def list_email_activity(
 @router.get("/insights", response_model=EmailActivityInsights)
 def email_activity_insights(
     days: int | None = 30,
+    channel: Optional[ChannelParam] = Query("email"),
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
@@ -68,6 +85,7 @@ def email_activity_insights(
         days=period,
         user_id=user.id,
         is_admin=_is_admin(user),
+        channel=_parse_channel(channel),
     )
 
 
@@ -78,6 +96,7 @@ def list_email_activity_catalog(_: AppUser = Depends(get_current_user)):
 
 @router.get("/unread-count")
 def email_activity_unread_count(
+    channel: Optional[ChannelParam] = Query("email"),
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
@@ -87,6 +106,7 @@ def email_activity_unread_count(
         page_size=1,
         user_id=user.id,
         is_admin=_is_admin(user),
+        channel=_parse_channel(channel),
     )
     return {"unread_count": unread}
 
@@ -99,11 +119,15 @@ def mark_email_activity_read(
 ):
     if not payload.mark_all and not payload.event_ids:
         raise HTTPException(400, "Provide event_ids or set mark_all=true")
+    ch = None
+    if payload.channel:
+        ch = _parse_channel(payload.channel)
     updated = email_activity.mark_read(
         db,
         payload.event_ids,
         mark_all=payload.mark_all,
         user_id=user.id,
         is_admin=_is_admin(user),
+        channel=ch,
     )
     return {"updated": updated}

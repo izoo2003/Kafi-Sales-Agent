@@ -463,6 +463,7 @@ export function NavIcon({
   if (navId === "indexes") return <IconList {...props} />;
   if (navId === "user-manual") return <IconBook {...props} />;
   if (navId === "whatsapp-templates") return <IconTemplate {...props} />;
+  if (navId === "whatsapp-activity") return <IconActivity {...props} />;
   if (navId === "whatsapp-inbox" || navId.startsWith("whatsapp"))
     return <IconMessage {...props} className={`${className} text-emerald-400/90`} />;
   if (navId === "leads") return <IconSearch {...props} />;

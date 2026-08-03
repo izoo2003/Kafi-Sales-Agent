@@ -15,6 +15,7 @@ export type Tab =
   | "email-templates"
   | "personalized-emails"
   | "whatsapp-templates"
+  | "whatsapp-activity"
   | "whatsapp-inbox"
   | "leads"
   | "table"
@@ -60,7 +61,7 @@ export type MailSection =
   | "personalized-emails"
   | `label:${number}`;
 
-export type WhatsAppSection = "whatsapp-inbox" | "whatsapp-templates";
+export type WhatsAppSection = "whatsapp-inbox" | "whatsapp-templates" | "whatsapp-activity";
 
 export function isMailLabelSection(section: string): section is `label:${number}` {
   return /^label:\d+$/.test(section);
@@ -146,7 +147,9 @@ export function AppSidebar({
       activeTab === "personalized-emails",
   );
   const [whatsappMenuOpen, setWhatsappMenuOpen] = useState(
-    activeTab === "whatsapp-inbox" || activeTab === "whatsapp-templates",
+    activeTab === "whatsapp-inbox" ||
+      activeTab === "whatsapp-templates" ||
+      activeTab === "whatsapp-activity",
   );
 
   useEffect(() => {
@@ -167,7 +170,11 @@ export function AppSidebar({
   }, [activeTab]);
 
   useEffect(() => {
-    if (activeTab === "whatsapp-inbox" || activeTab === "whatsapp-templates") {
+    if (
+      activeTab === "whatsapp-inbox" ||
+      activeTab === "whatsapp-templates" ||
+      activeTab === "whatsapp-activity"
+    ) {
       setWhatsappMenuOpen(true);
     }
   }, [activeTab]);
@@ -290,7 +297,9 @@ export function AppSidebar({
                   activeTab === "email-templates" ||
                   activeTab === "personalized-emails"
                 : item.id === "whatsapp-inbox"
-                  ? activeTab === "whatsapp-inbox" || activeTab === "whatsapp-templates"
+                  ? activeTab === "whatsapp-inbox" ||
+                    activeTab === "whatsapp-templates" ||
+                    activeTab === "whatsapp-activity"
                   : activeTab === item.id;
             const hasAlert = Boolean(item.alert);
             const hasChildren = Boolean(item.children?.length);
@@ -330,7 +339,9 @@ export function AppSidebar({
                 : isWhatsAppParent
                   ? activeTab === "whatsapp-templates"
                     ? "whatsapp-templates"
-                    : "whatsapp-inbox"
+                    : activeTab === "whatsapp-activity"
+                      ? "whatsapp-activity"
+                      : "whatsapp-inbox"
                   : null;
             const parentHighlighted =
               isExpandableParent && isActive && activeChildId === defaultChildId
