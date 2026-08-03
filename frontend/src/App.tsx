@@ -64,7 +64,35 @@ function readSidebarOpenPreference(): boolean {
 
 function CallInitBanner() {
   const voice = useTwilioVoiceOptional();
-  if (!voice?.initError) return null;
+  if (!voice) return null;
+
+  if (voice.callError) {
+    return (
+      <div className="mb-7 p-4 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-100 text-sm">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="font-medium">Call did not connect</p>
+            <p className="mt-1 text-rose-200/85">{voice.callError}</p>
+            <p className="mt-2 text-xs text-rose-200/60">
+              Twilio Console → Monitor → Logs (error on Voice URL), Voice → Settings → Geo
+              Permissions (enable the lead’s country), and confirm TwiML App Voice URL is your
+              Railway API{" "}
+              <code className="text-rose-100/80">/api/webhooks/twilio/voice/client-dial</code>.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => voice.clearCallError()}
+            className="shrink-0 rounded-md border border-rose-500/40 px-2 py-1 text-xs text-rose-100 hover:bg-rose-500/20"
+          >
+            Dismiss
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!voice.initError) return null;
   const micFail = /31402|AcquisitionFailed|getting the media failed/i.test(voice.initError);
   return (
     <div className="mb-7 p-4 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-100 text-sm">

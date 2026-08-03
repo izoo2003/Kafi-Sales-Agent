@@ -27,6 +27,9 @@ interface TwilioVoiceContextValue {
   active: boolean;
   activeCall: ActiveCallTarget | null;
   initError: string | null;
+  /** Last outbound call failure (does not mean the dialer is offline). */
+  callError: string | null;
+  clearCallError: () => void;
   pendingFollowUp: PendingCallFollowUp | null;
   clearPendingFollowUp: () => void;
   /** When true the global PostCallRemarksModal is suppressed (bulk queue handles it). */
@@ -39,6 +42,28 @@ interface TwilioVoiceContextValue {
   ) => Promise<CallInitiateResult>;
   hangUp: () => void;
   retryInit: () => Promise<void>;
+}
+
+function friendlyCallError(err: unknown): string {
+  const raw =
+    (err &&
+      typeof err === "object" &&
+      "message" in err &&
+      String((err as { message: unknown }).message)) ||
+    (err instanceof Error ? err.message : "") ||
+    "Call failed";
+  if (/31005|gateway in HANGUP|application error/i.test(raw)) {
+    return (
+      "Call ended before connect (Twilio 31005). Usually the TwiML Voice URL failed, " +
+      "the number/country is blocked in Twilio Geo Permissions, or Railway was busy. " +
+      "Check Twilio Console → Monitor → Logs, and that the TwiML App Voice URL is " +
+      "POST https://YOUR-RAILWAY-API/api/webhooks/twilio/voice/client-dial"
+    );
+  }
+  if (/31000|31002|31003/i.test(raw)) {
+    return `${raw}. Check Twilio Debugger and that Voice geo-permissions allow this country.`;
+  }
+  return raw;
 }
 
 const TwilioVoiceContext = createContext<TwilioVoiceContextValue | null>(null);
@@ -71,12 +96,17 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
   const [active, setActive] = useState(false);
   const [activeCall, setActiveCall] = useState<ActiveCallTarget | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
+  const [callError, setCallError] = useState<string | null>(null);
   const [pendingFollowUp, setPendingFollowUp] = useState<PendingCallFollowUp | null>(null);
 
   const [bulkModeActive, setBulkModeActive] = useState(false);
 
   const clearPendingFollowUp = useCallback(() => {
     setPendingFollowUp(null);
+  }, []);
+
+  const clearCallError = useCallback(() => {
+    setCallError(null);
   }, []);
 
   const refreshToken = useCallback(async (device: Device) => {
@@ -106,7 +136,13 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
     device.on("unregistered", () => setReady(false));
     device.on("error", (err) => {
       console.error("Twilio device error:", err);
-      setInitError(err.message || "Twilio device error");
+      const message = err?.message || "Twilio device error";
+      // Per-call gateway hangups (31005) must not disable the whole dialer.
+      if (/31005|HANGUP/i.test(message)) {
+        setCallError(friendlyCallError(err));
+        return;
+      }
+      setInitError(message);
       setReady(false);
     });
     device.on("tokenWillExpire", () => {
@@ -171,6 +207,7 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
 
   const connectPreparedCall = useCallback((activeDevice: Device, prep: CallInitiateResult) => {
     activePrepRef.current = prep;
+    setCallError(null);
 
     return activeDevice
       .connect({
@@ -209,10 +246,8 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
         };
         call.on("error", (err) => {
           console.error("Twilio call error:", err);
-          const message =
-            (err && typeof err === "object" && "message" in err && String(err.message)) ||
-            "Twilio call failed";
-          setInitError(message);
+          setCallError(friendlyCallError(err));
+          // Keep Device registered — a single failed dial is not "calling offline".
         });
         call.on("disconnect", finishCall);
         call.on("cancel", finishCall);
@@ -274,6 +309,8 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
         active,
         activeCall,
         initError,
+        callError,
+        clearCallError,
         pendingFollowUp,
         clearPendingFollowUp,
         bulkModeActive,

@@ -62,6 +62,11 @@ def get_whatsapp_config():
         access = whatsapp_client.verify_api_access()
         meta_api_ok = bool(access.get("ok"))
         meta_api_message = access.get("message")
+    webhook_base = (settings.twilio_webhook_base_url or "").rstrip("/")
+    # Prefer an explicit public API base when set for Twilio; same host serves WhatsApp webhooks.
+    webhook_callback_url = (
+        f"{webhook_base}/api/webhooks/whatsapp" if webhook_base else None
+    )
     return WhatsAppConfigRead(
         configured=whatsapp_client.is_configured,
         webhook_configured=whatsapp_client.webhook_configured,
@@ -72,6 +77,14 @@ def get_whatsapp_config():
         missing_env=missing,
         meta_api_ok=meta_api_ok,
         meta_api_message=meta_api_message,
+        webhook_callback_url=webhook_callback_url,
+        webhook_verify_token_set=bool(settings.whatsapp_webhook_verify_token),
+        ready_for_two_way=bool(
+            whatsapp_client.is_configured
+            and whatsapp_client.webhook_configured
+            and settings.whatsapp_app_secret
+            and meta_api_ok is not False
+        ),
     )
 
 
@@ -382,6 +395,42 @@ async def verify_whatsapp_webhook(request: Request):
     raise HTTPException(403, "Webhook verification failed")
 
 
+def _inbound_message_text(message: dict) -> str:
+    """Normalize Meta inbound message types into display text for the inbox."""
+    msg_type = (message.get("type") or "text").lower()
+    if msg_type == "text":
+        return ((message.get("text") or {}).get("body") or "").strip()
+    if msg_type == "button":
+        return ((message.get("button") or {}).get("text") or "[button]").strip()
+    if msg_type == "interactive":
+        interactive = message.get("interactive") or {}
+        reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
+        return (reply.get("title") or reply.get("id") or "[interactive reply]").strip()
+    if msg_type == "image":
+        caption = ((message.get("image") or {}).get("caption") or "").strip()
+        return caption or "[image]"
+    if msg_type == "audio":
+        return "[audio]"
+    if msg_type == "video":
+        caption = ((message.get("video") or {}).get("caption") or "").strip()
+        return caption or "[video]"
+    if msg_type == "document":
+        filename = ((message.get("document") or {}).get("filename") or "").strip()
+        return f"[document{': ' + filename if filename else ''}]"
+    if msg_type == "sticker":
+        return "[sticker]"
+    if msg_type == "location":
+        loc = message.get("location") or {}
+        name = (loc.get("name") or loc.get("address") or "").strip()
+        return f"[location{': ' + name if name else ''}]"
+    if msg_type == "contacts":
+        return "[contact card]"
+    if msg_type == "reaction":
+        emoji = ((message.get("reaction") or {}).get("emoji") or "").strip()
+        return f"[reaction{': ' + emoji if emoji else ''}]"
+    return f"[{msg_type}]"
+
+
 @webhooks_router.post("")
 async def receive_whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
     body = await request.body()
@@ -391,7 +440,9 @@ async def receive_whatsapp_webhook(request: Request, db: Session = Depends(get_d
     ):
         raise HTTPException(403, "Invalid webhook signature")
 
-    payload = await request.json()
+    import json
+
+    payload = json.loads(body.decode("utf-8") or "{}")
     for entry in payload.get("entry", []):
         for change in entry.get("changes", []):
             field = change.get("field")
@@ -406,42 +457,54 @@ async def receive_whatsapp_webhook(request: Request, db: Session = Depends(get_d
                     pass
                 continue
 
-            for message in value.get("messages", []):
-                if message.get("type") != "text":
-                    continue
-                wa_id = message.get("from")
-                text = (message.get("text") or {}).get("body", "")
-                provider_message_id = message.get("id")
-                if wa_id:
-                    interaction = comms.record_inbound_whatsapp_message(
-                        db,
-                        wa_id=wa_id,
-                        message_text=text,
-                        provider_message_id=provider_message_id,
-                        create_reply_draft=False,
-                    )
-                    # AI Mode after-hours auto-reply (when enabled for assignee / any user).
-                    try:
-                        from modules import ai_mode as ai_mode_module
-                        from db.models import Contact
+            # Profile names from Meta (parallel array to messages).
+            profiles: dict[str, str] = {}
+            for item in value.get("contacts") or []:
+                wa = str(item.get("wa_id") or "").strip()
+                name = ((item.get("profile") or {}).get("name") or "").strip()
+                if wa and name:
+                    profiles[wa] = name
 
-                        contact = (
-                            db.query(Contact)
-                            .filter(Contact.wa_id == wa_id)
-                            .order_by(Contact.id.asc())
-                            .first()
-                        )
-                        if contact:
-                            ai_mode_module.maybe_auto_reply_whatsapp(
-                                db,
-                                contact=contact,
-                                message_text=text,
-                                provider_message_id=provider_message_id,
-                            )
-                        elif interaction is None:
-                            pass
+            for message in value.get("messages", []):
+                wa_id = str(message.get("from") or "").strip()
+                if not wa_id:
+                    continue
+                text = _inbound_message_text(message)
+                if not text:
+                    continue
+                provider_message_id = message.get("id")
+                interaction = comms.record_inbound_whatsapp_message(
+                    db,
+                    wa_id=wa_id,
+                    message_text=text,
+                    provider_message_id=provider_message_id,
+                    profile_name=profiles.get(wa_id),
+                    create_reply_draft=False,
+                )
+                if provider_message_id:
+                    try:
+                        whatsapp_client.mark_read(provider_message_id)
                     except Exception:  # noqa: BLE001
                         pass
+                # AI Mode after-hours auto-reply (when enabled for assignee / any user).
+                try:
+                    from modules import ai_mode as ai_mode_module
+                    from db.models import Contact
+
+                    contact = None
+                    if interaction is not None:
+                        contact = db.get(Contact, interaction.contact_id)
+                    if contact is None:
+                        contact = comms._find_whatsapp_contact(db, wa_id)
+                    if contact:
+                        ai_mode_module.maybe_auto_reply_whatsapp(
+                            db,
+                            contact=contact,
+                            message_text=text,
+                            provider_message_id=provider_message_id,
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
 
             for status_update in value.get("statuses", []):
                 message_id = status_update.get("id")

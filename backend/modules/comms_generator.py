@@ -255,6 +255,99 @@ class CommsGenerator:
         db.refresh(draft)
         return draft
 
+    def _find_whatsapp_contact(self, db: Session, wa_id: str) -> Contact | None:
+        """Match by Meta wa_id, E.164 phone, or bare digits."""
+        from integrations.voice_client import normalize_e164
+
+        raw = (wa_id or "").strip()
+        if not raw:
+            return None
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        normalized = normalize_e164(raw) or normalize_e164(digits)
+
+        candidates = [raw, digits]
+        if normalized:
+            candidates.append(normalized)
+            candidates.append(normalized.lstrip("+"))
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        keys: list[str] = []
+        for key in candidates:
+            if key and key not in seen:
+                seen.add(key)
+                keys.append(key)
+
+        contact = (
+            db.query(Contact)
+            .filter(Contact.wa_id.in_(keys))
+            .order_by(Contact.id.asc())
+            .first()
+        )
+        if contact:
+            return contact
+
+        phone_keys = [k for k in keys if k.startswith("+") or len(k) >= 10]
+        if phone_keys:
+            contact = (
+                db.query(Contact)
+                .filter(Contact.phone.in_(phone_keys))
+                .order_by(Contact.id.asc())
+                .first()
+            )
+            if contact:
+                return contact
+
+        # Last-resort: match phone/wa_id by trailing digits (country-code drift).
+        if len(digits) >= 10:
+            tail = digits[-10:]
+            for row in (
+                db.query(Contact)
+                .filter((Contact.phone.isnot(None)) | (Contact.wa_id.isnot(None)))
+                .order_by(Contact.id.desc())
+                .limit(500)
+                .all()
+            ):
+                for value in (row.phone, row.wa_id):
+                    if value and "".join(ch for ch in value if ch.isdigit()).endswith(tail):
+                        return row
+        return None
+
+    def _ensure_whatsapp_contact(
+        self,
+        db: Session,
+        *,
+        wa_id: str,
+        profile_name: str | None = None,
+    ) -> Contact:
+        """Find or auto-create a buyer+contact so inbound WhatsApp is never dropped."""
+        from integrations.voice_client import normalize_e164
+
+        contact = self._find_whatsapp_contact(db, wa_id)
+        if contact:
+            return contact
+
+        digits = "".join(ch for ch in (wa_id or "") if ch.isdigit())
+        phone = normalize_e164(wa_id) or normalize_e164(digits) or (f"+{digits}" if digits else wa_id)
+        display = (profile_name or "").strip() or phone or wa_id
+        buyer = Buyer(
+            company_name=display,
+            source="whatsapp_inbound",
+            remarks="Auto-created from inbound WhatsApp message",
+        )
+        db.add(buyer)
+        db.flush()
+        contact = Contact(
+            buyer_id=buyer.id,
+            full_name=display,
+            phone=phone,
+            wa_id=digits or wa_id,
+            whatsapp_opt_in=True,
+            data_source="whatsapp_inbound",
+        )
+        db.add(contact)
+        db.flush()
+        return contact
+
     def record_inbound_whatsapp_message(
         self,
         db: Session,
@@ -262,54 +355,64 @@ class CommsGenerator:
         wa_id: str,
         message_text: str,
         provider_message_id: str | None = None,
+        profile_name: str | None = None,
         create_reply_draft: bool = True,
     ) -> Interaction | None:
-        """Webhook entrypoint — logs an inbound message, opens the 24h session window, and
-        optionally queues a reply draft for the approval queue."""
-        contact = (
-            db.query(Contact)
-            .filter(Contact.wa_id == wa_id)
-            .order_by(Contact.id.asc())
-            .first()
+        """Webhook entrypoint — logs inbound WhatsApp, opens the 24h window.
+
+        Unknown senders are auto-created as individual leads so messages always
+        appear in WhatsApp inbox.
+        """
+        if provider_message_id:
+            existing = (
+                db.query(Interaction)
+                .filter(Interaction.provider_message_id == provider_message_id)
+                .first()
+            )
+            if existing:
+                return existing
+
+        contact = self._ensure_whatsapp_contact(
+            db, wa_id=wa_id, profile_name=profile_name
         )
-        if not contact:
-            # Also match on normalized phone for contacts created before wa_id was tracked.
+        digits = "".join(ch for ch in (wa_id or "") if ch.isdigit())
+        contact.wa_id = contact.wa_id or digits or wa_id
+        if not contact.phone:
             from integrations.voice_client import normalize_e164
 
-            normalized = normalize_e164(wa_id)
-            if normalized:
-                contact = (
-                    db.query(Contact)
-                    .filter(Contact.phone == normalized)
-                    .order_by(Contact.id.asc())
-                    .first()
-                )
-        if not contact:
-            return None
+            contact.phone = normalize_e164(wa_id) or normalize_e164(digits)
+        if profile_name and (
+            not contact.full_name
+            or contact.full_name.startswith("+")
+            or contact.data_source == "whatsapp_inbound"
+        ):
+            contact.full_name = profile_name.strip()
+            buyer = db.get(Buyer, contact.buyer_id)
+            if buyer and buyer.source == "whatsapp_inbound":
+                buyer.company_name = profile_name.strip()
 
-        contact.wa_id = contact.wa_id or wa_id
         contact.whatsapp_window_expires_at = datetime.now(timezone.utc) + timedelta(
             hours=WHATSAPP_SESSION_WINDOW_HOURS
         )
-        db.add(
-            Interaction(
-                contact_id=contact.id,
-                channel=Channel.whatsapp,
-                direction=Direction.inbound,
-                content=message_text,
-                language=contact.preferred_language or "en",
-                handled_by=HandledBy.human,
-                status=InteractionStatus.sent,
-                provider_message_id=provider_message_id,
-            )
+        inbound = Interaction(
+            contact_id=contact.id,
+            channel=Channel.whatsapp,
+            direction=Direction.inbound,
+            content=message_text,
+            language=contact.preferred_language or "en",
+            handled_by=HandledBy.human,
+            status=InteractionStatus.sent,
+            provider_message_id=provider_message_id,
         )
+        db.add(inbound)
         db.commit()
+        db.refresh(inbound)
 
         if create_reply_draft:
-            return self.generate_whatsapp_reply(
+            self.generate_whatsapp_reply(
                 db, contact_id=contact.id, inbound_message=message_text
             )
-        return None
+        return inbound
 
     def create_manual_whatsapp_draft(
         self,
@@ -384,10 +487,10 @@ class CommsGenerator:
                 .order_by(Interaction.created_at.desc())
                 .first()
             )
-            within_window = bool(
-                contact.whatsapp_window_expires_at
-                and contact.whatsapp_window_expires_at > datetime.now(timezone.utc)
-            )
+            expires = contact.whatsapp_window_expires_at
+            if expires is not None and expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            within_window = bool(expires and expires > datetime.now(timezone.utc))
             conversations.append(
                 {
                     "contact_id": contact.id,
@@ -741,8 +844,16 @@ class CommsGenerator:
         from modules import email_activity
 
         contact = db.get(Contact, draft.contact_id)
-        phone = contact.phone if contact else None
         buyer = db.get(Buyer, contact.buyer_id) if contact else None
+        phone = None
+        if contact:
+            from integrations.voice_client import normalize_e164
+
+            raw = contact.phone or contact.wa_id
+            phone = normalize_e164(raw) if raw else None
+            if not phone and contact.wa_id:
+                digits = "".join(ch for ch in contact.wa_id if ch.isdigit())
+                phone = f"+{digits}" if digits else None
 
         if not contact or not phone:
             if record_activity:
@@ -758,10 +869,10 @@ class CommsGenerator:
                 )
             raise ValueError("Contact has no phone number — cannot send WhatsApp message")
 
-        within_window = bool(
-            contact.whatsapp_window_expires_at
-            and contact.whatsapp_window_expires_at > datetime.now(timezone.utc)
-        )
+        expires = contact.whatsapp_window_expires_at
+        if expires is not None and expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        within_window = bool(expires and expires > datetime.now(timezone.utc))
 
         components = None
         if template_name and template_variables:

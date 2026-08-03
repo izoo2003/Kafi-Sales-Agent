@@ -1256,6 +1256,9 @@ class WhatsAppConfigRead(BaseModel):
     missing_env: list[str] = Field(default_factory=list)
     meta_api_ok: Optional[bool] = None
     meta_api_message: Optional[str] = None
+    webhook_callback_url: Optional[str] = None
+    webhook_verify_token_set: bool = False
+    ready_for_two_way: bool = False
 
 
 class WhatsAppTestSendRequest(BaseModel):

@@ -314,6 +314,20 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
         </div>
       )}
 
+      {config?.webhook_callback_url ? (
+        <div className="rounded-lg border border-slate-700 bg-slate-900/60 px-4 py-3 text-xs text-slate-400 space-y-1">
+          <p>
+            Meta webhook Callback URL:{" "}
+            <code className="text-slate-200 break-all">{config.webhook_callback_url}</code>
+          </p>
+          <p>
+            Subscribe fields: <code className="text-slate-300">messages</code> and{" "}
+            <code className="text-slate-300">message_template_status_update</code>. Verify token must
+            match <code className="text-slate-300">WHATSAPP_WEBHOOK_VERIFY_TOKEN</code> on the server.
+          </p>
+        </div>
+      ) : null}
+
       {config?.configured && (
         <p className="text-xs text-slate-500">
           Webhook must subscribe to <code className="text-slate-400">message_template_status_update</code>{" "}
