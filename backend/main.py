@@ -52,6 +52,8 @@ def _run_daily_job():
 
 
 def _run_ai_mode_email_job():
+    # Use a short-lived session so IMAP/LLM work does not pin a pool connection
+    # for the whole job (that was exhausting QueuePool under CRM polling).
     db = SessionLocal()
     try:
         from modules import ai_mode as ai_mode_module
@@ -68,6 +70,10 @@ def _run_ai_mode_email_job():
     except Exception as exc:  # noqa: BLE001
         print(f"AI Mode email job failed: {exc}", flush=True)
     finally:
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
         db.close()
 
 

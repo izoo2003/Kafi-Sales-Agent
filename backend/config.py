@@ -173,11 +173,11 @@ class Settings(BaseSettings):
     bulk_whatsapp_message_delay_seconds: float = 2.0
     bulk_whatsapp_max_per_request: int = 250
 
-    # DB connection pool — defaults sized for concurrent CRM page loads
-    # (sidebar counts + table + auth) on a single Railway worker. Raise via
-    # DB_POOL_SIZE / DB_MAX_OVERFLOW only after confirming Supabase headroom.
-    db_pool_size: int = 3
-    db_max_overflow: int = 5
+    # DB connection pool — sized for concurrent CRM polls + one background job
+    # on a single Railway worker. Raise via DB_POOL_SIZE / DB_MAX_OVERFLOW only
+    # after confirming Supabase/session-pooler headroom.
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
 
     @field_validator("mailbox_imap_port", "mailbox_smtp_port", mode="before")
     @classmethod
