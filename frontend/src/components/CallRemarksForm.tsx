@@ -15,6 +15,8 @@ import {
   type NoAnswerVoiceOption,
   type NotInterestedReasonOption,
 } from "../utils/callOutcomes";
+import { ActionButton } from "./ui/ActionButton";
+import { IconSave } from "./icons/AppIcons";
 
 interface CallRemarksFormProps {
   remarks: string;
@@ -178,14 +180,16 @@ export function CallRemarksForm({
           className="w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
         />
       </div>
-      <button
-        type="button"
+      <ActionButton
+        icon={IconSave}
+        variant="primary"
+        size="md"
         disabled={saving}
         onClick={onSave}
-        className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm disabled:opacity-50"
+        title={saveLabel}
       >
         {saving ? "Saving…" : saveLabel}
-      </button>
+      </ActionButton>
     </div>
   );
 }

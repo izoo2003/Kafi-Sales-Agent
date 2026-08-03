@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { client, type CallConfig, type CallInitiateResult } from "../api/client";
 import { phonesMatch, useTwilioVoiceOptional } from "../hooks/useTwilioVoice";
+import { IconPhone, IconX } from "./icons/AppIcons";
 
 interface CallLeadButtonProps {
   leadId: number;
@@ -74,8 +75,8 @@ export function CallLeadButton({
   }
 
   const btnClass = compact
-    ? "px-2 py-0.5 rounded text-xs bg-sky-600 hover:bg-sky-500 text-white disabled:opacity-50"
-    : "px-3 py-1.5 rounded-lg text-sm bg-sky-600 hover:bg-sky-500 text-white font-medium disabled:opacity-50";
+    ? "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-sky-600 hover:bg-sky-500 text-white disabled:opacity-50"
+    : "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-sky-600 hover:bg-sky-500 text-white font-medium disabled:opacity-50";
 
   const activeCall = twilioVoice?.activeCall ?? null;
   const inCall = Boolean(twilioVoice?.active);
@@ -103,11 +104,12 @@ export function CallLeadButton({
               onClick={() => twilioVoice.hangUp()}
               className={
                 compact
-                  ? "px-2 py-0.5 rounded text-xs bg-red-600 hover:bg-red-500 text-white"
-                  : "px-2 py-1 rounded-lg text-xs bg-red-600 hover:bg-red-500 text-white"
+                  ? "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-red-600 hover:bg-red-500 text-white"
+                  : "inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs bg-red-600 hover:bg-red-500 text-white"
               }
               title="End this call"
             >
+              <IconX size="xs" />
               End
             </button>
           ) : (
@@ -124,6 +126,7 @@ export function CallLeadButton({
                     : callBlockedReason ?? "Calling is not ready yet"
               }
             >
+              <IconPhone size={compact ? "xs" : "sm"} />
               {calling ? "Connecting…" : compact ? "Call" : "Call now"}
             </button>
           )}
@@ -131,14 +134,15 @@ export function CallLeadButton({
       ) : (
         <a
           href={normalizeTelHref(phone)}
-          className={btnClass + " inline-block text-center no-underline"}
+          className={btnClass + " text-center no-underline"}
           title={
             config?.configured
               ? "Complete Twilio browser setup (API key + TwiML App) for in-app calling"
               : "Call via your phone"
           }
         >
-          {compact ? "Call" : "Call"}
+          <IconPhone size={compact ? "xs" : "sm"} />
+          Call
         </a>
       )}
     </span>

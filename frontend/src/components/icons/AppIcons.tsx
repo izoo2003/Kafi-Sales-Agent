@@ -349,6 +349,106 @@ export function IconFollowUp({ size, className }: IconProps) {
   );
 }
 
+export function IconPlus({ size, className }: IconProps) {
+  return (
+    <Svg size={size} className={className}>
+      <path d="M12 5v14M5 12h14" />
+    </Svg>
+  );
+}
+
+export function IconUpload({ size, className }: IconProps) {
+  return (
+    <Svg size={size} className={className}>
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <path d="M17 8l-5-5-5 5M12 3v12" />
+    </Svg>
+  );
+}
+
+export function IconDownload({ size, className }: IconProps) {
+  return (
+    <Svg size={size} className={className}>
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <path d="M7 10l5 5 5-5M12 15V3" />
+    </Svg>
+  );
+}
+
+export function IconCheck({ size, className }: IconProps) {
+  return (
+    <Svg size={size} className={className}>
+      <path d="M20 6 9 17l-5-5" />
+    </Svg>
+  );
+}
+
+export function IconX({ size, className }: IconProps) {
+  return (
+    <Svg size={size} className={className}>
+      <path d="M18 6 6 18M6 6l12 12" />
+    </Svg>
+  );
+}
+
+export function IconEdit({ size, className }: IconProps) {
+  return (
+    <Svg size={size} className={className}>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
+    </Svg>
+  );
+}
+
+export function IconCheckSquare({ size, className }: IconProps) {
+  return (
+    <Svg size={size} className={className}>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M8 12l3 3 5-6" />
+    </Svg>
+  );
+}
+
+export function IconSave({ size, className }: IconProps) {
+  return (
+    <Svg size={size} className={className}>
+      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+      <path d="M17 21v-8H7v8M7 3v5h8" />
+    </Svg>
+  );
+}
+
+export function IconReply({ size, className }: IconProps) {
+  return (
+    <Svg size={size} className={className}>
+      <path d="M9 17 4 12l5-5" />
+      <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
+    </Svg>
+  );
+}
+
+export function IconFilter({ size, className }: IconProps) {
+  return (
+    <Svg size={size} className={className}>
+      <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z" />
+    </Svg>
+  );
+}
+
+export function IconWhatsApp({ size, className }: IconProps) {
+  return (
+    <svg
+      className={`${SIZE_CLASS[size ?? "sm"]} shrink-0 ${className}`}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M17.47 14.3c-.3-.15-1.76-.87-2.03-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.95 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.08-.15-.67-1.61-.92-2.2-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.8.37-.27.3-1.05 1.02-1.05 2.49s1.08 2.89 1.23 3.09c.15.2 2.12 3.24 5.14 4.54.72.31 1.28.5 1.72.64.72.23 1.38.2 1.9.12.58-.09 1.76-.72 2.01-1.41.25-.7.25-1.29.17-1.41-.07-.12-.27-.2-.57-.35z" />
+      <path d="M12.04 2C6.58 2 2.15 6.42 2.15 11.87c0 1.94.51 3.83 1.48 5.5L2 22l4.78-1.55a9.86 9.86 0 0 0 5.26 1.43h.01c5.46 0 9.89-4.42 9.89-9.87C21.94 6.42 17.5 2 12.04 2zm0 18.05h-.01a8.2 8.2 0 0 1-4.18-1.15l-.3-.18-2.84.92.95-2.77-.2-.28a8.18 8.18 0 0 1-1.26-4.36c0-4.53 3.69-8.21 8.23-8.21 4.53 0 8.21 3.68 8.21 8.21 0 4.54-3.69 8.22-8.2 8.22z" />
+    </svg>
+  );
+}
+
 export function NavIcon({
   navId,
   size = "sm",
@@ -381,6 +481,7 @@ export function NavIcon({
   if (navId === "archive") return <IconArchive {...props} />;
   if (navId === "activity") return <IconActivity {...props} />;
   if (navId === "email-templates") return <IconTemplate {...props} />;
+  if (navId === "personalized-emails") return <IconSparkles {...props} />;
   if (navId.startsWith("label:")) return <IconTag {...props} />;
   if (navId === "mail") return <IconExternal {...props} />;
   if (navId === "calls") return <IconCall {...props} />;

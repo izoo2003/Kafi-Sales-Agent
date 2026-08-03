@@ -367,6 +367,13 @@ def update_settings(
         row.email_subject_template = str(data["email_subject_template"]).strip() or DEFAULT_EMAIL_SUBJECT
     if "email_body_template" in data and data["email_body_template"] is not None:
         row.email_body_template = str(data["email_body_template"]).strip() or DEFAULT_EMAIL_BODY.strip()
+        # Keep WhatsApp template synchronized with email unless WhatsApp is updated in the same request.
+        if "whatsapp_body_template" not in data:
+            from modules.channel_sync import derive_whatsapp_from_email
+
+            row.whatsapp_body_template = derive_whatsapp_from_email(row.email_body_template) or (
+                DEFAULT_WHATSAPP_BODY.strip()
+            )
     if "whatsapp_body_template" in data and data["whatsapp_body_template"] is not None:
         row.whatsapp_body_template = (
             str(data["whatsapp_body_template"]).strip() or DEFAULT_WHATSAPP_BODY.strip()
@@ -944,53 +951,25 @@ def _compose_auto_reply_whatsapp_body(
     inbound_text: str,
     sender_email: str | None = None,
 ) -> dict[str, Any]:
-    from modules.ai_mode_sender import resolve_sender_context
+    """WhatsApp auto-reply uses the same information as the email auto-reply."""
+    from modules.channel_sync import derive_whatsapp_from_email
 
-    sender_ctx = resolve_sender_context(
-        from_name=sender_name or None,
-        from_email=sender_email,
-        inbound_body=inbound_text,
-    )
-    greeting_name = sender_ctx["greeting_name"]
-
-    fallback = render_template(
-        settings.whatsapp_body_template,
-        name=greeting_name,
-        form_url=settings.form_url,
-    )
-
-    from modules import ai_mode_company_research as ai_mode_research_module
-    from modules import ai_mode_llm as ai_mode_llm_module
-
-    research = ai_mode_research_module.research_inbound_sender(
-        from_name=sender_name,
-        from_email=sender_email,
-        subject=None,
-        body=inbound_text,
-    )
-    research_text = ai_mode_research_module.format_research_for_llm(research)
-    sender_ctx = resolve_sender_context(
-        from_name=sender_name or None,
-        from_email=sender_email,
-        inbound_body=inbound_text,
-        company_research=research_text,
-    )
-
-    draft = ai_mode_llm_module.draft_auto_reply_message(
-        channel="whatsapp",
+    # Compose the canonical email-style reply, then mirror it to WhatsApp
+    # so customers get the same facts on either channel.
+    email_draft = _compose_auto_reply_email_body(
+        settings=settings,
         sender_name=sender_name,
         sender_email=sender_email or "",
-        greeting_name=sender_ctx["greeting_name"],
-        company_name=sender_ctx["company_name"],
+        subject="",
+        inbound_preview=(inbound_text or "")[:500],
         inbound_body=inbound_text,
-        company_research=research_text,
-        form_url=settings.form_url,
-        template_hint=settings.whatsapp_body_template or DEFAULT_WHATSAPP_BODY.strip(),
-        fallback_body=fallback,
     )
-    draft["company_research"] = research
-    draft["greeting_name"] = sender_ctx["greeting_name"]
-    return draft
+    synced = derive_whatsapp_from_email(email_draft.get("body") or "")
+    return {
+        **email_draft,
+        "body": synced or (email_draft.get("body") or ""),
+        "channel_synced_from": "email",
+    }
 
 
 def scan_queries_for_user(

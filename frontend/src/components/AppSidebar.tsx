@@ -13,6 +13,7 @@ export type Tab =
   | "user-manual"
   | "activity"
   | "email-templates"
+  | "personalized-emails"
   | "whatsapp-templates"
   | "whatsapp-inbox"
   | "leads"
@@ -56,6 +57,7 @@ export type MailSection =
   | "drafts"
   | "activity"
   | "email-templates"
+  | "personalized-emails"
   | `label:${number}`;
 
 export type WhatsAppSection = "whatsapp-inbox" | "whatsapp-templates";
@@ -138,7 +140,10 @@ export function AppSidebar({
 }: AppSidebarProps) {
   const [leadsMenuOpen, setLeadsMenuOpen] = useState(activeTab === "table");
   const [mailMenuOpen, setMailMenuOpen] = useState(
-    activeTab === "inbox" || activeTab === "activity" || activeTab === "email-templates",
+    activeTab === "inbox" ||
+      activeTab === "activity" ||
+      activeTab === "email-templates" ||
+      activeTab === "personalized-emails",
   );
   const [whatsappMenuOpen, setWhatsappMenuOpen] = useState(
     activeTab === "whatsapp-inbox" || activeTab === "whatsapp-templates",
@@ -151,7 +156,12 @@ export function AppSidebar({
   }, [activeTab]);
 
   useEffect(() => {
-    if (activeTab === "inbox" || activeTab === "activity" || activeTab === "email-templates") {
+    if (
+      activeTab === "inbox" ||
+      activeTab === "activity" ||
+      activeTab === "email-templates" ||
+      activeTab === "personalized-emails"
+    ) {
       setMailMenuOpen(true);
     }
   }, [activeTab]);
@@ -277,7 +287,8 @@ export function AppSidebar({
               item.id === "inbox"
                 ? activeTab === "inbox" ||
                   activeTab === "activity" ||
-                  activeTab === "email-templates"
+                  activeTab === "email-templates" ||
+                  activeTab === "personalized-emails"
                 : item.id === "whatsapp-inbox"
                   ? activeTab === "whatsapp-inbox" || activeTab === "whatsapp-templates"
                   : activeTab === item.id;
@@ -313,7 +324,9 @@ export function AppSidebar({
                   ? "activity"
                   : activeTab === "email-templates"
                     ? "email-templates"
-                    : mailSection
+                    : activeTab === "personalized-emails"
+                      ? "personalized-emails"
+                      : mailSection
                 : isWhatsAppParent
                   ? activeTab === "whatsapp-templates"
                     ? "whatsapp-templates"

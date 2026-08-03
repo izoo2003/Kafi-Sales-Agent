@@ -738,6 +738,27 @@ def update_call_followup(
                 },
             )
 
+    # Personalized Emails: draft for Interested / Follow up (human review before send).
+    if new_outcome and str(new_outcome).strip().lower() in {"interested", "follow_up"}:
+        if outcome_changed or notes_changed:
+            from modules import personalized_followups as pf_module
+
+            pf_module.ensure_draft_for_call(
+                db,
+                interaction_id=interaction.id,
+                call_outcome=str(new_outcome),
+                user_id=app_user_id,
+                generate_now=False,
+            )
+    elif outcome_changed:
+        from modules import personalized_followups as pf_module
+
+        pf_module.dismiss_draft_for_ineligible_outcome(
+            db,
+            interaction_id=interaction.id,
+            call_outcome=new_outcome,
+        )
+
     return call_interaction_to_dict(db, interaction)
 
 

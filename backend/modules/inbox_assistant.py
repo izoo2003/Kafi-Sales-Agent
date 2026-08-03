@@ -7,7 +7,12 @@ from typing import Any
 
 from config import settings
 from modules import inbox as inbox_module
-from modules.llm_client import _apply_prompt_template, _load_prompt, llm_client
+from modules.llm_client import (
+    _apply_prompt_template,
+    _load_prompt,
+    llm_client,
+    with_email_reply_standards,
+)
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
@@ -158,15 +163,19 @@ def analyze_thread(
     if not template:
         return fallback
 
-    prompt = _apply_prompt_template(
-        template,
-        goal=(goal or "").strip() or "Respond helpfully as Kafi Commodities sales.",
-        mailbox_email=email or "",
-        mailbox_display_name=display,
-        thread_context=_format_thread_context(thread),
+    prompt = with_email_reply_standards(
+        _apply_prompt_template(
+            template,
+            goal=(goal or "").strip() or "Respond helpfully as Kafi Commodities sales.",
+            mailbox_email=email or "",
+            mailbox_display_name=display,
+            thread_context=_format_thread_context(thread),
+        )
     )
     system = (
         "You are a concise sales email assistant for Kafi Commodities. "
+        "Draft replies that are short, specific, and directly related to the customer's inquiry; "
+        "avoid long explanations unless they asked for detail. "
         "Return only valid JSON with keys summary, draft_reply, suggested_subject, to."
     )
     try:

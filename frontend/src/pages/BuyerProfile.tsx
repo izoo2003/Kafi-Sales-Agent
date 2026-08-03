@@ -13,6 +13,14 @@ import { CallHistoryPanel } from "../components/CallHistoryPanel";
 import { ClientHistoryPanel } from "../components/ClientHistoryPanel";
 import { ContactsPanel } from "../components/ContactsPanel";
 import { DiscoverLeadsPanel } from "../components/DiscoverLeadsPanel";
+import { ActionButton } from "../components/ui/ActionButton";
+import {
+  IconSearch,
+  IconSparkles,
+  IconUsers,
+  IconX,
+} from "../components/icons/AppIcons";
+
 interface BuyerProfileProps {
   leadId: number;
   onBack: () => void;
@@ -170,30 +178,32 @@ export function BuyerProfile({
         </div>
         <div className="flex gap-2 shrink-0 flex-wrap sm:justify-end w-full sm:w-auto">
           {canDiscover && (
-            <button
-              type="button"
+            <ActionButton
+              icon={showDiscover ? IconX : IconUsers}
               onClick={() => setShowDiscover((v) => !v)}
-              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm flex-1 sm:flex-none"
+              title={showDiscover ? "Hide discovery" : "Find similar"}
+              className="flex-1 sm:flex-none"
             >
               {showDiscover ? "Hide discovery" : "Find similar"}
-            </button>
+            </ActionButton>
           )}
-          <button
-            type="button"
+          <ActionButton
+            icon={IconSearch}
             onClick={handleResearch}
             disabled={researching || scoring}
-            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm disabled:opacity-50"
+            title="Research"
           >
             {researching ? "Researching…" : "Research"}
-          </button>
-          <button
-            type="button"
+          </ActionButton>
+          <ActionButton
+            icon={IconSparkles}
+            variant="primary"
             onClick={handleScore}
             disabled={researching || scoring}
-            className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium disabled:opacity-50"
+            title="Research and Score"
           >
             {scoring ? "Scoring…" : "Research & Score"}
-          </button>
+          </ActionButton>
         </div>
       </div>
 

@@ -202,6 +202,14 @@ export const INDEX_SECTIONS: IndexSection[] = [
       },
       {
         id: "3.8",
+        title: "Personalized Emails",
+        description:
+          "Post-call drafts from closed captions for Interested / Follow up — review then send email + WhatsApp.",
+        icon: "sparkles",
+        action: { type: "mail", section: "personalized-emails" },
+      },
+      {
+        id: "3.9",
         title: "Custom mail labels",
         description: "User labels under Mail (e.g. LinkedIn) — filter inbox by label.",
         icon: "inbox",

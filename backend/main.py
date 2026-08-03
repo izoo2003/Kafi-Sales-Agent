@@ -19,6 +19,7 @@ from api import (
     leads,
     mail_extras,
     mailer_handoff,
+    personalized_followups,
     scheduler,
     track,
     whatsapp,
@@ -269,6 +270,7 @@ app.include_router(interactions.router, prefix="/api")
 app.include_router(email_activity.router, prefix="/api")
 app.include_router(track.router, prefix="/api")
 app.include_router(email_templates.router, prefix="/api")
+app.include_router(personalized_followups.router, prefix="/api")
 app.include_router(scheduler.router, prefix="/api")
 app.include_router(calls.router, prefix="/api")
 app.include_router(email_attachments.router, prefix="/api")

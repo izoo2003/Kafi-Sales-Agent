@@ -14,6 +14,8 @@ import { CallRecommendationBadge } from "../components/CallRecommendationBadge";
 import { BulkCallQueuePanel } from "../components/BulkCallQueuePanel";
 import { CountrySelect } from "../components/CountrySelect";
 import { Pagination } from "../components/Pagination";
+import { ActionButton } from "../components/ui/ActionButton";
+import { IconPhone, IconRefresh, IconX } from "../components/icons/AppIcons";
 import { type CallOutcome, callOutcomeBadge, callOutcomeLabel, callOutcomeListNotice } from "../utils/callOutcomes";
 import { pushNumberToFloatingDialpad } from "../utils/dialpadEvents";
 import { useCallQueue, BATCH_SIZE } from "../hooks/useCallQueue";
@@ -314,13 +316,14 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
             {config?.caller_id_masked ? ` · Caller ID ${config.caller_id_masked}` : ""}
           </p>
         </div>
-        <button
-          type="button"
+        <ActionButton
+          icon={IconRefresh}
+          size="md"
           onClick={() => void loadData()}
-          className="px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-sm"
+          title="Refresh"
         >
           Refresh
-        </button>
+        </ActionButton>
       </div>
 
       {config?.setup_message && (
@@ -452,30 +455,36 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
 
               {dialableLeads.length > 0 && (
                 <div className="flex items-center gap-2 pt-1">
-                  <button
-                    type="button"
+                  <ActionButton
+                    icon={selectedLeadIds.size > 0 ? IconX : IconPhone}
+                    size="sm"
+                    variant="ghost"
                     onClick={selectedLeadIds.size > 0 ? clearSelection : selectAllVisible}
-                    className="text-xs text-sky-400 hover:text-sky-300"
+                    title={
+                      selectedLeadIds.size > 0
+                        ? "Clear selection"
+                        : "Select page"
+                    }
+                    className="text-sky-300 border-sky-700/40"
                   >
                     {selectedLeadIds.size > 0
                       ? `Clear (${selectedLeadIds.size})`
                       : `Select page (${dialableLeads.length})`}
-                  </button>
+                  </ActionButton>
                   {selectedLeadIds.size > 0 && (
-                    <button
-                      type="button"
+                    <ActionButton
+                      icon={IconPhone}
+                      variant="sky"
                       onClick={startBulkCall}
                       disabled={callQueue.status !== "idle"}
-                      className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-600 disabled:opacity-50 border border-sky-600 text-white text-xs font-medium"
+                      title="Bulk call"
+                      className="ml-auto"
                     >
-                      <span>📞</span>
                       Bulk call ({selectedLeadIds.size})
-                      {selectedLeadIds.size > BATCH_SIZE && (
-                        <span className="text-sky-200/70">
-                          · {Math.ceil(selectedLeadIds.size / BATCH_SIZE)} batches
-                        </span>
-                      )}
-                    </button>
+                      {selectedLeadIds.size > BATCH_SIZE
+                        ? ` · ${Math.ceil(selectedLeadIds.size / BATCH_SIZE)} batches`
+                        : ""}
+                    </ActionButton>
                   )}
                 </div>
               )}

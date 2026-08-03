@@ -19,6 +19,7 @@ import { InterestedClientsActivityToasts } from "./components/InterestedClientsA
 import { AppTopActions } from "./components/AppTopActions";
 import { EmailActivityPage } from "./pages/EmailActivityPage";
 import { EmailTemplatesPage } from "./pages/EmailTemplatesPage";
+import { PersonalizedEmailsPage } from "./pages/PersonalizedEmailsPage";
 import { WhatsAppTemplatesPage } from "./pages/WhatsAppTemplatesPage";
 import { WhatsAppInboxPage } from "./pages/WhatsAppInboxPage";
 import { BuyerProfile } from "./pages/BuyerProfile";
@@ -112,6 +113,7 @@ function DashboardApp() {
   const [error, setError] = useState<string | null>(null);
   const [emailActivityUnread, setEmailActivityUnread] = useState(0);
   const [emailTemplateCount, setEmailTemplateCount] = useState(0);
+  const [personalizedEmailCount, setPersonalizedEmailCount] = useState(0);
   const [whatsappTemplateCount, setWhatsappTemplateCount] = useState(0);
   const [discoverLeadsCount, setDiscoverLeadsCount] = useState(0);
 
@@ -232,12 +234,14 @@ function DashboardApp() {
 
   const loadMailExtras = useCallback(async () => {
     try {
-      const [drafts, labels] = await Promise.all([
+      const [drafts, labels, personalized] = await Promise.all([
         client.getMailDraftCount(),
         client.listMailLabels(),
+        client.listPersonalizedFollowups({ limit: 1 }).catch(() => null),
       ]);
       setMailDraftCount(drafts.count);
       setMailLabels(labels);
+      if (personalized) setPersonalizedEmailCount(personalized.pending_count);
     } catch {
       /* optional badges */
     }
@@ -536,6 +540,10 @@ function DashboardApp() {
       setTab("email-templates");
       return;
     }
+    if (section === "personalized-emails") {
+      setTab("personalized-emails");
+      return;
+    }
     setTab("inbox");
   }
 
@@ -790,6 +798,11 @@ function DashboardApp() {
           label: "Email templates",
           count: emailTemplateCount,
         },
+        {
+          id: "personalized-emails",
+          label: "Personalized Emails",
+          count: personalizedEmailCount,
+        },
         ...mailLabels.map((label) => ({
           id: `label:${label.id}`,
           label: label.name,
@@ -939,6 +952,12 @@ function DashboardApp() {
               <EmailTemplatesPage
                 onError={setError}
                 onCountChange={setEmailTemplateCount}
+              />
+            )}
+            {tab === "personalized-emails" && (
+              <PersonalizedEmailsPage
+                onError={setError}
+                onCountChange={setPersonalizedEmailCount}
               />
             )}
             {tab === "whatsapp-templates" && (

@@ -625,6 +625,46 @@ export interface EmailTemplate {
   updated_at: string;
 }
 
+export interface PersonalizedFollowupDraft {
+  id: number;
+  interaction_id: number;
+  buyer_id: number;
+  company_name: string | null;
+  country: string | null;
+  contact_id: number | null;
+  contact_name: string | null;
+  contact_email: string | null;
+  contact_phone: string | null;
+  created_by_user_id: number | null;
+  call_outcome: string;
+  status: string;
+  subject: string | null;
+  email_body: string | null;
+  whatsapp_body: string | null;
+  transcript_excerpt: string | null;
+  generation_error: string | null;
+  email_send_status: string | null;
+  whatsapp_send_status: string | null;
+  email_send_message: string | null;
+  whatsapp_send_message: string | null;
+  sent_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface PersonalizedFollowupListResponse {
+  total: number;
+  pending_count: number;
+  rows: PersonalizedFollowupDraft[];
+}
+
+export interface PersonalizedFollowupSendResponse {
+  draft: PersonalizedFollowupDraft;
+  email_sent: boolean;
+  whatsapp_sent: boolean;
+  message: string;
+}
+
 export interface MailLabel {
   id: number;
   name: string;
@@ -1990,6 +2030,38 @@ export const client = {
     }),
   deleteMailDraft: (draftId: number) =>
     request<void>(`/inbox/drafts/${draftId}`, { method: "DELETE" }),
+
+  listPersonalizedFollowups: (params: { status?: string; limit?: number } = {}) => {
+    const search = new URLSearchParams();
+    if (params.status) search.set("status", params.status);
+    if (params.limit != null) search.set("limit", String(params.limit));
+    const q = search.toString();
+    return request<PersonalizedFollowupListResponse>(
+      `/personalized-followups${q ? `?${q}` : ""}`,
+    );
+  },
+  getPersonalizedFollowup: (id: number) =>
+    request<PersonalizedFollowupDraft>(`/personalized-followups/${id}`),
+  updatePersonalizedFollowup: (
+    id: number,
+    data: Partial<{ subject: string; email_body: string; whatsapp_body: string }>,
+  ) =>
+    request<PersonalizedFollowupDraft>(`/personalized-followups/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  regeneratePersonalizedFollowup: (id: number) =>
+    request<PersonalizedFollowupDraft>(`/personalized-followups/${id}/regenerate`, {
+      method: "POST",
+    }),
+  sendPersonalizedFollowup: (id: number) =>
+    request<PersonalizedFollowupSendResponse>(`/personalized-followups/${id}/send`, {
+      method: "POST",
+    }),
+  dismissPersonalizedFollowup: (id: number) =>
+    request<PersonalizedFollowupDraft>(`/personalized-followups/${id}/dismiss`, {
+      method: "POST",
+    }),
 
   listEmailTemplates: () => request<EmailTemplate[]>("/email-templates"),
   getEmailTemplatePlaceholders: () =>

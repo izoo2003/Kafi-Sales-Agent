@@ -447,6 +447,44 @@ class WhatsAppTemplateStatusEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class PersonalizedFollowupDraft(Base):
+    """Human-reviewed post-call follow-up drafted from closed captions (email + WhatsApp)."""
+
+    __tablename__ = "personalized_followup_drafts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    interaction_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("interactions.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    buyer_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("buyers.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    contact_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("contacts.id", ondelete="SET NULL"), nullable=True
+    )
+    created_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("app_users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    call_outcome: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="awaiting_transcript")
+    subject: Mapped[Optional[str]] = mapped_column(String(500))
+    email_body: Mapped[Optional[str]] = mapped_column(Text)
+    whatsapp_body: Mapped[Optional[str]] = mapped_column(Text)
+    transcript_excerpt: Mapped[Optional[str]] = mapped_column(Text)
+    generation_error: Mapped[Optional[str]] = mapped_column(Text)
+    email_interaction_id: Mapped[Optional[int]] = mapped_column(Integer)
+    whatsapp_interaction_id: Mapped[Optional[int]] = mapped_column(Integer)
+    email_send_status: Mapped[Optional[str]] = mapped_column(String(40))
+    whatsapp_send_status: Mapped[Optional[str]] = mapped_column(String(40))
+    email_send_message: Mapped[Optional[str]] = mapped_column(Text)
+    whatsapp_send_message: Mapped[Optional[str]] = mapped_column(Text)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 

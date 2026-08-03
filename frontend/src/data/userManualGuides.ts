@@ -8,7 +8,7 @@ export interface UserManualGuide {
 export const SECTION_MANUAL_OVERVIEWS: Record<number, string> = {
   1: "WhatsApp is listed first in the sidebar. Use templates for outbound; inbox for conversations on the Essence brand number.",
   2: "Discover Leads and Master table follow WhatsApp. Under Master table the sidebar lists Scrapped Leads, client outcome buckets, then Leads Sent To each sales user — in that order.",
-  3: "Mail folders match the sidebar: Inbox, Sent, Drafts, Trash, Archive, Email Activity, Email templates, then any custom labels you create.",
+  3: "Mail folders match the sidebar: Inbox, Sent, Drafts, Trash, Archive, Email Activity, Email templates, Personalized Emails, then any custom labels you create.",
   4: "Vercel mailer sits below Mail in the sidebar — a separate full mailer app with the same login session.",
   5: "Calls uses Twilio. Always set a call outcome after hanging up — it moves leads into the correct Master table bucket.",
   6: "Quotation agent opens in a new tab for ESSENCE PDF quotes with catalog line items.",
@@ -212,6 +212,21 @@ export const USER_MANUAL_GUIDES: Record<string, UserManualGuide> = {
     ],
   },
   "3.8": {
+    whoFor: "Admin and sales users",
+    overview:
+      "Post-call personalized drafts from closed captions for Interested and Follow up clients.",
+    steps: [
+      "After a call, mark the outcome as Interested or Follow up (not Not interested / Did not receive).",
+      "Open Mail → Personalized Emails when captions or remarks are ready.",
+      "Review/edit the draft, then click Send email + WhatsApp.",
+    ],
+    tips: [
+      "Nothing auto-sends — you always approve the message first.",
+      "Email and WhatsApp stay synchronized — one message is sent on both channels.",
+      "WhatsApp free-text may fail outside the 24-hour session window; email can still succeed.",
+    ],
+  },
+  "3.9": {
     whoFor: "Admin and sales users",
     overview: "Custom labels under Mail (e.g. LinkedIn) — filter by label.",
     steps: [
