@@ -1,8 +1,10 @@
 """AI Mode — after-hours auto-reply + company lifecycle (AISOS Module 3).
 
 When an employee enables AI Mode, inbound person-to-person emails (inbox / junk)
-and WhatsApp messages can receive the drafted auto-reply from this module.
-Query keywords are used only for New Lead detection — not for auto-reply eligibility.
+and WhatsApp messages can receive a static template auto-reply from this module.
+
+Buyer inquiries / queries (keyword matches) are NOT auto-replied — they are logged
+under Company lifecycle → New Lead for a human to answer with an AI-generated draft.
 """
 
 from __future__ import annotations
@@ -890,7 +892,7 @@ def _compose_auto_reply_email_body(
     inbound_preview: str,
     inbound_body: str | None = None,
 ) -> dict[str, Any]:
-    """SerpAPI company research + LLM auto-reply (falls back to template on LLM failure)."""
+    """Static template only — inquiries are answered manually with AI under New Lead."""
     from modules.ai_mode_sender import resolve_sender_context
 
     body_text = inbound_body or inbound_preview
@@ -901,47 +903,18 @@ def _compose_auto_reply_email_body(
         inbound_body=body_text,
     )
     greeting_name = sender_ctx["greeting_name"]
-
-    fallback = render_template(
+    body = render_template(
         settings.email_body_template,
         name=greeting_name,
         form_url=settings.form_url,
         subject=subject,
     )
-
-    from modules import ai_mode_company_research as ai_mode_research_module
-    from modules import ai_mode_llm as ai_mode_llm_module
-
-    research = ai_mode_research_module.research_inbound_sender(
-        from_name=sender_name,
-        from_email=sender_email,
-        subject=subject,
-        body=body_text,
-    )
-    research_text = ai_mode_research_module.format_research_for_llm(research)
-    sender_ctx = resolve_sender_context(
-        from_name=sender_name or None,
-        from_email=sender_email or None,
-        subject=subject,
-        inbound_body=body_text,
-        company_research=research_text,
-    )
-
-    draft = ai_mode_llm_module.draft_auto_reply_message(
-        channel="email",
-        sender_name=sender_name,
-        sender_email=sender_email,
-        greeting_name=sender_ctx["greeting_name"],
-        company_name=sender_ctx["company_name"],
-        inbound_body=body_text,
-        company_research=research_text,
-        form_url=settings.form_url,
-        template_hint=settings.email_body_template or DEFAULT_EMAIL_BODY.strip(),
-        fallback_body=fallback,
-    )
-    draft["company_research"] = research
-    draft["greeting_name"] = sender_ctx["greeting_name"]
-    return draft
+    return {
+        "body": body,
+        "source": "template",
+        "llm_enabled": False,
+        "greeting_name": greeting_name,
+    }
 
 
 def _compose_auto_reply_whatsapp_body(
@@ -951,24 +924,38 @@ def _compose_auto_reply_whatsapp_body(
     inbound_text: str,
     sender_email: str | None = None,
 ) -> dict[str, Any]:
-    """WhatsApp auto-reply uses the same information as the email auto-reply."""
+    """Static WhatsApp template — same after-hours policy as email auto-reply."""
+    from modules.ai_mode_sender import resolve_sender_context
     from modules.channel_sync import derive_whatsapp_from_email
 
-    # Compose the canonical email-style reply, then mirror it to WhatsApp
-    # so customers get the same facts on either channel.
-    email_draft = _compose_auto_reply_email_body(
-        settings=settings,
-        sender_name=sender_name,
-        sender_email=sender_email or "",
+    sender_ctx = resolve_sender_context(
+        from_name=sender_name or None,
+        from_email=sender_email or None,
         subject="",
-        inbound_preview=(inbound_text or "")[:500],
         inbound_body=inbound_text,
     )
-    synced = derive_whatsapp_from_email(email_draft.get("body") or "")
+    greeting_name = sender_ctx["greeting_name"]
+    wa_template = (settings.whatsapp_body_template or "").strip()
+    if wa_template:
+        body = render_template(
+            wa_template,
+            name=greeting_name,
+            form_url=settings.form_url,
+            subject="",
+        )
+    else:
+        email_body = render_template(
+            settings.email_body_template,
+            name=greeting_name,
+            form_url=settings.form_url,
+            subject="",
+        )
+        body = derive_whatsapp_from_email(email_body) or email_body
     return {
-        **email_draft,
-        "body": synced or (email_draft.get("body") or ""),
-        "channel_synced_from": "email",
+        "body": body,
+        "source": "template",
+        "llm_enabled": False,
+        "greeting_name": greeting_name,
     }
 
 
@@ -1205,9 +1192,11 @@ def process_email_auto_replies_for_user(
         "outbound": 0,
         "missing_fields": 0,
         "promotional_or_noise": 0,
+        "inquiry_for_manual_ai": 0,
         "already_sent": 0,
         "before_enabled_at": 0,
     }
+    query_keywords = resolve_query_keywords(settings.query_keywords)
 
     enabled_at = settings.enabled_at
     if settings.enabled and enabled_at is None:
@@ -1246,6 +1235,11 @@ def process_email_auto_replies_for_user(
                 skip_reasons["promotional_or_noise"] += 1
                 continue
 
+            # Buyer inquiries / queries → New Lead (AI draft). Never auto-reply.
+            if looks_like_query(blob, query_keywords, from_email=from_email):
+                skip_reasons["inquiry_for_manual_ai"] += 1
+                continue
+
             key = _message_key("email", folder, uid, from_email, subject)
             if _already_sent(db, user.id, key):
                 skip_reasons["already_sent"] += 1
@@ -1271,7 +1265,8 @@ def process_email_auto_replies_for_user(
             "enabled": True,
             "mode": "latest_one",
             "message": (
-                "No matching unread query emails to reply to. "
+                "No matching unread non-inquiry emails for static auto-reply. "
+                "Buyer queries stay in Company lifecycle → New Lead for AI replies. "
                 f"Skipped: {skip_reasons}."
             ),
             "skip_reasons": skip_reasons,
@@ -1521,6 +1516,13 @@ def maybe_auto_reply_whatsapp(
     user, settings = matched
     if not looks_like_auto_reply_target(message_text):
         return {"status": "skipped", "reason": "promotional_or_noise"}
+
+    # Buyer inquiries / queries are answered manually with AI — not via auto-reply.
+    if looks_like_query(
+        message_text,
+        resolve_query_keywords(settings.query_keywords),
+    ):
+        return {"status": "skipped", "reason": "inquiry_for_manual_ai"}
 
     key = _message_key(
         "whatsapp",

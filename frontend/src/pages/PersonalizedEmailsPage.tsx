@@ -17,6 +17,8 @@ import { deriveWhatsAppFromEmail } from "../utils/channelSync";
 interface PersonalizedEmailsPageProps {
   onError: (message: string) => void;
   onCountChange?: (count: number) => void;
+  /** When true, omit the top page title (used inside AI Mode tabs). */
+  embedded?: boolean;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -46,6 +48,7 @@ function statusClass(status: string): string {
 export function PersonalizedEmailsPage({
   onError,
   onCountChange,
+  embedded = false,
 }: PersonalizedEmailsPageProps) {
   const [rows, setRows] = useState<PersonalizedFollowupDraft[]>([]);
   const [loading, setLoading] = useState(true);
@@ -178,11 +181,13 @@ export function PersonalizedEmailsPage({
   }
 
   return (
-    <section className="space-y-6 w-full min-w-0">
+    <section className={`w-full min-w-0 ${embedded ? "space-y-4" : "space-y-6"}`}>
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h2 className="text-lg font-medium text-slate-100">Personalized Emails</h2>
-          <p className="mt-1 text-sm text-slate-400 max-w-2xl">
+          {!embedded ? (
+            <h2 className="text-lg font-medium text-slate-100">Personalized Emails</h2>
+          ) : null}
+          <p className={`text-sm text-slate-400 max-w-2xl ${embedded ? "" : "mt-1"}`}>
             After a call is marked Interested or Follow up, a draft is built from closed
             captions. Review once — the same message is sent on email and WhatsApp.
           </p>

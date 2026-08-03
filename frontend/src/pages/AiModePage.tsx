@@ -28,14 +28,16 @@ import {
   type QuotationMeetingStatus,
 } from "../components/QuotationMeetingControl";
 import { deriveWhatsAppFromEmail } from "../utils/channelSync";
+import { PersonalizedEmailsPage } from "./PersonalizedEmailsPage";
 
 interface AiModePageProps {
   onError: (message: string) => void;
   /** Refresh sidebar “Leads Sent To” counts + open leads tables after an assign. */
   onLeadsAssigned?: () => void;
+  onPersonalizedCountChange?: (count: number) => void;
 }
 
-type Panel = "auto-reply" | "lifecycle";
+type Panel = "lifecycle" | "personalized" | "auto-reply";
 
 type PotentialClientRow = AiModeInterestedLeadRow;
 
@@ -135,9 +137,13 @@ function CallActivityRow({ row }: { row: AiModeCallActivityRow }) {
   );
 }
 
-export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
+export function AiModePage({
+  onError,
+  onLeadsAssigned,
+  onPersonalizedCountChange,
+}: AiModePageProps) {
   const { isAdmin } = useAuth();
-  const [panel, setPanel] = useState<Panel>(isAdmin ? "auto-reply" : "lifecycle");
+  const [panel, setPanel] = useState<Panel>("lifecycle");
   const [settings, setSettings] = useState<AiModeSettings | null>(null);
   const [draft, setDraft] = useState<DraftFields | null>(null);
   const [loading, setLoading] = useState(true);
@@ -461,8 +467,16 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
   useEffect(() => {
     const pending = sessionStorage.getItem("kafi.aiModeStage");
     const pendingPanel = sessionStorage.getItem("kafi.aiModePanel");
-    if (pendingPanel === "auto-reply" || pendingPanel === "lifecycle") {
-      setPanel(isAdmin || pendingPanel === "lifecycle" ? pendingPanel : "lifecycle");
+    if (
+      pendingPanel === "auto-reply" ||
+      pendingPanel === "lifecycle" ||
+      pendingPanel === "personalized"
+    ) {
+      if (pendingPanel === "auto-reply" && !isAdmin) {
+        setPanel("lifecycle");
+      } else {
+        setPanel(pendingPanel);
+      }
       sessionStorage.removeItem("kafi.aiModePanel");
     }
     if (!pending) return;
@@ -505,6 +519,34 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
       .replaceAll("{subject}", row.subject || "");
   }
 
+  async function generateQueryReply(queryId?: number, fallbackRow?: AiModeQueryRow) {
+    const row = fallbackRow || selectedQuery;
+    const id = queryId ?? row?.id;
+    if (!id || !isAdmin) return;
+    setReplyGenerating(true);
+    setNotice(null);
+    try {
+      const draft = await client.generateAiModeQueryReply(id);
+      setReplyBody(draft.body || (row ? buildReplyDraft(row) : ""));
+      if (draft.source === "llm") {
+        setNotice("AI draft generated — review before sending.");
+      } else if (draft.error) {
+        onError(`AI draft unavailable (${draft.error}). Using template.`);
+        if (row) setReplyBody(draft.body || buildReplyDraft(row));
+      } else {
+        setNotice(
+          "AI query key not configured — showing template. Set AI_MODE_QUERY_GEMINI_API_KEY or GEMINI_API_KEY.",
+        );
+      }
+      window.setTimeout(() => setNotice(null), 5000);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to generate AI reply");
+      if (row) setReplyBody(buildReplyDraft(row));
+    } finally {
+      setReplyGenerating(false);
+    }
+  }
+
   async function openQuery(row: AiModeQueryRow) {
     setSelectedQuery(row);
     setQueryMessage(null);
@@ -513,35 +555,16 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
     try {
       const data = await client.getAiModeQueryMessage(row.id);
       setQueryMessage(data.message || null);
+      // Inquiries always prefer an AI draft (template only if AI is unavailable).
+      if (isAdmin) {
+        await generateQueryReply(row.id, row);
+      }
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to open query email");
       setSelectedQuery(null);
       setReplyBody("");
     } finally {
       setQueryMessageLoading(false);
-    }
-  }
-
-  async function generateQueryReply() {
-    if (!selectedQuery || !isAdmin) return;
-    setReplyGenerating(true);
-    setNotice(null);
-    try {
-      const draft = await client.generateAiModeQueryReply(selectedQuery.id);
-      setReplyBody(draft.body || "");
-      if (draft.source === "llm") {
-        setNotice("AI draft generated — review before sending.");
-      } else if (draft.error) {
-        onError(`AI draft unavailable (${draft.error}). Using template.`);
-        setReplyBody(draft.body || buildReplyDraft(selectedQuery));
-      } else {
-        setNotice("Using template reply (AI query key not configured).");
-      }
-      window.setTimeout(() => setNotice(null), 5000);
-    } catch (e) {
-      onError(e instanceof Error ? e.message : "Failed to generate AI reply");
-    } finally {
-      setReplyGenerating(false);
     }
   }
 
@@ -798,6 +821,60 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
     }
   }
 
+  const panelTabs = (
+    <div className="flex gap-2 border-b border-slate-800 pb-2 flex-wrap">
+      {(isAdmin
+        ? ([
+            ["lifecycle", "Company lifecycle"],
+            ["personalized", "Personalized Emails"],
+            ["auto-reply", "Auto-reply"],
+          ] as const)
+        : ([
+            ["lifecycle", "Company lifecycle"],
+            ["personalized", "Personalized Emails"],
+          ] as const)
+      ).map(([id, label]) => (
+        <button
+          key={id}
+          type="button"
+          onClick={() => setPanel(id)}
+          className={`rounded-lg px-3 py-1.5 text-sm ${
+            panel === id
+              ? "bg-slate-800 text-slate-100"
+              : "text-slate-500 hover:text-slate-300"
+          }`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (panel === "personalized") {
+    return (
+      <div className="space-y-5 w-full min-w-0">
+        <div>
+          <h2 className="text-lg font-medium text-slate-100">AI Mode</h2>
+          <p className="text-sm text-slate-500 mt-1 max-w-3xl lg:max-w-none">
+            Personalized Emails — post-call drafts from closed captions. Review once, then
+            send the same message on email and WhatsApp.
+          </p>
+        </div>
+        {notice && (
+          <p className="rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-300">
+            {notice}
+          </p>
+        )}
+        {panelTabs}
+        <PersonalizedEmailsPage
+          embedded
+          onError={onError}
+          onCountChange={onPersonalizedCountChange}
+        />
+      </div>
+    );
+  }
+
   if (loading || !settings || !draft) {
     return (
       <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-8 text-sm text-slate-400">
@@ -860,42 +937,24 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
         </p>
       )}
 
-      <div className="flex gap-2 border-b border-slate-800 pb-2">
-        {(isAdmin
-          ? ([
-              ["auto-reply", "Auto-reply"],
-              ["lifecycle", "Company lifecycle"],
-            ] as const)
-          : ([["lifecycle", "Company lifecycle"]] as const)
-        ).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setPanel(id)}
-            className={`rounded-lg px-3 py-1.5 text-sm ${
-              panel === id
-                ? "bg-slate-800 text-slate-100"
-                : "text-slate-500 hover:text-slate-300"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      {panelTabs}
 
       {panel === "auto-reply" && isAdmin && (
         <div className={AI_MODE_SPLIT_GRID}>
           <section className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
             <h3 className="text-sm font-medium text-slate-200">Channels</h3>
             <p className="text-xs text-slate-500">
-              Auto-replies fire for any{" "}
-              <span className="text-slate-400">new</span> inbound email from a real person
-              (not newsletters, marketing blasts, or system mail) received after you turn AI
-              Mode on
+              Auto-reply sends your{" "}
+              <span className="text-slate-400">static template</span> only — never an AI draft.
+              It fires for{" "}
+              <span className="text-slate-400">new</span> person-to-person mail after you turn
+              AI Mode on
               {settings.enabled_at
                 ? ` (${new Date(settings.enabled_at).toLocaleString()})`
                 : ""}
-              . Inquiry keywords are not required for auto-reply. Older unread messages are
+              . Buyer{" "}
+              <span className="text-slate-400">queries / inquiries</span> are skipped here and
+              go to Company lifecycle → New Lead for AI replies. Older unread messages are
               skipped.
             </p>
             <label className="flex items-center justify-between gap-3 text-sm text-slate-300">
@@ -941,9 +1000,9 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                 className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
               />
               <p className="mt-1 text-[11px] text-slate-500">
-                Inquiry keywords apply to your mailbox only for New Lead detection. Matching
-                emails show under Company lifecycle → New Lead (Queries). Auto-reply uses the
-                rules above (real person mail, not promotional) and still requires AI Mode on.
+                Inquiry keywords detect New Lead queries. Matching emails are never
+                auto-replied — answer them under Company lifecycle → New Lead with AI.
+                Static auto-reply only covers other person-to-person mail when AI Mode is on.
               </p>
             </div>
             <div className="flex flex-wrap gap-2 pt-1">
@@ -1240,16 +1299,19 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                           <label className="block text-xs text-slate-500">
                             Your reply (from your mailbox)
                           </label>
-                          {settings?.llm_query_enabled ? (
-                            <button
-                              type="button"
-                              disabled={replyGenerating || replySending}
-                              onClick={() => void generateQueryReply()}
-                              className="rounded-lg border border-violet-500/40 bg-violet-500/10 hover:bg-violet-500/20 disabled:opacity-50 px-2.5 py-1 text-xs text-violet-200"
-                            >
-                              {replyGenerating ? "Generating…" : "Generate with AI"}
-                            </button>
-                          ) : null}
+                          <button
+                            type="button"
+                            disabled={replyGenerating || replySending}
+                            onClick={() => void generateQueryReply()}
+                            title={
+                              settings?.llm_query_enabled
+                                ? "Draft a short reply based on this inquiry"
+                                : "Needs AI_MODE_QUERY_GEMINI_API_KEY or GEMINI_API_KEY on the server"
+                            }
+                            className="rounded-lg border border-violet-500/40 bg-violet-500/10 hover:bg-violet-500/20 disabled:opacity-50 px-2.5 py-1 text-xs text-violet-200"
+                          >
+                            {replyGenerating ? "Generating…" : "Generate with AI"}
+                          </button>
                         </div>
                         <textarea
                           value={replyBody}
@@ -1280,12 +1342,8 @@ export function AiModePage({ onError, onLeadsAssigned }: AiModePageProps) {
                         </div>
                         <p className="text-[11px] text-slate-500">
                           Sends via your company mailbox (Vercel mailer when configured).
-                          {settings?.llm_auto_reply_enabled &&
-                          settings?.serpapi_auto_reply_enabled
-                            ? " After-hours auto-replies use SerpAPI company research + AI on new mail only."
-                            : settings?.llm_auto_reply_enabled
-                              ? " After-hours auto-replies use AI drafting on new mail only."
-                              : ""}
+                          Query replies use AI; after-hours auto-reply uses the static
+                          template only and never answers inquiry emails.
                         </p>
                       </div>
                     ) : (
