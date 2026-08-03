@@ -18,6 +18,7 @@ export type IndexIconKey =
   | "search"
   | "table"
   | "users"
+  | "user"
   | "heart"
   | "phone"
   | "x-circle"
@@ -26,6 +27,8 @@ export type IndexIconKey =
   | "inbox"
   | "activity"
   | "mail"
+  | "mail-stack"
+  | "calendar"
   | "call"
   | "robot"
   | "sparkles"
@@ -197,7 +200,7 @@ export const INDEX_SECTIONS: IndexSection[] = [
         id: "3.6",
         title: "Email Activity",
         description: "Send log — success, failures, and bulk batch status.",
-        icon: "activity",
+        icon: "mail-stack",
         action: { type: "mail", section: "activity" },
       },
       {
@@ -370,7 +373,7 @@ export const INDEX_SECTIONS: IndexSection[] = [
         id: "10.1",
         title: "Users",
         description: "Create sales accounts, mailboxes, and admin access.",
-        icon: "settings",
+        icon: "user",
         action: { type: "tab", tab: "users" },
         adminOnly: true,
       },

@@ -160,10 +160,39 @@ function normalizeMatchQuery(raw: string | null | undefined): string {
   if (!raw) return "";
   let text = raw.trim().toLowerCase();
   if (!text) return "";
+  // Multi-word name → first meaningful token (e.g. "LinkedIn jobs" → linkedin)
+  if (!text.includes("://") && !text.includes("/") && text.includes(" ")) {
+    const part =
+      text
+        .split(/[\s/_-]+/)
+        .map((p) => p.replace(/^www\./, "").trim())
+        .find((p) => p.length >= 3) || "";
+    return part;
+  }
   text = text.replace(/^https?:\/\//i, "");
   text = text.replace(/^www\./i, "");
   text = text.split("/")[0]?.split("?")[0] || text;
   return text.trim();
+}
+
+/** Tokens that route mail into a label (match_query and/or label name). */
+function labelMatchTokens(label: Pick<MailLabel, "name" | "match_query">): string[] {
+  const tokens: string[] = [];
+  const primary = normalizeMatchQuery(label.match_query) || normalizeMatchQuery(label.name);
+  if (primary) {
+    tokens.push(primary);
+    if (primary.includes(".")) {
+      const base = primary.split(".")[0]?.trim() || "";
+      if (base.length >= 3 && !tokens.includes(base)) tokens.push(base);
+    }
+  }
+  for (const part of (label.name || "").toLowerCase().split(/[\s/_-]+/)) {
+    const cleaned = part.replace(/^www\./, "").trim();
+    if (cleaned.length >= 3 && !cleaned.includes(".") && !tokens.includes(cleaned)) {
+      tokens.push(cleaned);
+    }
+  }
+  return tokens;
 }
 
 function emailMatchesQuery(email: string | null | undefined, query: string): boolean {
@@ -184,27 +213,39 @@ function textMatchesQuery(text: string | null | undefined, query: string): boole
 }
 
 function messageMatchesDomainLabel(
-  message: Pick<InboxMessageSummary, "from_email" | "to" | "subject" | "preview">,
+  message: Pick<
+    InboxMessageSummary,
+    "from_email" | "to" | "subject" | "preview"
+  > & {
+    from_name?: string | null;
+    body_text?: string | null;
+  },
   label: MailLabel,
 ): boolean {
-  const query = normalizeMatchQuery(label.match_query);
-  if (!query) return false;
-  if (emailMatchesQuery(message.from_email, query)) return true;
-  if ((message.to || []).some((addr) => emailMatchesQuery(addr, query))) return true;
-  if (textMatchesQuery(message.subject, query)) return true;
-  if (textMatchesQuery(message.preview, query)) return true;
+  const tokens = labelMatchTokens(label);
+  if (!tokens.length) return false;
+  for (const query of tokens) {
+    if (emailMatchesQuery(message.from_email, query)) return true;
+    if ((message.to || []).some((addr) => emailMatchesQuery(addr, query))) return true;
+    if (textMatchesQuery(message.from_name, query)) return true;
+    if (textMatchesQuery(message.subject, query)) return true;
+    if (textMatchesQuery(message.preview, query)) return true;
+    if (textMatchesQuery(message.body_text, query)) return true;
+  }
   return false;
 }
 
 function threadMatchesAnyDomainLabel(thread: InboxThreadSummary, labels: MailLabel[]): boolean {
   return labels.some((label) => {
-    const query = normalizeMatchQuery(label.match_query);
-    if (!query) return false;
-    if (emailMatchesQuery(thread.latest_from_email, query)) return true;
-    if ((thread.participants || []).some((p) => emailMatchesQuery(p, query))) return true;
-    if (textMatchesQuery(thread.subject, query)) return true;
-    if (textMatchesQuery(thread.latest_preview, query)) return true;
-    return false;
+    const tokens = labelMatchTokens(label);
+    if (!tokens.length) return false;
+    return tokens.some((query) => {
+      if (emailMatchesQuery(thread.latest_from_email, query)) return true;
+      if ((thread.participants || []).some((p) => emailMatchesQuery(p, query))) return true;
+      if (textMatchesQuery(thread.subject, query)) return true;
+      if (textMatchesQuery(thread.latest_preview, query)) return true;
+      return false;
+    });
   });
 }
 
@@ -841,16 +882,16 @@ export function InboxPage({
     if (!name) return;
     setCreatingLabel(true);
     try {
+      const matchHint = newLabelDomain.trim() || name;
       await client.createMailLabel({
         name,
-        match_query: newLabelDomain.trim() || null,
+        // Domain optional — label name alone (e.g. LinkedIn) also routes matching mail.
+        match_query: newLabelDomain.trim() || name,
       });
       setNewLabelName("");
       setNewLabelDomain("");
       setNotice(
-        newLabelDomain.trim()
-          ? `Label “${name}” created — mail matching “${newLabelDomain.trim()}” goes there instead of Inbox.`
-          : `Label “${name}” created.`,
+        `Label “${name}” created — mail mentioning “${matchHint}” (from, subject, or preview) goes there instead of Inbox.`,
       );
       onMailExtrasChangeRef.current?.();
       await loadList({ silent: true });
@@ -926,9 +967,11 @@ export function InboxPage({
             {sectionDescription(section, status?.email)}
             {section === "inbox" && status ? ` · ${status.unread_count} unread` : ""}
           </p>
-          {isLabelView && labels.find((l) => l.id === labelId)?.match_query ? (
+          {isLabelView && labels.find((l) => l.id === labelId) ? (
             <p className="text-xs text-emerald-400/90 mt-1">
-              Auto-routing: {labels.find((l) => l.id === labelId)?.match_query}
+              Auto-routing:{" "}
+              {labelMatchTokens(labels.find((l) => l.id === labelId)!).join(", ") ||
+                labels.find((l) => l.id === labelId)?.name}
             </p>
           ) : null}
           {section === "inbox" && status?.showing_since && (
@@ -979,8 +1022,8 @@ export function InboxPage({
               type="text"
               value={newLabelDomain}
               onChange={(e) => setNewLabelDomain(e.target.value)}
-              placeholder="Domain / URL (optional)"
-              title="e.g. amazon.com or https://amazon.com — matching mail leaves Inbox"
+              placeholder="Keyword / domain (optional)"
+              title="e.g. linkedin or linkedin.com — leave blank to use the label name"
               className="w-44 sm:w-52 rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-2 text-sm text-slate-100 placeholder:text-slate-600"
             />
             <ActionButton
@@ -988,7 +1031,7 @@ export function InboxPage({
               type="submit"
               size="md"
               disabled={creatingLabel || !newLabelName.trim()}
-              title="Create label"
+              title="Create label — matching mail leaves Inbox"
             >
               {creatingLabel ? "…" : "Create label"}
             </ActionButton>

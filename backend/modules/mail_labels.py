@@ -19,14 +19,21 @@ def _norm_subject(subject: str | None) -> str | None:
 
 
 def normalize_match_query(raw: str | None) -> str | None:
-    """Turn a site name, domain, or URL into a lowercase match token."""
+    """Turn a site name, domain, keyword, or URL into a lowercase match token."""
     if not raw:
         return None
     text = raw.strip().lower()
     if not text:
         return None
+    # Multi-word label/name → first meaningful word (e.g. "LinkedIn ads" → linkedin)
+    if " " in text and "://" not in text and "/" not in text:
+        for part in re.split(r"[\s/_-]+", text):
+            part = part.strip().removeprefix("www.")
+            if len(part) >= 3:
+                return part[:255]
+        return None
     if "://" not in text and "/" not in text and " " not in text:
-        # Plain domain or keyword (amazon.com / amazon)
+        # Plain domain or keyword (amazon.com / amazon / linkedin)
         text = text.removeprefix("www.")
         return text[:255] or None
     # URL or path-like input
@@ -44,13 +51,56 @@ def normalize_match_query(raw: str | None) -> str | None:
     return cleaned[:255] or None
 
 
+def match_tokens_for_label(name: str | None, match_query: str | None) -> list[str]:
+    """
+    Tokens used to auto-route mail into a label.
+
+    Prefer match_query; fall back to the label name. Domains like linkedin.com
+    also include the base keyword (linkedin) so subject/body mentions match.
+    """
+    tokens: list[str] = []
+    primary = normalize_match_query(match_query) or normalize_match_query(name)
+    if primary:
+        tokens.append(primary)
+        if "." in primary:
+            base = primary.split(".", 1)[0].strip()
+            if len(base) >= 3 and base not in tokens:
+                tokens.append(base)
+    if name:
+        for part in re.split(r"[\s/_-]+", name.strip().lower()):
+            part = part.strip().removeprefix("www.")
+            if len(part) >= 3 and part not in tokens and "." not in part:
+                tokens.append(part)
+    return tokens
+
+
+def ensure_label_match_query(label: MailLabel) -> bool:
+    """Backfill match_query from name when missing. Returns True if updated."""
+    if (label.match_query or "").strip():
+        return False
+    derived = normalize_match_query(label.name)
+    if not derived:
+        return False
+    label.match_query = derived
+    return True
+
+
 def list_labels(db: Session, user_id: int) -> list[MailLabel]:
-    return (
+    rows = (
         db.query(MailLabel)
         .filter(MailLabel.user_id == user_id)
         .order_by(MailLabel.name.asc())
         .all()
     )
+    dirty = False
+    for row in rows:
+        if ensure_label_match_query(row):
+            dirty = True
+    if dirty:
+        db.commit()
+        for row in rows:
+            db.refresh(row)
+    return rows
 
 
 def create_label(
@@ -73,7 +123,8 @@ def create_label(
     )
     if existing:
         raise ValueError("A label with that name already exists")
-    normalized = normalize_match_query(match_query)
+    # Domain/keyword if provided; otherwise use the label name (e.g. LinkedIn → linkedin).
+    normalized = normalize_match_query(match_query) or normalize_match_query(cleaned)
     label = MailLabel(
         user_id=user_id,
         name=cleaned,
