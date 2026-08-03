@@ -3,22 +3,43 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from db.models import AppUser, EmailActivityEvent
 
 DEFAULT_PAGE_SIZE = 25
 
+ActivityChannel = Literal["email", "whatsapp"]
 
-def _scoped_query(db: Session, *, user_id: int | None, is_admin: bool):
+
+def _is_whatsapp_event_clause():
+    """Match WhatsApp activity rows (details.channel or title prefix for legacy rows)."""
+    return or_(
+        EmailActivityEvent.details.op("->>")("channel") == "whatsapp",
+        EmailActivityEvent.title.ilike("WhatsApp%"),
+    )
+
+
+def _scoped_query(
+    db: Session,
+    *,
+    user_id: int | None,
+    is_admin: bool,
+    channel: ActivityChannel | None = None,
+):
     """Admins see all events; other users only see their own."""
     query = db.query(EmailActivityEvent)
     if not is_admin:
         if user_id is None:
             return query.filter(EmailActivityEvent.id < 0)
         query = query.filter(EmailActivityEvent.user_id == user_id)
+    if channel == "whatsapp":
+        query = query.filter(_is_whatsapp_event_clause())
+    elif channel == "email":
+        query = query.filter(~_is_whatsapp_event_clause())
     return query
 
 
@@ -270,15 +291,16 @@ def list_events(
     unread_only: bool = False,
     user_id: int | None = None,
     is_admin: bool = False,
+    channel: ActivityChannel | None = "email",
 ) -> tuple[list[EmailActivityEvent], int, int]:
     page = max(1, page)
     page_size = min(max(1, page_size), 100)
-    query = _scoped_query(db, user_id=user_id, is_admin=is_admin)
+    query = _scoped_query(db, user_id=user_id, is_admin=is_admin, channel=channel)
     if unread_only:
         query = query.filter(EmailActivityEvent.read_at.is_(None))
     total = query.count()
     unread = (
-        _scoped_query(db, user_id=user_id, is_admin=is_admin)
+        _scoped_query(db, user_id=user_id, is_admin=is_admin, channel=channel)
         .filter(EmailActivityEvent.read_at.is_(None))
         .count()
     )
@@ -298,9 +320,10 @@ def mark_read(
     mark_all: bool = False,
     user_id: int | None = None,
     is_admin: bool = False,
+    channel: ActivityChannel | None = None,
 ) -> int:
     now = datetime.now(timezone.utc)
-    query = _scoped_query(db, user_id=user_id, is_admin=is_admin).filter(
+    query = _scoped_query(db, user_id=user_id, is_admin=is_admin, channel=channel).filter(
         EmailActivityEvent.read_at.is_(None)
     )
     if mark_all:
@@ -375,11 +398,12 @@ def insights_stats(
     days: int | None = 30,
     user_id: int | None = None,
     is_admin: bool = False,
+    channel: ActivityChannel | None = "email",
 ) -> dict[str, Any]:
-    """Aggregate outbound email activity into bulk vs individual insight cards."""
+    """Aggregate outbound activity into bulk vs individual insight cards."""
     from modules.email_tracking import public_api_base
 
-    query = _scoped_query(db, user_id=user_id, is_admin=is_admin)
+    query = _scoped_query(db, user_id=user_id, is_admin=is_admin, channel=channel)
     since = None
     if days and days > 0:
         from datetime import timedelta

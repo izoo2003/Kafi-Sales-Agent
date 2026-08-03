@@ -57,7 +57,7 @@ export const INDEX_SECTIONS: IndexSection[] = [
     number: 1,
     title: "WhatsApp",
     description:
-      "Essence brand WhatsApp — inbox conversations and Meta-approved template sends.",
+      "Essence brand WhatsApp — inbox, templates, and outbound send activity.",
     openAction: { type: "whatsapp", section: "whatsapp-inbox" },
     items: [
       {
@@ -73,6 +73,13 @@ export const INDEX_SECTIONS: IndexSection[] = [
         description: "Meta-approved templates — bulk or single send from leads table.",
         icon: "template",
         action: { type: "whatsapp", section: "whatsapp-templates" },
+      },
+      {
+        id: "1.3",
+        title: "WhatsApp Activity",
+        description: "Outbound WhatsApp send log — sent, failed, and bulk batches.",
+        icon: "activity",
+        action: { type: "whatsapp", section: "whatsapp-activity" },
       },
     ],
   },

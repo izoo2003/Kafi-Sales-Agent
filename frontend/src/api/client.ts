@@ -1807,31 +1807,48 @@ export const client = {
         send: data.send ?? true,
       }),
     }),
-  listEmailActivity: (params: { page?: number; page_size?: number; unread_only?: boolean } = {}) => {
+  listEmailActivity: (
+    params: {
+      page?: number;
+      page_size?: number;
+      unread_only?: boolean;
+      channel?: "email" | "whatsapp";
+    } = {},
+  ) => {
     const search = new URLSearchParams();
     if (params.page) search.set("page", String(params.page));
     if (params.page_size) search.set("page_size", String(params.page_size));
     if (params.unread_only) search.set("unread_only", "true");
+    search.set("channel", params.channel || "email");
     const query = search.toString();
     return request<EmailActivityListResponse>(`/email-activity${query ? `?${query}` : ""}`);
   },
-  getEmailActivityUnreadCount: () =>
-    request<{ unread_count: number }>("/email-activity/unread-count"),
+  getEmailActivityUnreadCount: (channel: "email" | "whatsapp" = "email") =>
+    request<{ unread_count: number }>(`/email-activity/unread-count?channel=${channel}`),
   listEmailActivityCatalog: () =>
     request<EmailActivityCatalogItem[]>("/email-activity/catalog"),
-  getEmailActivityInsights: (days?: number | null) => {
+  getEmailActivityInsights: (
+    days?: number | null,
+    channel: "email" | "whatsapp" = "email",
+  ) => {
     const search = new URLSearchParams();
     if (days === null) search.set("days", "0");
     else if (days != null) search.set("days", String(days));
+    search.set("channel", channel);
     const query = search.toString();
     return request<EmailActivityInsights>(`/email-activity/insights${query ? `?${query}` : ""}`);
   },
-  markEmailActivityRead: (data: { event_ids?: number[]; mark_all?: boolean }) =>
+  markEmailActivityRead: (data: {
+    event_ids?: number[];
+    mark_all?: boolean;
+    channel?: "email" | "whatsapp";
+  }) =>
     request<{ updated: number }>("/email-activity/mark-read", {
       method: "POST",
       body: JSON.stringify({
         event_ids: data.event_ids ?? [],
         mark_all: data.mark_all ?? false,
+        channel: data.channel,
       }),
     }),
   bulkApproveDrafts: (interactionIds: number[], send = true) =>
