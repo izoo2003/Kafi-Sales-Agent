@@ -19,7 +19,9 @@ DEFAULT_ADMIN_FULL_NAME = "Administrator"
 SESSION_DAYS = 30
 SESSION_COOKIE_NAME = "kafi_session"
 _PBKDF2_ITERATIONS = 120_000
-_TOKEN_CACHE_TTL_SECONDS = 45
+# Longer than frontend poll intervals (inbox ~20s, meeting alerts ~60s) so
+# middleware + get_current_user rarely open a second DB session per request.
+_TOKEN_CACHE_TTL_SECONDS = 180
 _token_user_cache: dict[str, tuple[float, int, str]] = {}
 
 
@@ -187,6 +189,17 @@ def revoke_session(db: Session, token: str) -> None:
 def get_user_by_token(db: Session, token: str | None) -> AppUser | None:
     if not token:
         return None
+
+    cached = get_cached_auth(token)
+    if cached:
+        user_id, _role = cached
+        user = db.get(AppUser, user_id)
+        if user and user.is_active:
+            # Refresh TTL while still active.
+            _cache_auth_hit(token, user)
+            return user
+        invalidate_token_cache(token)
+
     now = datetime.now(timezone.utc)
     row = (
         db.query(AppUserSession)
@@ -196,7 +209,7 @@ def get_user_by_token(db: Session, token: str | None) -> AppUser | None:
     if not row:
         invalidate_token_cache(token)
         return None
-    user = db.query(AppUser).filter(AppUser.id == row.user_id).first()
+    user = db.get(AppUser, row.user_id)
     if not user or not user.is_active:
         invalidate_token_cache(token)
         return None

@@ -38,9 +38,18 @@ def get_bearer_token(
 
 
 def get_current_user(
+    request: Request,
     db: Session = Depends(get_db),
     token: str | None = Depends(get_session_token),
 ) -> AppUser:
+    # Middleware may already have validated the session — reuse that user id
+    # so polling endpoints don't re-query app_user_sessions every time.
+    user_id = getattr(request.state, "user_id", None)
+    if user_id is not None:
+        user = db.get(AppUser, int(user_id))
+        if user and user.is_active:
+            return user
+
     user = auth_module.get_user_by_token(db, token)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
