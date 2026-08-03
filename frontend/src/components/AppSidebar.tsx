@@ -143,8 +143,7 @@ export function AppSidebar({
   const [mailMenuOpen, setMailMenuOpen] = useState(
     activeTab === "inbox" ||
       activeTab === "activity" ||
-      activeTab === "email-templates" ||
-      activeTab === "personalized-emails",
+      activeTab === "email-templates",
   );
   const [whatsappMenuOpen, setWhatsappMenuOpen] = useState(
     activeTab === "whatsapp-inbox" ||
@@ -162,8 +161,7 @@ export function AppSidebar({
     if (
       activeTab === "inbox" ||
       activeTab === "activity" ||
-      activeTab === "email-templates" ||
-      activeTab === "personalized-emails"
+      activeTab === "email-templates"
     ) {
       setMailMenuOpen(true);
     }
@@ -294,8 +292,7 @@ export function AppSidebar({
               item.id === "inbox"
                 ? activeTab === "inbox" ||
                   activeTab === "activity" ||
-                  activeTab === "email-templates" ||
-                  activeTab === "personalized-emails"
+                  activeTab === "email-templates"
                 : item.id === "whatsapp-inbox"
                   ? activeTab === "whatsapp-inbox" ||
                     activeTab === "whatsapp-templates" ||
@@ -333,9 +330,7 @@ export function AppSidebar({
                   ? "activity"
                   : activeTab === "email-templates"
                     ? "email-templates"
-                    : activeTab === "personalized-emails"
-                      ? "personalized-emails"
-                      : mailSection
+                    : mailSection
                 : isWhatsAppParent
                   ? activeTab === "whatsapp-templates"
                     ? "whatsapp-templates"

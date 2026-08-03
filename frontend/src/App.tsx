@@ -19,7 +19,6 @@ import { InterestedClientsActivityToasts } from "./components/InterestedClientsA
 import { AppTopActions } from "./components/AppTopActions";
 import { EmailActivityPage } from "./pages/EmailActivityPage";
 import { EmailTemplatesPage } from "./pages/EmailTemplatesPage";
-import { PersonalizedEmailsPage } from "./pages/PersonalizedEmailsPage";
 import { WhatsAppTemplatesPage } from "./pages/WhatsAppTemplatesPage";
 import { WhatsAppInboxPage } from "./pages/WhatsAppInboxPage";
 import { BuyerProfile } from "./pages/BuyerProfile";
@@ -527,6 +526,12 @@ function DashboardApp() {
   }
 
   function handleSelectTab(nextTab: Tab) {
+    if (nextTab === "personalized-emails") {
+      sessionStorage.setItem("kafi.aiModePanel", "personalized");
+      setTab("ai-mode");
+      setSelectedLeadId(null);
+      return;
+    }
     setTab(nextTab);
     if (nextTab !== "leads" && nextTab !== "table" && nextTab !== "calls") {
       setSelectedLeadId(null);
@@ -554,7 +559,8 @@ function DashboardApp() {
       return;
     }
     if (section === "personalized-emails") {
-      setTab("personalized-emails");
+      sessionStorage.setItem("kafi.aiModePanel", "personalized");
+      setTab("ai-mode");
       return;
     }
     setTab("inbox");
@@ -817,11 +823,6 @@ function DashboardApp() {
           label: "Email templates",
           count: emailTemplateCount,
         },
-        {
-          id: "personalized-emails",
-          label: "Personalized Emails",
-          count: personalizedEmailCount,
-        },
         ...mailLabels.map((label) => ({
           id: `label:${label.id}`,
           label: label.name,
@@ -844,7 +845,12 @@ function DashboardApp() {
       external: QUOTATION_AGENT_URL,
     },
     { id: "chatbot", label: "Brand assistant", count: 0 },
-    { id: "ai-mode", label: "AI Mode", count: 0 },
+    {
+      id: "ai-mode",
+      label: "AI Mode",
+      count: personalizedEmailCount,
+      alert: personalizedEmailCount > 0,
+    },
     { id: "kpi", label: "KPI Generation", count: 0 },
     ...(isAdmin ? [{ id: "users" as const, label: "Users", count: 0 }] : []),
   ];
@@ -977,12 +983,6 @@ function DashboardApp() {
                 onCountChange={setEmailTemplateCount}
               />
             )}
-            {tab === "personalized-emails" && (
-              <PersonalizedEmailsPage
-                onError={setError}
-                onCountChange={setPersonalizedEmailCount}
-              />
-            )}
             {tab === "whatsapp-templates" && (
               <WhatsAppTemplatesPage
                 onError={setError}
@@ -1070,6 +1070,7 @@ function DashboardApp() {
             {tab === "ai-mode" && (
               <AiModePage
                 onError={setError}
+                onPersonalizedCountChange={setPersonalizedEmailCount}
                 onLeadsAssigned={() => {
                   void loadTableCounts();
                   setLeadsTableRefreshToken((token) => token + 1);

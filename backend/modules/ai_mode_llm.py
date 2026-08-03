@@ -110,8 +110,21 @@ def _generate(
     raise RuntimeError(f"Gemini generation failed: {last_error}") from last_error
 
 
+def _query_api_key() -> str | None:
+    """Dedicated AI Mode query key, else shared GEMINI_API_KEY / LLM_API_KEY."""
+    for candidate in (
+        settings.ai_mode_query_gemini_api_key,
+        settings.gemini_api_key,
+        settings.llm_api_key,
+    ):
+        key = (candidate or "").strip()
+        if key:
+            return key
+    return None
+
+
 def query_llm_enabled() -> bool:
-    return bool((settings.ai_mode_query_gemini_api_key or "").strip())
+    return bool(_query_api_key())
 
 
 def auto_reply_llm_enabled() -> bool:
@@ -173,14 +186,14 @@ def draft_query_email_reply(
     )
     system = (
         "You write B2B export sales emails for Kafi Commodities. "
-        "Keep replies concise, specific, and inquiry-related; "
-        "avoid long explanations unless the customer asked for detail. "
+        "Keep replies short and to the point (about 80–120 words). "
+        "Answer only what the buyer asked — no long product primers, catalogs, or filler. "
         "Output plain text email body only."
     )
 
     try:
         body = _generate(
-            api_key=settings.ai_mode_query_gemini_api_key,
+            api_key=_query_api_key(),
             model_chain=_query_model_chain(),
             max_output_tokens=int(settings.ai_mode_query_gemini_max_output_tokens or 1024),
             system=system,

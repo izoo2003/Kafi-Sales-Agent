@@ -10,7 +10,11 @@ export type IndexAction =
   | { type: "table"; section: LeadsTableSection }
   | { type: "mail"; section: MailSection }
   | { type: "whatsapp"; section: WhatsAppSection }
-  | { type: "ai-mode"; panel?: "auto-reply" | "lifecycle"; stage?: string }
+  | {
+      type: "ai-mode";
+      panel?: "auto-reply" | "lifecycle" | "personalized";
+      stage?: string;
+    }
   | { type: "external"; url: string }
   | { type: "mailer" };
 
@@ -212,14 +216,6 @@ export const INDEX_SECTIONS: IndexSection[] = [
       },
       {
         id: "3.8",
-        title: "Personalized Emails",
-        description:
-          "Post-call drafts from closed captions for Interested / Follow up — review then send email + WhatsApp.",
-        icon: "sparkles",
-        action: { type: "mail", section: "personalized-emails" },
-      },
-      {
-        id: "3.9",
         title: "Custom mail labels",
         description: "User labels under Mail (e.g. LinkedIn) — filter inbox by label.",
         icon: "inbox",
@@ -306,25 +302,40 @@ export const INDEX_SECTIONS: IndexSection[] = [
     number: 8,
     title: "AI Mode",
     description:
-      "Auto-reply to query emails, company lifecycle stages, and team activity feeds.",
+      "Company lifecycle, personalized post-call emails, auto-reply, and team activity feeds.",
     openAction: { type: "ai-mode", panel: "lifecycle" },
     items: [
       {
         id: "8.1",
+        title: "Company lifecycle",
+        description: "New Lead queries through negotiation — team-wide lead stages.",
+        icon: "sparkles",
+        action: { type: "ai-mode", panel: "lifecycle" },
+      },
+      {
+        id: "8.2",
+        title: "Personalized Emails",
+        description:
+          "Post-call drafts from closed captions for Interested / Follow up — review then send email + WhatsApp.",
+        icon: "sparkles",
+        action: { type: "ai-mode", panel: "personalized" },
+      },
+      {
+        id: "8.3",
         title: "Auto-reply settings",
         description: "Keywords, templates, and WhatsApp/email auto-reply toggles.",
         icon: "sparkles",
         action: { type: "ai-mode", panel: "auto-reply" },
       },
       {
-        id: "8.2",
+        id: "8.4",
         title: "New Lead (queries)",
         description: "Inbox scan for buyer inquiry emails — reply from your mailbox.",
         icon: "inbox",
         action: { type: "ai-mode", panel: "lifecycle", stage: "new_lead" },
       },
       {
-        id: "8.3",
+        id: "8.5",
         title: "Potential Clients",
         description: "AA/AAA scrapped leads — assign to sales users.",
         icon: "users",
@@ -332,14 +343,14 @@ export const INDEX_SECTIONS: IndexSection[] = [
         adminOnly: true,
       },
       {
-        id: "8.4",
+        id: "8.6",
         title: "Assigned / Calling / Follow-up feeds",
         description: "Per-user activity — transfers, calls, and follow-up placements.",
         icon: "activity",
         action: { type: "ai-mode", panel: "lifecycle", stage: "assigned" },
       },
       {
-        id: "8.5",
+        id: "8.7",
         title: "Interested lifecycle feed",
         description: "Who added clients to Interested Clients — admin team scores.",
         icon: "heart",
