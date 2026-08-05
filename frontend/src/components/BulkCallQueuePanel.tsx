@@ -43,7 +43,7 @@ function statusDot(
       return (
         <span
           className="w-2 h-2 rounded-full bg-amber-400 shrink-0 animate-pulse"
-          title="Gap"
+          title="Save remarks"
         />
       );
     return <span className="w-2 h-2 rounded-full bg-slate-500 shrink-0" />;
@@ -79,7 +79,6 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
   const currentEntry = entries[currentIndex] ?? null;
   const [dismissedLeadId, setDismissedLeadId] = useState<number | null>(null);
 
-  // Reset dismiss when the active company changes (skip / next).
   useEffect(() => {
     setDismissedLeadId(null);
   }, [currentEntry?.leadId]);
@@ -88,17 +87,19 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
 
   const totalCalls = entries.length;
   const completedCount = results.filter(
-    (r) => r.callStatus || r.skipped || r.error,
+    (r) => r.callStatus || r.skipped || r.error || r.outcome || r.notes,
   ).length;
   const progressPct = totalCalls > 0 ? Math.round((completedCount / totalCalls) * 100) : 0;
 
   const currentResult = results[currentIndex] ?? null;
+  const showRemarksForm =
+    Boolean(currentEntry) &&
+    (status === "running" || status === "between" || status === "paused");
   const showCallingCard =
     Boolean(currentEntry) &&
     (status === "running" || status === "between" || status === "paused") &&
     dismissedLeadId !== currentEntry?.leadId;
 
-  // Batch slice for the list
   const batchStart = (batchNumber - 1) * BATCH_SIZE;
   const batchEnd = Math.min(batchStart + BATCH_SIZE, totalCalls);
   const batchEntries = entries.slice(batchStart, batchEnd);
@@ -120,7 +121,6 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
       </div>
     )}
     <div className="rounded-xl border border-sky-800/50 bg-slate-900 overflow-hidden shadow-xl">
-      {/* Header */}
       <div className="px-4 py-3 bg-sky-950/60 border-b border-sky-800/40 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           {status === "running" && (
@@ -142,31 +142,21 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
                 : status === "paused"
                   ? "Bulk call paused"
                   : status === "between"
-                    ? "Save remarks, then continue"
+                    ? `Save remarks for ${currentEntry?.companyName ?? "this call"}`
                     : `Calling ${currentEntry?.companyName ?? "…"}`}
             </p>
             <p className="text-xs text-slate-400 mt-0.5">
               {totalBatches > 1
                 ? `Batch ${batchNumber} / ${totalBatches} · `
                 : ""}
-              {Math.min(completedCount + 1, totalCalls)} / {totalCalls} calls
+              {Math.min(currentIndex + 1, totalCalls)} / {totalCalls} calls
               {totalBatches > 1 ? ` · #${indexInBatch + 1} in batch` : ""}
             </p>
           </div>
         </div>
 
-        {/* Controls */}
         <div className="flex items-center gap-2 shrink-0">
-          {status === "running" && (
-            <button
-              type="button"
-              onClick={skipCurrent}
-              className="px-2.5 py-1.5 rounded-lg bg-amber-900/50 hover:bg-amber-900/70 border border-amber-700/40 text-amber-200 text-xs"
-            >
-              Skip
-            </button>
-          )}
-          {status === "between" && (
+          {(status === "running" || status === "between") && (
             <>
               <button
                 type="button"
@@ -182,7 +172,7 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
                 disabled={savingRemarks}
                 className="px-2.5 py-1.5 rounded-lg bg-amber-900/50 hover:bg-amber-900/70 border border-amber-700/40 text-amber-200 text-xs disabled:opacity-60"
               >
-                Skip ahead
+                Skip
               </button>
             </>
           )}
@@ -197,19 +187,31 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
             </button>
           )}
           {status === "paused" && (
-            <button
-              type="button"
-              onClick={resume}
-              className="px-2.5 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-600 border border-sky-600 text-white text-xs"
-            >
-              Resume
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => void savePendingAndContinue()}
+                disabled={savingRemarks}
+                className="px-2.5 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 border border-emerald-600 text-white text-xs font-medium"
+              >
+                {savingRemarks ? "Saving…" : "Save & next"}
+              </button>
+              <button
+                type="button"
+                onClick={resume}
+                disabled={savingRemarks}
+                className="px-2.5 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-600 border border-sky-600 text-white text-xs disabled:opacity-60"
+              >
+                Resume
+              </button>
+            </>
           )}
           {status !== "completed" && (
             <button
               type="button"
               onClick={stop}
-              className="px-2.5 py-1.5 rounded-lg bg-red-900/50 hover:bg-red-900/70 border border-red-700/40 text-red-200 text-xs"
+              disabled={savingRemarks}
+              className="px-2.5 py-1.5 rounded-lg bg-red-900/50 hover:bg-red-900/70 border border-red-700/40 text-red-200 text-xs disabled:opacity-60"
             >
               Stop
             </button>
@@ -226,7 +228,6 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
         </div>
       </div>
 
-      {/* Progress bar */}
       {status !== "completed" && (
         <div className="h-1 bg-slate-800">
           <div
@@ -237,7 +238,6 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-0 divide-y md:divide-y-0 md:divide-x divide-slate-800">
-        {/* Queue list */}
         <div className="max-h-[220px] overflow-y-auto divide-y divide-slate-800/60">
           {batchEntries.map((entry, relIdx) => {
             const absIdx = batchStart + relIdx;
@@ -246,7 +246,7 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
 
             return (
               <div
-                key={entry.leadId}
+                key={`${entry.leadId}-${absIdx}`}
                 className={`flex items-center gap-3 px-4 py-2.5 ${isCurrent ? "bg-sky-950/40" : ""}`}
               >
                 {statusDot(absIdx, currentIndex, status, results)}
@@ -265,7 +265,7 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
                     {CALL_OUTCOMES.find((o) => o.value === res.outcome)?.label ?? res.outcome}
                   </span>
                 )}
-                {res?.skipped && (
+                {res?.skipped && !res?.outcome && (
                   <span className="text-xs text-amber-300/70 shrink-0">Skipped</span>
                 )}
                 {res?.error && (
@@ -277,7 +277,6 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
             );
           })}
 
-          {/* Remaining batches indicator */}
           {totalBatches > 1 && batchNumber < totalBatches && (
             <div className="px-4 py-2 text-xs text-slate-500">
               +{totalCalls - batchEnd} more leads in {totalBatches - batchNumber} remaining batch
@@ -286,17 +285,29 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
           )}
         </div>
 
-        {/* Gap quick-outcome / call info */}
         <div className="p-4 space-y-3">
-          {status === "between" && currentResult && (
+          {showRemarksForm && currentEntry && (
             <>
-              <div>
-                <p className="text-xs text-slate-500 mb-1">
-                  Quick outcome for{" "}
-                  <span className="text-slate-300">
-                    {entries[currentIndex]?.companyName}
-                  </span>
+              <div className="space-y-0.5">
+                <p className="text-xs text-slate-500">
+                  {status === "running"
+                    ? "Active call — add remarks anytime"
+                    : status === "paused"
+                      ? "Paused — save remarks or resume"
+                      : "Call ended — save remarks to continue"}
                 </p>
+                <p className="text-sm text-sky-200 font-medium">{currentEntry.companyName}</p>
+                {currentEntry.contactName && (
+                  <p className="text-xs text-slate-400">{currentEntry.contactName}</p>
+                )}
+                <p className="text-xs text-slate-500">{currentEntry.phone}</p>
+                {currentResult?.error && (
+                  <p className="text-xs text-red-300/90 mt-1">{currentResult.error}</p>
+                )}
+              </div>
+
+              <div>
+                <p className="text-xs text-slate-500 mb-1">Outcome</p>
                 <div className="flex flex-wrap gap-2">
                   {CALL_OUTCOMES.map((o) => (
                     <button
@@ -305,7 +316,8 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
                       onClick={() =>
                         setPendingOutcome(pendingOutcome === o.value ? null : o.value)
                       }
-                      className={`px-2.5 py-1 rounded-lg border text-xs transition ${
+                      disabled={savingRemarks}
+                      className={`px-2.5 py-1 rounded-lg border text-xs transition disabled:opacity-60 ${
                         pendingOutcome === o.value
                           ? "bg-emerald-600/30 border-emerald-500/50 text-emerald-200"
                           : "bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700"
@@ -316,15 +328,18 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
                   ))}
                 </div>
               </div>
+
               <textarea
                 value={pendingNotes}
                 onChange={(e) => setPendingNotes(e.target.value)}
                 onBlur={(e) => setPendingNotes(autocorrectText(e.target.value, "prose"))}
                 rows={3}
                 placeholder="Call remarks…"
-                className="w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-slate-200 placeholder-slate-600 resize-none"
+                disabled={savingRemarks}
+                className="w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-slate-200 placeholder-slate-600 resize-none disabled:opacity-60"
                 {...spellingInputProps("prose")}
               />
+
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
@@ -344,32 +359,10 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
                 </button>
               </div>
               <p className="text-xs text-slate-500">
-                Remarks are only saved when you click Save. The next call starts after that.
+                Type remarks during the call. Save & next hangs up (if needed), saves, then dials
+                the next lead.
               </p>
             </>
-          )}
-
-          {status === "running" && currentEntry && (
-            <div className="space-y-1">
-              <p className="text-xs text-slate-500">Active call</p>
-              <p className="text-sm text-sky-200 font-medium">{currentEntry.companyName}</p>
-              {currentEntry.contactName && (
-                <p className="text-xs text-slate-400">{currentEntry.contactName}</p>
-              )}
-              <p className="text-xs text-slate-500">{currentEntry.phone}</p>
-              <p className="text-xs text-slate-600 mt-2">
-                When the call ends, add an outcome and remarks, then click Save & next.
-              </p>
-            </div>
-          )}
-
-          {status === "paused" && (
-            <div className="space-y-1">
-              <p className="text-sm text-slate-300">Queue paused.</p>
-              <p className="text-xs text-slate-500">
-                Press Resume to continue with the next call.
-              </p>
-            </div>
           )}
 
           {status === "completed" && (
@@ -378,9 +371,9 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
               <div className="grid grid-cols-3 gap-2 text-center">
                 <div className="rounded-lg bg-slate-800 p-2">
                   <p className="text-lg font-bold text-emerald-400">
-                    {results.filter((r) => r.callStatus === "completed").length}
+                    {results.filter((r) => r.outcome || r.callStatus === "completed").length}
                   </p>
-                  <p className="text-xs text-slate-500 mt-0.5">Connected</p>
+                  <p className="text-xs text-slate-500 mt-0.5">Logged</p>
                 </div>
                 <div className="rounded-lg bg-slate-800 p-2">
                   <p className="text-lg font-bold text-amber-400">
@@ -390,9 +383,9 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
                 </div>
                 <div className="rounded-lg bg-slate-800 p-2">
                   <p className="text-lg font-bold text-red-400">
-                    {results.filter((r) => r.error || (r.callStatus && r.callStatus !== "completed")).length}
+                    {results.filter((r) => r.error).length}
                   </p>
-                  <p className="text-xs text-slate-500 mt-0.5">No answer</p>
+                  <p className="text-xs text-slate-500 mt-0.5">Failed</p>
                 </div>
               </div>
               <p className="text-xs text-slate-500">
