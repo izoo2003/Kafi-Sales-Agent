@@ -30,6 +30,97 @@ _STREET_HINT_RE = re.compile(
     r"p\.?\s*o\.?\s*box|po box)\b",
     re.I,
 )
+# UK outward+inward postcodes: W1K 4QY, EN1 1DZ, SW1A 1AA, EC1A 1BB, M1 1AE…
+_UK_POSTCODE_RE = re.compile(
+    r"\b([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})\b",
+    re.I,
+)
+# US ZIP (5 or ZIP+4) — only used with a place name, not alone (avoids random numbers).
+_US_ZIP_RE = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
+# Common UK counties / areas that appear instead of company names (with postcodes).
+_UK_COUNTIES = {
+    "middlesex",
+    "surrey",
+    "essex",
+    "kent",
+    "hertfordshire",
+    "herts",
+    "bedfordshire",
+    "beds",
+    "berkshire",
+    "berks",
+    "buckinghamshire",
+    "bucks",
+    "oxfordshire",
+    "oxon",
+    "hampshire",
+    "hants",
+    "sussex",
+    "east sussex",
+    "west sussex",
+    "dorset",
+    "devon",
+    "cornwall",
+    "somerset",
+    "wiltshire",
+    "gloucestershire",
+    "glos",
+    "worcestershire",
+    "worcs",
+    "warwickshire",
+    "warks",
+    "staffordshire",
+    "staffs",
+    "shropshire",
+    "salop",
+    "cheshire",
+    "lancashire",
+    "lancs",
+    "yorkshire",
+    "north yorkshire",
+    "south yorkshire",
+    "west yorkshire",
+    "east yorkshire",
+    "durham",
+    "cumbria",
+    "northumberland",
+    "nottinghamshire",
+    "notts",
+    "derbyshire",
+    "leicestershire",
+    "leics",
+    "lincolnshire",
+    "lincs",
+    "norfolk",
+    "suffolk",
+    "cambridgeshire",
+    "cambs",
+    "greater london",
+    "greater manchester",
+    "west midlands",
+    "merseyside",
+    "tyne and wear",
+    "glasgow",
+    "edinburgh",
+    "cardiff",
+    "belfast",
+    "bristol",
+    "leeds",
+    "sheffield",
+    "liverpool",
+    "newcastle",
+    "brighton",
+    "reading",
+    "oxford",
+    "cambridge",
+    "enfield",
+    "croydon",
+    "romford",
+    "ilford",
+    "slough",
+    "watford",
+    "luton",
+}
 _COMPANY_SUFFIX_RE = re.compile(
     r"\b(llc|l\.l\.c|ltd|limited|inc|incorporated|corp|corporation|gmbh|"
     r"pte|pvt|trading|foods|food|group|international|co\.?|company|"
@@ -165,9 +256,47 @@ def _strict_country_name(text: str | None) -> str | None:
     return None
 
 
-def _looks_like_street_address(text: str) -> bool:
-    """True only for postal-looking strings (house number + street cue)."""
+def _uk_postcode_in(text: str) -> str | None:
+    m = _UK_POSTCODE_RE.search(text or "")
+    if not m:
+        return None
+    raw = re.sub(r"\s+", " ", m.group(1).upper().strip())
+    # Normalise to "OUTWARD INWARD"
+    if " " not in raw and len(raw) >= 5:
+        raw = f"{raw[:-3]} {raw[-3:]}"
+    return raw
+
+
+def _place_before_postcode(text: str, postcode: str) -> str | None:
+    """Text before a UK postcode, e.g. 'London' from 'London, W1K 4QY'."""
     t = _norm(text)
+    # Strip the postcode (with optional comma/space before it)
+    pattern = re.compile(
+        r"[,\s]*" + re.escape(postcode).replace(r"\ ", r"\s*") + r"\s*$",
+        re.I,
+    )
+    left = pattern.sub("", t).strip(" ,;-")
+    left = re.sub(r"\s+", " ", left).strip()
+    if not left or len(left) < 2 or len(left) > 60:
+        return None
+    if _has_company_suffix(left):
+        return None
+    return left
+
+
+def _looks_like_street_address(text: str) -> bool:
+    """True for postal-looking strings (street cues or UK postcodes)."""
+    t = _norm(text)
+    if len(t) < 5:
+        return False
+
+    # UK postcode alone or with place: "W1K 4QY", "London, W1K 4QY", "Middlesex EN1 1DZ"
+    if _uk_postcode_in(t):
+        if _has_company_suffix(t) and not re.match(r"^\d", t):
+            # "Acme Foods Ltd, London SW1A 1AA" — keep as company
+            return False
+        return True
+
     if len(t) < 10:
         return False
     if not re.search(r"\d", t):
@@ -330,20 +459,43 @@ def classify_location_name(raw: str | None) -> dict[str, Any] | None:
             "address": None,
         }
 
-    # Clear street / postal address only
+    # Clear street / postal address (incl. UK postcodes like "London, W1K 4QY")
     if _looks_like_street_address(text):
         from modules.lead_discovery import _parse_city_from_address
 
         city = _parse_city_from_address(text)
         parts = [p.strip() for p in text.split(",") if p.strip()]
         country = _strict_country_name(parts[-1]) if parts else None
-        if city and _norm_key(city) not in _KNOWN_CITIES:
+        uk_pc = _uk_postcode_in(text)
+        if uk_pc:
+            country = country or "United Kingdom"
+            place = _place_before_postcode(text, uk_pc)
+            if place:
+                place_key = _norm_key(place)
+                if place_key in _KNOWN_CITIES or place_key in _UK_COUNTIES:
+                    city = place
+                elif not city and len(place.split()) <= 4 and not re.search(r"\d", place):
+                    city = place
+        if city and (
+            _norm_key(city) not in _KNOWN_CITIES
+            and _norm_key(city) not in _UK_COUNTIES
+            and not uk_pc
+        ):
             city = None
         return {
             "kind": "address",
             "address": text[:500],
             "city": city,
             "country": country,
+        }
+
+    # Bare UK county / area name (no company suffix)
+    if key in _UK_COUNTIES:
+        return {
+            "kind": "city",
+            "city": text[:255],
+            "country": "United Kingdom",
+            "address": None,
         }
 
     # "KnownCity, Country" only — both sides must be clearly geographic

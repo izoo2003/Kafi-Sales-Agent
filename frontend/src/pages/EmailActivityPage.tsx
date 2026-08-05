@@ -74,11 +74,14 @@ function ModeBlock({
   subtitle,
   stats,
   showBatches,
+  showOpens = true,
 }: {
   title: string;
   subtitle: string;
   stats: EmailActivityModeStats;
   showBatches?: boolean;
+  /** Email open-pixel stats — hide for WhatsApp. */
+  showOpens?: boolean;
 }) {
   return (
     <div className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
@@ -97,13 +100,17 @@ function ModeBlock({
         ) : null}
         <StatTile label="Sent" value={stats.sent} hint={`${stats.success_rate_pct}% success`} tone="good" />
         <StatTile label="Failed" value={stats.failed} tone="bad" />
-        <StatTile
-          label="Opened"
-          value={stats.opened}
-          hint={`${stats.open_rate_pct}% of sent`}
-          tone="accent"
-        />
-        <StatTile label="Not opened" value={stats.not_opened} />
+        {showOpens ? (
+          <>
+            <StatTile
+              label="Opened"
+              value={stats.opened}
+              hint={`${stats.open_rate_pct}% of sent`}
+              tone="accent"
+            />
+            <StatTile label="Not opened" value={stats.not_opened} />
+          </>
+        ) : null}
         <StatTile label="Attempted" value={stats.attempted} />
       </div>
     </div>
@@ -179,6 +186,8 @@ export function EmailActivityPage({
 
   useEffect(() => {
     setPage(1);
+    setInsights(null);
+    // Email keeps insights open by default; WhatsApp starts collapsed until clicked.
     setShowInsights(channel === "email");
   }, [channel]);
 
@@ -225,8 +234,8 @@ export function EmailActivityPage({
           <p className="text-sm text-slate-500 mt-1 max-w-2xl">
             {isWhatsApp
               ? isAdmin
-                ? "Outbound WhatsApp notifications for all users — sent, failed, and bulk batches."
-                : "Your outbound WhatsApp notifications — sent, failed, and bulk batches."
+                ? "Outbound WhatsApp for all users — replies, templates, and bulk campaigns. Use Insights for sent / failed (individual vs bulk)."
+                : "Your outbound WhatsApp — replies, templates, and bulk campaigns. Use Insights for sent / failed (individual vs bulk)."
               : isAdmin
                 ? "Outbound email for all users — compose, bulk mailer, and in-app sends. Use Insights for sent / failed / opened (individual vs bulk)."
                 : "Your outbound email — compose, bulk mailer, and in-app sends. Use Insights for sent / failed / opened (individual vs bulk)."}
@@ -302,9 +311,13 @@ export function EmailActivityPage({
         <div className="rounded-2xl border border-slate-800 bg-gradient-to-b from-slate-900 to-slate-950 p-4 sm:p-5 space-y-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h3 className="text-sm font-medium text-slate-100">Email insights</h3>
+              <h3 className="text-sm font-medium text-slate-100">
+                {isWhatsApp ? "WhatsApp insights" : "Email insights"}
+              </h3>
               <p className="text-xs text-slate-500 mt-1 max-w-xl">
-                Sent vs failed, opened vs not opened, split by individual and bulk outreach.
+                {isWhatsApp
+                  ? "Sent vs failed WhatsApp messages, split by individual replies and bulk template campaigns."
+                  : "Sent vs failed, opened vs not opened, split by individual and bulk outreach."}
               </p>
             </div>
             <div className="flex flex-wrap gap-1.5">
@@ -336,16 +349,24 @@ export function EmailActivityPage({
             <p className="text-sm text-slate-400">Loading insights…</p>
           ) : insights ? (
             <>
-              <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-5">
+              <div
+                className={`grid gap-2.5 sm:grid-cols-2 ${
+                  isWhatsApp ? "lg:grid-cols-3" : "lg:grid-cols-5"
+                }`}
+              >
                 <StatTile label="Total sent" value={insights.totals.sent} tone="good" />
                 <StatTile label="Total failed" value={insights.totals.failed} tone="bad" />
-                <StatTile
-                  label="Opened"
-                  value={insights.totals.opened}
-                  hint={`${insights.totals.open_rate_pct}% open rate`}
-                  tone="accent"
-                />
-                <StatTile label="Not opened" value={insights.totals.not_opened} />
+                {!isWhatsApp ? (
+                  <>
+                    <StatTile
+                      label="Opened"
+                      value={insights.totals.opened}
+                      hint={`${insights.totals.open_rate_pct}% open rate`}
+                      tone="accent"
+                    />
+                    <StatTile label="Not opened" value={insights.totals.not_opened} />
+                  </>
+                ) : null}
                 <StatTile
                   label="Success rate"
                   value={`${insights.totals.success_rate_pct}%`}
@@ -355,19 +376,35 @@ export function EmailActivityPage({
 
               <div className="grid gap-3 lg:grid-cols-2">
                 <ModeBlock
-                  title="Individual emails"
-                  subtitle="One-off sends to a single lead"
+                  title={isWhatsApp ? "Individual WhatsApp" : "Individual emails"}
+                  subtitle={
+                    isWhatsApp
+                      ? "One-off replies and personal messages"
+                      : "One-off sends to a single lead"
+                  }
                   stats={insights.individual}
+                  showOpens={!isWhatsApp}
                 />
                 <ModeBlock
-                  title="Bulk emails"
-                  subtitle="Multi-recipient campaigns from Leads"
+                  title={isWhatsApp ? "Bulk WhatsApp" : "Bulk emails"}
+                  subtitle={
+                    isWhatsApp
+                      ? "Template campaigns from Leads / WhatsApp compose"
+                      : "Multi-recipient campaigns from Leads"
+                  }
                   stats={insights.bulk}
                   showBatches
+                  showOpens={!isWhatsApp}
                 />
               </div>
 
-              {!insights.tracking_enabled ? (
+              {isWhatsApp ? (
+                <p className="text-xs text-slate-500">
+                  Counts Meta Cloud API sends recorded in this feed (free-text inside the 24h
+                  window and approved templates). Failed includes invalid numbers, template
+                  rejections, and API errors.
+                </p>
+              ) : !insights.tracking_enabled ? (
                 <p className="text-xs text-amber-200/80 border border-amber-500/20 bg-amber-500/10 rounded-lg px-3 py-2">
                   Open tracking needs a public API URL (`PUBLIC_API_BASE_URL`). Opens will stay at
                   0 until emails are sent with that configured on the live backend.
@@ -403,8 +440,9 @@ export function EmailActivityPage({
             ))}
           </div>
           <p className="text-xs text-slate-500 mt-3">
-            Opens are recorded via a tracking pixel on outbound HTML emails. SMTP send
-            success/failure and bulk batch results are logged immediately.
+            {isWhatsApp
+              ? "WhatsApp send success/failure and bulk template campaign results are logged when Meta accepts or rejects each message."
+              : "Opens are recorded via a tracking pixel on outbound HTML emails. SMTP send success/failure and bulk batch results are logged immediately."}
           </p>
         </div>
       )}

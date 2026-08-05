@@ -2807,29 +2807,29 @@ export function LeadsTablePage({
                   <th className={`${TH} ${COL_SERIAL}`}>S. No</th>
                   <th className={`${TH} ${COL_COMPANY_OLD}`}>
                     <button type="button" onClick={() => toggleSort("company_name")} className="hover:text-slate-300">
-                      Name{sortIndicator("company_name")}
+                      Company Name{sortIndicator("company_name")}
                     </button>
                   </th>
-                  <th className={`${TH} min-w-[140px]`}>Business type</th>
-                  <th className={`${TH} min-w-[140px]`}>Product</th>
-                  <th className={`${TH} ${COL_WEBSITE}`}>Website</th>
-                  <th className={`${TH} min-w-[120px]`}>City</th>
+                  <th className={`${TH} min-w-[140px]`}>Business Type</th>
+                  <th className={`${TH} min-w-[140px]`}>Companies Grading</th>
+                  <th className={`${TH} min-w-[130px]`}>Designation</th>
+                  <th className={`${TH} min-w-[150px]`}>Contact Person</th>
+                  <th className={`${TH} min-w-[160px]`}>Primary Mobile No.</th>
+                  <th className={`${TH} min-w-[160px]`}>Secondary Mobile No.</th>
+                  <th className={`${TH} min-w-[160px]`}>Primary Phone No.</th>
+                  <th className={`${TH} min-w-[160px]`}>Secondary Phone No.</th>
+                  <th className={`${TH} ${COL_EMAIL}`}>Primary Email</th>
+                  <th className={`${TH} ${COL_EMAIL2}`}>Secondary Email</th>
                   <th className={`${TH} min-w-[130px]`}>
                     <button type="button" onClick={() => toggleSort("country")} className="hover:text-slate-300">
                       Country{sortIndicator("country")}
                     </button>
                   </th>
-                  <th className={`${TH} min-w-[140px]`}>XLS grading</th>
+                  <th className={`${TH} min-w-[140px]`}>Product</th>
+                  <th className={`${TH} ${COL_WEBSITE}`}>Website</th>
+                  <th className={`${TH} min-w-[120px]`}>City</th>
                   <th className={`${TH} min-w-[120px]`}>AI grading</th>
-                  <th className={`${TH} min-w-[150px]`}>Contact person</th>
-                  <th className={`${TH} min-w-[150px]`}>#1</th>
-                  <th className={`${TH} min-w-[150px]`}>#2</th>
-                  <th className={`${TH} min-w-[150px]`}>#3</th>
-                  <th className={`${TH} min-w-[150px]`}>#4</th>
-                  <th className={`${TH} ${COL_EMAIL}`}>Email 1</th>
-                  <th className={`${TH} ${COL_EMAIL2}`}>Email 2</th>
                   <th className={`${TH} min-w-[200px]`}>Address</th>
-                  <th className={`${TH} min-w-[130px]`}>Designation</th>
                   <th className={`${TH} min-w-[120px]`}>
                     <button type="button" onClick={() => toggleSort("created_at")} className="hover:text-slate-300">
                       Added{sortIndicator("created_at")}
@@ -2925,53 +2925,10 @@ export function LeadsTablePage({
                       </td>
                       <td className={TD_MUTED}>{cell("industry", row.industry ?? "")}</td>
                       <td className={TD_MUTED}>
-                        {cell("product_interest", row.product_interest ?? "")}
-                      </td>
-                      <td className={`${TD_MUTED} ${COL_WEBSITE} ${COL_FIXED}`}>
-                        {editMode ? (
-                          cell("website_url", row.website_url ?? "")
-                        ) : row.website_url ? (
-                          <ExpandableCell
-                            text={row.website_url.replace(/^https?:\/\//i, "")}
-                            title="Website"
-                            className="text-emerald-400 hover:text-emerald-300"
-                            detail={
-                              <a
-                                href={row.website_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-block text-xs text-emerald-400 hover:text-emerald-300"
-                              >
-                                Open website
-                              </a>
-                            }
-                          />
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-                      <td className={TD_MUTED}>{cell("city", row.city ?? "")}</td>
-                      <td className={TD_MUTED}>
-                        {editMode ? (
-                          <div onClick={(e) => e.stopPropagation()}>
-                            <CountrySelect
-                              value={draft.country ?? ""}
-                              onChange={(value) => updateDraft(row.id, "country", value)}
-                            />
-                          </div>
-                        ) : (
-                          <span className="truncate block">{formatCountryLabel(row.country)}</span>
-                        )}
-                      </td>
-                      <td className={TD_MUTED}>
                         {cell("company_grading", row.company_grading ?? "")}
                       </td>
-                      <td className={TD}>
-                        {row.latest_score ? (
-                          <ScoreBadge score={scoreLabel(row.latest_score)} />
-                        ) : (
-                          <span className="text-slate-500 text-sm">Not scored</span>
-                        )}
+                      <td className={TD_MUTED}>
+                        {cell("contact_designation", row.contact_designation ?? "")}
                       </td>
                       <td className={TD_MUTED}>
                         {cell("contact_name", row.contact_name ?? "")}
@@ -3095,7 +3052,7 @@ export function LeadsTablePage({
                         ) : row.contact_email ? (
                           <ExpandableCell
                             text={row.contact_email}
-                            title="Email"
+                            title="Primary Email"
                             detail={
                               <div className="pt-2 border-t border-slate-700">
                                 <EmailComposeButton
@@ -3117,13 +3074,59 @@ export function LeadsTablePage({
                             type: "email",
                           })
                         ) : (
-                          <ExpandableCell text={row.contact_secondary_email} title="Email 2" />
+                          <ExpandableCell
+                            text={row.contact_secondary_email}
+                            title="Secondary Email"
+                          />
+                        )}
+                      </td>
+                      <td className={TD_MUTED}>
+                        {editMode ? (
+                          <div onClick={(e) => e.stopPropagation()}>
+                            <CountrySelect
+                              value={draft.country ?? ""}
+                              onChange={(value) => updateDraft(row.id, "country", value)}
+                            />
+                          </div>
+                        ) : (
+                          <span className="truncate block">{formatCountryLabel(row.country)}</span>
+                        )}
+                      </td>
+                      <td className={TD_MUTED}>
+                        {cell("product_interest", row.product_interest ?? "")}
+                      </td>
+                      <td className={`${TD_MUTED} ${COL_WEBSITE} ${COL_FIXED}`}>
+                        {editMode ? (
+                          cell("website_url", row.website_url ?? "")
+                        ) : row.website_url ? (
+                          <ExpandableCell
+                            text={row.website_url.replace(/^https?:\/\//i, "")}
+                            title="Website"
+                            className="text-emerald-400 hover:text-emerald-300"
+                            detail={
+                              <a
+                                href={row.website_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-block text-xs text-emerald-400 hover:text-emerald-300"
+                              >
+                                Open website
+                              </a>
+                            }
+                          />
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className={TD_MUTED}>{cell("city", row.city ?? "")}</td>
+                      <td className={TD}>
+                        {row.latest_score ? (
+                          <ScoreBadge score={scoreLabel(row.latest_score)} />
+                        ) : (
+                          <span className="text-slate-500 text-sm">Not scored</span>
                         )}
                       </td>
                       <td className={TD_MUTED}>{cell("address", row.address ?? "")}</td>
-                      <td className={TD_MUTED}>
-                        {cell("contact_designation", row.contact_designation ?? "")}
-                      </td>
                       <td className={TD_MUTED} title={row.created_at || undefined}>
                         {formatAddedAt(row.created_at)}
                       </td>
