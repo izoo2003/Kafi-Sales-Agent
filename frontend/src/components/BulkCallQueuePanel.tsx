@@ -54,7 +54,6 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
     results,
     batchNumber,
     totalBatches,
-    indexInBatch,
     pendingOutcome,
     pendingNotes,
     savingRemarks,
