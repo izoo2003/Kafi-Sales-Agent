@@ -16,21 +16,15 @@ function statusDot(
   results: CallQueueState["results"],
 ) {
   const result = results[index];
-  if (result?.skipped)
-    return (
-      <span className="w-2 h-2 rounded-full bg-amber-500/70 shrink-0" title="Skipped" />
-    );
-  if (result?.error)
-    return <span className="w-2 h-2 rounded-full bg-red-500 shrink-0" title={result.error} />;
-  if (result?.callStatus === "completed")
-    return <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Completed" />;
-  if (result?.callStatus && result.callStatus !== "completed" && result.callStatus !== "in-progress")
-    return (
-      <span
-        className="w-2 h-2 rounded-full bg-red-400/70 shrink-0"
-        title={result.callStatus ?? "Ended"}
-      />
-    );
+  if (index < currentIndex || (index === currentIndex && status === "completed")) {
+    if (result?.error && !result?.outcome)
+      return <span className="w-2 h-2 rounded-full bg-red-500 shrink-0" title={result.error} />;
+    if (result?.outcome || result?.notes)
+      return <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Logged" />;
+    if (result?.callStatus === "completed")
+      return <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Completed" />;
+    return <span className="w-2 h-2 rounded-full bg-slate-600 shrink-0" title="Done" />;
+  }
   if (index === currentIndex) {
     if (status === "running")
       return (
@@ -43,15 +37,12 @@ function statusDot(
       return (
         <span
           className="w-2 h-2 rounded-full bg-amber-400 shrink-0 animate-pulse"
-          title="Save remarks"
+          title="Add remarks"
         />
       );
-    return <span className="w-2 h-2 rounded-full bg-slate-500 shrink-0" />;
+    if (status === "paused")
+      return <span className="w-2 h-2 rounded-full bg-slate-400 shrink-0" title="Paused" />;
   }
-  if (index < currentIndex)
-    return (
-      <span className="w-2 h-2 rounded-full bg-slate-600 shrink-0" title="Done" />
-    );
   return <span className="w-2 h-2 rounded-full border border-slate-600 shrink-0" title="Queued" />;
 }
 
@@ -87,14 +78,12 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
 
   const totalCalls = entries.length;
   const completedCount = results.filter(
-    (r) => r.callStatus || r.skipped || r.error || r.outcome || r.notes,
+    (r, i) => i < currentIndex || Boolean(r.outcome || r.notes),
   ).length;
   const progressPct = totalCalls > 0 ? Math.round((completedCount / totalCalls) * 100) : 0;
 
   const currentResult = results[currentIndex] ?? null;
-  const showRemarksForm =
-    Boolean(currentEntry) &&
-    (status === "running" || status === "between" || status === "paused");
+  const showRemarksForm = Boolean(currentEntry) && status === "between";
   const showCallingCard =
     Boolean(currentEntry) &&
     (status === "running" || status === "between" || status === "paused") &&
@@ -142,7 +131,7 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
                 : status === "paused"
                   ? "Bulk call paused"
                   : status === "between"
-                    ? `Save remarks for ${currentEntry?.companyName ?? "this call"}`
+                    ? `Add remarks for ${currentEntry?.companyName ?? "this call"}`
                     : `Calling ${currentEntry?.companyName ?? "…"}`}
             </p>
             <p className="text-xs text-slate-400 mt-0.5">
@@ -156,55 +145,42 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          {(status === "running" || status === "between") && (
+          {status === "running" && (
             <>
-              <button
-                type="button"
-                onClick={() => void savePendingAndContinue()}
-                disabled={savingRemarks}
-                className="px-2.5 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 border border-emerald-600 text-white text-xs font-medium"
-              >
-                {savingRemarks ? "Saving…" : "Save & next"}
-              </button>
               <button
                 type="button"
                 onClick={skipCurrent}
-                disabled={savingRemarks}
-                className="px-2.5 py-1.5 rounded-lg bg-amber-900/50 hover:bg-amber-900/70 border border-amber-700/40 text-amber-200 text-xs disabled:opacity-60"
+                className="px-2.5 py-1.5 rounded-lg bg-amber-900/50 hover:bg-amber-900/70 border border-amber-700/40 text-amber-200 text-xs"
               >
                 Skip
               </button>
+              <button
+                type="button"
+                onClick={pause}
+                className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs"
+              >
+                Pause
+              </button>
             </>
           )}
-          {(status === "running" || status === "between") && (
+          {status === "between" && (
             <button
               type="button"
-              onClick={pause}
+              onClick={() => void savePendingAndContinue()}
               disabled={savingRemarks}
-              className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs disabled:opacity-60"
+              className="px-2.5 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 border border-emerald-600 text-white text-xs font-medium"
             >
-              Pause
+              {savingRemarks ? "Saving…" : "Save & next"}
             </button>
           )}
           {status === "paused" && (
-            <>
-              <button
-                type="button"
-                onClick={() => void savePendingAndContinue()}
-                disabled={savingRemarks}
-                className="px-2.5 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 border border-emerald-600 text-white text-xs font-medium"
-              >
-                {savingRemarks ? "Saving…" : "Save & next"}
-              </button>
-              <button
-                type="button"
-                onClick={resume}
-                disabled={savingRemarks}
-                className="px-2.5 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-600 border border-sky-600 text-white text-xs disabled:opacity-60"
-              >
-                Resume
-              </button>
-            </>
+            <button
+              type="button"
+              onClick={resume}
+              className="px-2.5 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-600 border border-sky-600 text-white text-xs"
+            >
+              Resume
+            </button>
           )}
           {status !== "completed" && (
             <button
@@ -242,7 +218,7 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
           {batchEntries.map((entry, relIdx) => {
             const absIdx = batchStart + relIdx;
             const res = results[absIdx];
-            const isCurrent = absIdx === currentIndex;
+            const isCurrent = absIdx === currentIndex && status !== "completed";
 
             return (
               <div
@@ -265,10 +241,13 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
                     {CALL_OUTCOMES.find((o) => o.value === res.outcome)?.label ?? res.outcome}
                   </span>
                 )}
-                {res?.skipped && !res?.outcome && (
-                  <span className="text-xs text-amber-300/70 shrink-0">Skipped</span>
+                {isCurrent && status === "between" && !res?.outcome && (
+                  <span className="text-xs text-amber-300/80 shrink-0">Add remarks</span>
                 )}
-                {res?.error && (
+                {isCurrent && status === "running" && (
+                  <span className="text-xs text-sky-300/80 shrink-0">Calling</span>
+                )}
+                {res?.error && absIdx < currentIndex && !res?.outcome && (
                   <span className="text-xs text-red-300/70 shrink-0" title={res.error}>
                     Failed
                   </span>
@@ -286,15 +265,34 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
         </div>
 
         <div className="p-4 space-y-3">
+          {status === "running" && currentEntry && (
+            <div className="space-y-2">
+              <p className="text-xs text-slate-500">Active call</p>
+              <p className="text-sm text-sky-200 font-medium">{currentEntry.companyName}</p>
+              {currentEntry.contactName && (
+                <p className="text-xs text-slate-400">{currentEntry.contactName}</p>
+              )}
+              <p className="text-xs text-slate-500">{currentEntry.phone}</p>
+              <p className="text-xs text-slate-500 mt-3 leading-relaxed">
+                When you are done, click <span className="text-amber-200">Skip</span> to end this
+                call. You will then add an outcome and remarks for this client before the next
+                dial starts.
+              </p>
+              <button
+                type="button"
+                onClick={skipCurrent}
+                className="px-3 py-1.5 rounded-lg bg-amber-900/50 hover:bg-amber-900/70 border border-amber-700/40 text-amber-200 text-xs"
+              >
+                Skip — end call & add remarks
+              </button>
+            </div>
+          )}
+
           {showRemarksForm && currentEntry && (
             <>
               <div className="space-y-0.5">
                 <p className="text-xs text-slate-500">
-                  {status === "running"
-                    ? "Active call — add remarks anytime"
-                    : status === "paused"
-                      ? "Paused — save remarks or resume"
-                      : "Call ended — save remarks to continue"}
+                  Call ended — log this client before dialing the next
                 </p>
                 <p className="text-sm text-sky-200 font-medium">{currentEntry.companyName}</p>
                 {currentEntry.contactName && (
@@ -340,56 +338,48 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
                 {...spellingInputProps("prose")}
               />
 
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void savePendingAndContinue()}
-                  disabled={savingRemarks}
-                  className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 border border-emerald-600 text-white text-xs font-medium"
-                >
-                  {savingRemarks ? "Saving…" : "Save remarks & next"}
-                </button>
-                <button
-                  type="button"
-                  onClick={skipCurrent}
-                  disabled={savingRemarks}
-                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs disabled:opacity-60"
-                >
-                  Skip without saving
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => void savePendingAndContinue()}
+                disabled={savingRemarks}
+                className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 border border-emerald-600 text-white text-xs font-medium"
+              >
+                {savingRemarks ? "Saving…" : "Save remarks & next"}
+              </button>
               <p className="text-xs text-slate-500">
-                Type remarks during the call. Save & next hangs up (if needed), saves, then dials
-                the next lead.
+                Saves outcome and remarks for this client, then dials the next call in the batch.
               </p>
             </>
+          )}
+
+          {status === "paused" && (
+            <div className="space-y-1">
+              <p className="text-sm text-slate-300">Queue paused.</p>
+              <p className="text-xs text-slate-500">
+                Press Resume to continue. If the call already ended, you will add remarks next.
+              </p>
+            </div>
           )}
 
           {status === "completed" && (
             <div className="space-y-2">
               <p className="text-sm font-medium text-emerald-300">All calls completed!</p>
-              <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="grid grid-cols-2 gap-2 text-center">
                 <div className="rounded-lg bg-slate-800 p-2">
                   <p className="text-lg font-bold text-emerald-400">
-                    {results.filter((r) => r.outcome || r.callStatus === "completed").length}
+                    {results.filter((r) => r.outcome || r.notes).length}
                   </p>
-                  <p className="text-xs text-slate-500 mt-0.5">Logged</p>
-                </div>
-                <div className="rounded-lg bg-slate-800 p-2">
-                  <p className="text-lg font-bold text-amber-400">
-                    {results.filter((r) => r.skipped).length}
-                  </p>
-                  <p className="text-xs text-slate-500 mt-0.5">Skipped</p>
+                  <p className="text-xs text-slate-500 mt-0.5">With remarks</p>
                 </div>
                 <div className="rounded-lg bg-slate-800 p-2">
                   <p className="text-lg font-bold text-red-400">
                     {results.filter((r) => r.error).length}
                   </p>
-                  <p className="text-xs text-slate-500 mt-0.5">Failed</p>
+                  <p className="text-xs text-slate-500 mt-0.5">Failed dials</p>
                 </div>
               </div>
               <p className="text-xs text-slate-500">
-                Outcomes can be updated from the call history below.
+                Outcomes can be updated later from call history.
               </p>
             </div>
           )}

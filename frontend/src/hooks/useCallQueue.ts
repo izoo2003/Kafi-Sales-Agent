@@ -39,18 +39,25 @@ export interface CallQueueState {
   totalBatches: number;
   indexInBatch: number;
   batchSize: number;
-  /** Outcome/notes for the current call — editable while dialing and after hang-up. */
+  /** Outcome/notes collected in the post-call remarks step. */
   pendingOutcome: string | null;
   pendingNotes: string;
   savingRemarks: boolean;
   setPendingOutcome: (v: string | null) => void;
   setPendingNotes: (v: string) => void;
-  /** Save remarks for the current call, hang up if needed, then dial the next lead. */
+  /**
+   * Save outcome/remarks for the current call, then dial the next lead.
+   * Only available during the remarks step (`between`).
+   */
   savePendingAndContinue: () => Promise<void>;
   start: (leads: QueueEntry[]) => void;
   pause: () => void;
   resume: () => void;
   stop: () => void;
+  /**
+   * During an active call: hang up and open the remarks step for this lead.
+   * Does not advance the queue — Save & next does that after remarks.
+   */
   skipCurrent: () => void;
 }
 
@@ -79,7 +86,7 @@ export function useCallQueue(): CallQueueState {
   const pendingInteractionIdRef = useRef<number | undefined>(undefined);
   const pendingOutcomeRef = useRef<string | null>(null);
   const pendingNotesRef = useRef("");
-  /** When true, call-end follow-up only records interactionId (no between transition / note wipe). */
+  /** When true, disconnect follow-up only binds interactionId (used while saving/advancing). */
   const suppressBetweenRef = useRef(false);
 
   const clearTimers = () => {
@@ -109,6 +116,15 @@ export function useCallQueue(): CallQueueState {
     pendingInteractionIdRef.current = undefined;
     setPendingOutcomeSafe(null);
     setPendingNotesSafe("");
+  }, [setPendingNotesSafe, setPendingOutcomeSafe]);
+
+  const enterRemarksStep = useCallback(() => {
+    clearTimers();
+    setPendingOutcomeSafe(null);
+    setPendingNotesSafe("");
+    setStatus("between");
+    statusRef.current = "between";
+    setGapSecondsLeft(null);
   }, [setPendingNotesSafe, setPendingOutcomeSafe]);
 
   const batchNumber = Math.floor(currentIndex / BATCH_SIZE) + 1;
@@ -158,12 +174,11 @@ export function useCallQueue(): CallQueueState {
                 : r,
             ),
           );
-          // Stay on this lead so the user can still Save & next (or Skip).
-          setStatus("between");
-          statusRef.current = "between";
+          // Failed to place — still collect outcome/remarks before moving on.
+          enterRemarksStep();
         });
     },
-    [bindInteraction, placeCall],
+    [bindInteraction, enterRemarksStep, placeCall],
   );
 
   const advanceToNext = useCallback(
@@ -191,7 +206,7 @@ export function useCallQueue(): CallQueueState {
     [dialEntry, resetRemarksForNextCall, setBulkModeActive],
   );
 
-  // Call ended naturally — keep typed remarks; wait for Save & next.
+  // Natural hang-up (or Skip hang-up) → remarks step for this same lead.
   useEffect(() => {
     if (!pendingFollowUp || statusRef.current === "idle" || statusRef.current === "completed") {
       return;
@@ -210,46 +225,42 @@ export function useCallQueue(): CallQueueState {
       return;
     }
 
-    clearTimers();
-    // Preserve notes typed during the call — do not wipe pendingOutcome/notes.
-    setStatus("between");
-    statusRef.current = "between";
-    setGapSecondsLeft(null);
+    // Already on remarks (e.g. Skip set between before disconnect) — keep notes empty reset from enterRemarksStep.
+    if (statusRef.current === "between") {
+      return;
+    }
+
+    enterRemarksStep();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingFollowUp]);
 
   const savePendingAndContinue = useCallback(async () => {
-    if (
-      statusRef.current !== "running" &&
-      statusRef.current !== "between" &&
-      statusRef.current !== "paused"
-    ) {
-      return;
-    }
+    // Only advance after the remarks step — never mid-call.
+    if (statusRef.current !== "between") return;
     if (savingRemarks) return;
 
     const outcome = pendingOutcomeRef.current;
     const notes = autocorrectText(pendingNotesRef.current, "prose");
     const idx = currentIndexRef.current;
+    const interactionId = pendingInteractionIdRef.current;
 
     setSavingRemarks(true);
     suppressBetweenRef.current = true;
     clearTimers();
 
     try {
-      // End the active call if still connected; settle so interaction id is available.
       hangUp();
       await sleep(HANGUP_SETTLE_MS);
 
-      const interactionId = pendingInteractionIdRef.current;
-      await flushPendingRemarks(interactionId, outcome, notes);
+      const resolvedId = pendingInteractionIdRef.current ?? interactionId;
+      await flushPendingRemarks(resolvedId, outcome, notes);
 
       setResults((prev) =>
         prev.map((r, i) =>
           i === idx
             ? {
                 ...r,
-                interactionId: interactionId ?? r.interactionId,
+                interactionId: resolvedId ?? r.interactionId,
                 outcome: outcome || r.outcome,
                 notes: notes || r.notes,
                 skipped: false,
@@ -310,10 +321,9 @@ export function useCallQueue(): CallQueueState {
 
   const resume = useCallback(() => {
     if (statusRef.current !== "paused") return;
-    // Call already ended (or failed) while paused — resume into remarks, not a re-dial.
+    // Call already ended while paused → collect remarks before dialing next.
     if (pendingInteractionIdRef.current != null) {
-      setStatus("between");
-      statusRef.current = "between";
+      enterRemarksStep();
       return;
     }
     setStatus("running");
@@ -325,7 +335,7 @@ export function useCallQueue(): CallQueueState {
       }
       return currentQueue;
     });
-  }, [dialEntry]);
+  }, [dialEntry, enterRemarksStep]);
 
   const stop = useCallback(() => {
     clearTimers();
@@ -342,30 +352,18 @@ export function useCallQueue(): CallQueueState {
     resetRemarksForNextCall();
     setSavingRemarks(false);
     setBulkModeActive(false);
-  }, [
-    hangUp,
-    clearPendingFollowUp,
-    setBulkModeActive,
-    resetRemarksForNextCall,
-  ]);
+  }, [hangUp, clearPendingFollowUp, setBulkModeActive, resetRemarksForNextCall]);
 
+  /**
+   * Skip = end the current call and ask for remarks/outcome for this lead.
+   * Does not move to the next dial until Save & next.
+   */
   const skipCurrent = useCallback(() => {
+    if (statusRef.current !== "running") return;
     clearTimers();
-    suppressBetweenRef.current = true;
     hangUp();
-    const idx = currentIndexRef.current;
-    setResults((prev) =>
-      prev.map((r, i) => (i === idx ? { ...r, skipped: true } : r)),
-    );
-    clearPendingFollowUp();
-    window.setTimeout(() => {
-      suppressBetweenRef.current = false;
-    }, HANGUP_SETTLE_MS);
-    setQueue((currentQueue) => {
-      advanceToNext(idx, currentQueue);
-      return currentQueue;
-    });
-  }, [hangUp, advanceToNext, clearPendingFollowUp]);
+    enterRemarksStep();
+  }, [hangUp, enterRemarksStep]);
 
   return {
     queue,
