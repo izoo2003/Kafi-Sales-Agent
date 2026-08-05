@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   client,
   type DraftInteraction,
@@ -6,9 +6,14 @@ import {
   type WhatsAppConversation,
   type WhatsAppTemplate,
 } from "../api/client";
+import { IconSearch } from "../components/icons/AppIcons";
+import { ProseTextarea } from "../components/ProseTextField";
 
 interface WhatsAppInboxPageProps {
   onError: (message: string) => void;
+  /** When set (e.g. from buyer profile), open this contact's thread once loaded. */
+  initialContactId?: number | null;
+  onInitialContactConsumed?: () => void;
 }
 
 const POLL_MS = 12_000;
@@ -24,7 +29,11 @@ function initialsFrom(label: string): string {
   return label.trim().charAt(0).toUpperCase() || "?";
 }
 
-export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
+export function WhatsAppInboxPage({
+  onError,
+  initialContactId = null,
+  onInitialContactConsumed,
+}: WhatsAppInboxPageProps) {
   const [conversations, setConversations] = useState<WhatsAppConversation[]>([]);
   const [loadingList, setLoadingList] = useState(true);
   const [selected, setSelected] = useState<WhatsAppConversation | null>(null);
@@ -38,6 +47,8 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
   const [variables, setVariables] = useState<string[]>([]);
   const [config, setConfig] = useState<WhatsAppConfig | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [chatSearch, setChatSearch] = useState("");
+  const consumedInitialContactRef = useRef<number | null>(null);
 
   const refreshConversations = useCallback(
     async (options?: { silent?: boolean }) => {
@@ -102,6 +113,69 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
     },
     [onError],
   );
+
+  // Deep-link from buyer profile: open a specific contact thread once.
+  useEffect(() => {
+    if (initialContactId == null) {
+      consumedInitialContactRef.current = null;
+      return;
+    }
+    if (loadingList) return;
+    if (consumedInitialContactRef.current === initialContactId) return;
+    consumedInitialContactRef.current = initialContactId;
+
+    let cancelled = false;
+
+    const openContact = async () => {
+      const existing = conversations.find((c) => c.contact_id === initialContactId);
+      if (existing) {
+        if (!cancelled) {
+          await loadThread(existing);
+          onInitialContactConsumed?.();
+        }
+        return;
+      }
+      try {
+        const rows = await client.listWhatsAppConversationMessages(initialContactId);
+        if (cancelled) return;
+        const last = rows[rows.length - 1];
+        const synthetic: WhatsAppConversation = {
+          contact_id: initialContactId,
+          buyer_id: 0,
+          company_name: last?.company_name ?? null,
+          contact_name: last?.contact_name ?? "WhatsApp chat",
+          contact_phone: last?.contact_phone ?? null,
+          whatsapp_opt_in: true,
+          within_session_window: true,
+          window_expires_at: null,
+          last_message: last?.content ?? null,
+          last_message_at: last?.created_at ?? null,
+          last_direction: last?.direction ?? null,
+        };
+        setSelected(synthetic);
+        setMessages(rows);
+        setLoadingThread(false);
+        setConversations((prev) =>
+          prev.some((c) => c.contact_id === initialContactId)
+            ? prev
+            : [synthetic, ...prev],
+        );
+        onInitialContactConsumed?.();
+      } catch (e) {
+        if (!cancelled) {
+          onError(e instanceof Error ? e.message : "Failed to open WhatsApp chat");
+          onInitialContactConsumed?.();
+        }
+      }
+    };
+
+    void openContact();
+    return () => {
+      cancelled = true;
+    };
+    // Only re-run when the deep-link id or list load state changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- conversations snapshot at load time is enough
+  }, [initialContactId, loadingList]);
 
   useEffect(() => {
     if (!selected) return;
@@ -190,6 +264,23 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
     }
   }
 
+  const filteredConversations = useMemo(() => {
+    const q = chatSearch.trim().toLowerCase();
+    if (!q) return conversations;
+    return conversations.filter((conv) => {
+      const haystack = [
+        conv.company_name,
+        conv.contact_name,
+        conv.contact_phone,
+        conv.last_message,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [chatSearch, conversations]);
+
   const setupIncomplete =
     config &&
     (!config.configured ||
@@ -270,9 +361,27 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
             selected ? "hidden md:block" : ""
           }`}
         >
-          <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between sticky top-0 bg-slate-900/80">
-            <h3 className="text-sm font-medium text-slate-300">Conversations</h3>
-            <span className="text-xs text-slate-500">{conversations.length}</span>
+          <div className="px-4 py-3 border-b border-slate-800 sticky top-0 bg-slate-900/95 backdrop-blur space-y-2 z-[1]">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-medium text-slate-300">Conversations</h3>
+              <span className="text-xs text-slate-500">
+                {chatSearch.trim()
+                  ? `${filteredConversations.length} / ${conversations.length}`
+                  : conversations.length}
+              </span>
+            </div>
+            <label className="relative block">
+              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none">
+                <IconSearch size="sm" />
+              </span>
+              <input
+                type="search"
+                value={chatSearch}
+                onChange={(e) => setChatSearch(e.target.value)}
+                placeholder="Search chats…"
+                className="w-full rounded-lg border border-slate-700 bg-slate-950 pl-8 pr-3 py-1.5 text-sm text-slate-200 placeholder:text-slate-600"
+              />
+            </label>
           </div>
           {loadingList ? (
             <p className="text-sm text-slate-400 p-4">Loading…</p>
@@ -282,8 +391,12 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
               {config?.display_number || "your Business number"}, or send an approved template from
               a lead — threads appear here for two-way chat.
             </p>
+          ) : filteredConversations.length === 0 ? (
+            <p className="text-sm text-slate-500 p-4">
+              No chats match “{chatSearch.trim()}”.
+            </p>
           ) : (
-            conversations.map((conv) => (
+            filteredConversations.map((conv) => (
               <button
                 key={conv.contact_id}
                 type="button"
@@ -427,9 +540,9 @@ export function WhatsAppInboxPage({ onError }: WhatsAppInboxPageProps) {
               )}
 
               <div className="p-4 border-t border-slate-800 flex gap-2">
-                <textarea
+                <ProseTextarea
                   value={reply}
-                  onChange={(e) => setReply(e.target.value)}
+                  onChange={setReply}
                   rows={2}
                   placeholder={
                     selected.within_session_window

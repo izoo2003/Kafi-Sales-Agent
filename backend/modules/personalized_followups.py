@@ -360,82 +360,141 @@ def dismiss_draft(db: Session, draft_id: int) -> PersonalizedFollowupDraft:
     return draft
 
 
-def send_draft(db: Session, draft_id: int, *, user: AppUser) -> dict[str, Any]:
-    """Send the reviewed message via email and WhatsApp (human-approved)."""
+def send_draft(
+    db: Session,
+    draft_id: int,
+    *,
+    user: AppUser,
+    channels: str | list[str] | None = None,
+    template_name: str | None = None,
+    template_language: str = "en_US",
+    template_variables: list[str] | None = None,
+) -> dict[str, Any]:
+    """Send the reviewed message via email and/or WhatsApp (human-approved).
+
+    ``channels``: ``"email"`` | ``"whatsapp"`` | ``"both"`` (default), or a list
+    of channel names. Outside the 24h WhatsApp window, pass an approved
+    ``template_name`` (+ variables) or the WhatsApp send will fail with a
+    template-required message the UI can surface.
+    """
     draft = db.get(PersonalizedFollowupDraft, draft_id)
     if not draft:
         raise ValueError("Personalized draft not found")
-    if draft.status == "sent":
-        raise ValueError("This follow-up was already sent")
-    if not (draft.subject or "").strip() or not (draft.email_body or "").strip():
-        raise ValueError("Subject and email body are required before sending")
 
-    # Final sync: WhatsApp always carries the same information as the email.
+    channel_set: set[str]
+    if channels is None:
+        channel_set = {"email", "whatsapp"}
+    elif isinstance(channels, str):
+        key = channels.strip().lower()
+        if key in {"both", "all", "email+whatsapp", "email_whatsapp"}:
+            channel_set = {"email", "whatsapp"}
+        elif key in {"email", "whatsapp"}:
+            channel_set = {key}
+        else:
+            raise ValueError("channels must be 'email', 'whatsapp', or 'both'")
+    else:
+        channel_set = {str(c).strip().lower() for c in channels if str(c).strip()}
+        channel_set &= {"email", "whatsapp"}
+        if not channel_set:
+            raise ValueError("Select at least one channel: email or whatsapp")
+
+    send_email = "email" in channel_set
+    send_whatsapp = "whatsapp" in channel_set
+
+    email_already_ok = (draft.email_send_status or "") in {"sent", "queued"}
+    wa_already_ok = draft.whatsapp_send_status == "sent"
+
+    if draft.status == "sent" and (
+        (not send_email or email_already_ok) and (not send_whatsapp or wa_already_ok)
+    ):
+        raise ValueError("This follow-up was already sent on the selected channel(s)")
+
+    # Skip channels that already succeeded (retry only the failed ones).
+    if send_email and email_already_ok:
+        send_email = False
+    if send_whatsapp and wa_already_ok:
+        send_whatsapp = False
+    if not send_email and not send_whatsapp:
+        raise ValueError("Selected channel(s) were already sent")
+
+    body_text = (draft.email_body or "").strip()
+    if send_email:
+        if not (draft.subject or "").strip() or not body_text:
+            raise ValueError("Subject and email body are required before sending email")
+    elif send_whatsapp and not body_text and not (template_name or "").strip():
+        raise ValueError("Message body is required before sending WhatsApp")
+
+    # Final sync: free-text WhatsApp carries the same information as the email.
     draft.whatsapp_body = derive_whatsapp_from_email(draft.email_body or "")
     db.commit()
 
     from modules.comms_generator import get_comms
 
     comms = get_comms()
-    email_status = None
-    email_message = None
-    wa_status = None
-    wa_message = None
-    email_interaction_id = None
-    wa_interaction_id = None
+    email_status = draft.email_send_status
+    email_message = draft.email_send_message
+    wa_status = draft.whatsapp_send_status
+    wa_message = draft.whatsapp_send_message
+    email_interaction_id = draft.email_interaction_id
+    wa_interaction_id = draft.whatsapp_interaction_id
 
     # Email
-    try:
-        email_draft = comms.create_manual_email_draft(
-            db,
-            buyer_id=draft.buyer_id,
-            contact_id=draft.contact_id,
-            subject=draft.subject or "",
-            body=draft.email_body or "",
-        )
-        email_interaction_id = email_draft.id
-        _approved, send_result = comms.approve_draft(
-            db,
-            email_draft.id,
-            approved_by=user.username,
-            send=True,
-            mailbox_user=user,
-        )
-        email_status = (send_result or {}).get("status") or "sent"
-        email_message = (send_result or {}).get("message")
-        approved_status = getattr(_approved.status, "value", _approved.status)
-        if email_status not in {"sent", "queued"} and str(approved_status) == "sent":
-            email_status = "sent"
-            email_message = email_message or "Email sent"
-    except Exception as exc:  # noqa: BLE001
-        email_status = "error"
-        email_message = str(exc)
+    if send_email:
+        try:
+            email_draft = comms.create_manual_email_draft(
+                db,
+                buyer_id=draft.buyer_id,
+                contact_id=draft.contact_id,
+                subject=draft.subject or "",
+                body=draft.email_body or "",
+            )
+            email_interaction_id = email_draft.id
+            _approved, send_result = comms.approve_draft(
+                db,
+                email_draft.id,
+                approved_by=user.username,
+                send=True,
+                mailbox_user=user,
+            )
+            email_status = (send_result or {}).get("status") or "sent"
+            email_message = (send_result or {}).get("message")
+            approved_status = getattr(_approved.status, "value", _approved.status)
+            if email_status not in {"sent", "queued"} and str(approved_status) == "sent":
+                email_status = "sent"
+                email_message = email_message or "Email sent"
+        except Exception as exc:  # noqa: BLE001
+            email_status = "error"
+            email_message = str(exc)
 
-    # WhatsApp (same personalized text)
-    try:
-        contact = db.get(Contact, draft.contact_id) if draft.contact_id else None
-        if not contact or not (contact.phone or contact.wa_id):
-            raise ValueError("Contact has no phone number for WhatsApp")
-        wa_draft = comms.create_manual_whatsapp_draft(
-            db,
-            contact_id=contact.id,
-            content=(draft.whatsapp_body or draft.email_body or "").strip(),
-        )
-        wa_interaction_id = wa_draft.id
-        _wa_approved, wa_result = comms.approve_draft(
-            db,
-            wa_draft.id,
-            approved_by=user.username,
-            send=True,
-        )
-        approved_wa = getattr(_wa_approved.status, "value", _wa_approved.status)
-        wa_status = (wa_result or {}).get("status") or (
-            "sent" if str(approved_wa) == "sent" else "error"
-        )
-        wa_message = (wa_result or {}).get("message")
-    except Exception as exc:  # noqa: BLE001
-        wa_status = "error"
-        wa_message = str(exc)
+    # WhatsApp (free text inside 24h window, or approved template outside it)
+    if send_whatsapp:
+        try:
+            contact = db.get(Contact, draft.contact_id) if draft.contact_id else None
+            if not contact or not (contact.phone or contact.wa_id):
+                raise ValueError("Contact has no phone number for WhatsApp")
+            wa_draft = comms.create_manual_whatsapp_draft(
+                db,
+                contact_id=contact.id,
+                content=(draft.whatsapp_body or draft.email_body or "").strip(),
+            )
+            wa_interaction_id = wa_draft.id
+            _wa_approved, wa_result = comms.approve_draft(
+                db,
+                wa_draft.id,
+                approved_by=user.username,
+                send=True,
+                template_name=(template_name or "").strip() or None,
+                template_language=template_language or "en_US",
+                template_variables=template_variables,
+            )
+            approved_wa = getattr(_wa_approved.status, "value", _wa_approved.status)
+            wa_status = (wa_result or {}).get("status") or (
+                "sent" if str(approved_wa) == "sent" else "error"
+            )
+            wa_message = (wa_result or {}).get("message")
+        except Exception as exc:  # noqa: BLE001
+            wa_status = "error"
+            wa_message = str(exc)
 
     draft.email_interaction_id = email_interaction_id
     draft.whatsapp_interaction_id = wa_interaction_id
@@ -444,17 +503,29 @@ def send_draft(db: Session, draft_id: int, *, user: AppUser) -> dict[str, Any]:
     draft.email_send_message = email_message
     draft.whatsapp_send_message = wa_message
 
-    email_ok = email_status in {"sent", "queued"}
+    email_ok = (email_status or "") in {"sent", "queued"}
     wa_ok = wa_status == "sent"
-    if email_ok or wa_ok:
-        draft.status = "sent"
-        draft.sent_at = _utcnow()
-        if not email_ok:
-            draft.generation_error = email_message or "Email send failed"
-        elif not wa_ok:
-            draft.generation_error = wa_message or "WhatsApp send failed"
-        else:
+
+    requested_email = "email" in channel_set
+    requested_wa = "whatsapp" in channel_set
+    email_done = (not requested_email) or email_ok
+    wa_done = (not requested_wa) or wa_ok
+
+    if (requested_email and email_ok) or (requested_wa and wa_ok):
+        if email_done and wa_done:
+            draft.status = "sent"
+            draft.sent_at = draft.sent_at or _utcnow()
             draft.generation_error = None
+        else:
+            # Partial success — keep ready so the failed channel can be retried.
+            draft.status = "ready"
+            draft.sent_at = draft.sent_at or _utcnow()
+            if requested_email and not email_ok:
+                draft.generation_error = email_message or "Email send failed"
+            elif requested_wa and not wa_ok:
+                draft.generation_error = wa_message or "WhatsApp send failed"
+            else:
+                draft.generation_error = None
     else:
         draft.status = "ready"
         draft.generation_error = email_message or wa_message or "Send failed"
@@ -468,30 +539,40 @@ def send_draft(db: Session, draft_id: int, *, user: AppUser) -> dict[str, Any]:
         db,
         entity_type="personalized_followup",
         entity_id=draft.id,
-        action="sent" if email_ok else "send_partial",
+        action="sent" if email_done and wa_done else "send_partial",
         actor=user.username,
         details={
+            "channels": sorted(channel_set),
             "email_status": email_status,
             "whatsapp_status": wa_status,
             "buyer_id": draft.buyer_id,
+            "template_name": template_name,
         },
     )
 
+    if requested_email and requested_wa:
+        if email_ok and wa_ok:
+            message = "Email and WhatsApp sent."
+        elif email_ok:
+            message = f"Email sent; WhatsApp not sent: {wa_message}"
+        elif wa_ok:
+            message = f"WhatsApp sent; email not sent: {email_message}"
+        else:
+            message = f"Send failed: {email_message or wa_message}"
+    elif requested_email:
+        message = "Email sent." if email_ok else f"Email not sent: {email_message}"
+    else:
+        message = "WhatsApp sent." if wa_ok else f"WhatsApp not sent: {wa_message}"
+
     return {
         "draft": draft_to_dict(db, draft),
-        "email_sent": email_ok,
-        "whatsapp_sent": wa_ok,
-        "message": (
-            "Email and WhatsApp sent."
-            if email_ok and wa_ok
-            else (
-                f"Email sent; WhatsApp not sent: {wa_message}"
-                if email_ok
-                else (
-                    f"WhatsApp sent; email not sent: {email_message}"
-                    if wa_ok
-                    else f"Send failed: {email_message or wa_message}"
-                )
-            )
+        "email_sent": email_ok if requested_email else False,
+        "whatsapp_sent": wa_ok if requested_wa else False,
+        "needs_whatsapp_template": bool(
+            requested_wa
+            and not wa_ok
+            and wa_message
+            and "template" in (wa_message or "").lower()
         ),
+        "message": message,
     }

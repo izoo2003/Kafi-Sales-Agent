@@ -132,9 +132,45 @@ export function EmailBodyEditor({
     lastHtml.current = next;
   }, [value]);
 
+  /** Uppercase the first letter in the contentEditable document (live typing). */
+  function ensureLeadingCapital(root: HTMLElement) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let node: Node | null;
+    while ((node = walker.nextNode())) {
+      const text = node.textContent ?? "";
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (!/\p{L}/u.test(ch)) continue;
+        const upper = ch.toLocaleUpperCase("en");
+        if (ch === upper) return;
+        const sel = window.getSelection();
+        const anchorNode = sel?.anchorNode ?? null;
+        const anchorOffset = sel?.anchorOffset ?? 0;
+        node.textContent = text.slice(0, i) + upper + text.slice(i + 1);
+        if (sel && anchorNode && root.contains(anchorNode)) {
+          try {
+            const range = document.createRange();
+            const target = anchorNode === node || anchorNode.parentNode === node
+              ? node
+              : anchorNode;
+            const len = (target.textContent || "").length;
+            range.setStart(target, Math.min(anchorOffset, len));
+            range.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(range);
+          } catch {
+            /* ignore selection restore failures */
+          }
+        }
+        return;
+      }
+    }
+  }
+
   function emitChange() {
     const el = editorRef.current;
     if (!el) return;
+    ensureLeadingCapital(el);
     const html = el.innerHTML === "<br>" ? "" : el.innerHTML;
     lastHtml.current = html;
     onChange(html);

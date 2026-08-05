@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { client, type DraftInteraction, type WhatsAppTemplate } from "../api/client";
 import { EmailBodyEditor } from "../components/EmailBodyEditor";
 import { Pagination } from "../components/Pagination";
+import { ProseTextarea } from "../components/ProseTextField";
 import { useDrafts } from "../hooks/useDrafts";
 
 interface ApprovalQueuePageProps {
@@ -141,9 +142,9 @@ function DraftCard({
           placeholder="Edit the email draft…"
         />
       ) : (
-        <textarea
+        <ProseTextarea
           value={content}
-          onChange={(e) => setContent(e.target.value)}
+          onChange={setContent}
           rows={5}
           className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200"
         />

@@ -13,6 +13,7 @@ import { CallHistoryPanel } from "../components/CallHistoryPanel";
 import { ClientHistoryPanel } from "../components/ClientHistoryPanel";
 import { ContactsPanel } from "../components/ContactsPanel";
 import { DiscoverLeadsPanel } from "../components/DiscoverLeadsPanel";
+import { WhatsAppChatPreviewPanel } from "../components/WhatsAppChatPreviewPanel";
 import { ActionButton } from "../components/ui/ActionButton";
 import {
   IconSearch,
@@ -26,6 +27,8 @@ interface BuyerProfileProps {
   onBack: () => void;
   onError: (message: string) => void;
   onCallFollowUpSaved?: (outcome: string | null | undefined) => void;
+  /** Open WhatsApp inbox focused on a contact's full thread. */
+  onOpenWhatsAppChat?: (contactId: number) => void;
   /** Admin-only: show Find similar / Discover Leads panel. */
   canDiscover?: boolean;
 }
@@ -39,6 +42,7 @@ export function BuyerProfile({
   onBack,
   onError,
   onCallFollowUpSaved,
+  onOpenWhatsAppChat,
   canDiscover = false,
 }: BuyerProfileProps) {
   const [lead, setLead] = useState<Lead | null>(null);
@@ -231,6 +235,13 @@ export function BuyerProfile({
         buyerId={leadId}
         companyName={lead.company_name}
         onError={onError}
+      />
+
+      <WhatsAppChatPreviewPanel
+        buyerId={leadId}
+        companyName={lead.company_name}
+        onError={onError}
+        onViewAllMessages={onOpenWhatsAppChat}
       />
 
       {score && (

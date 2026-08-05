@@ -9,6 +9,7 @@ import {
 } from "../api/client";
 import { EmailAttachmentsField } from "./EmailAttachmentsField";
 import { EmailBodyEditor, emailBodyHasContent } from "./EmailBodyEditor";
+import { capitalizeFirstLetter } from "../utils/spelling";
 
 type ComposeTab = "manual" | "template";
 
@@ -239,7 +240,9 @@ export function LeadEmailComposeModal({
                 <span className="text-sm text-slate-400">Subject</span>
                 <input
                   value={manualSubject}
-                  onChange={(e) => setManualSubject(e.target.value)}
+                  onChange={(e) =>
+                    setManualSubject(capitalizeFirstLetter(e.target.value))
+                  }
                   className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm"
                 />
               </label>

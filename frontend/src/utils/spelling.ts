@@ -5,6 +5,28 @@
 
 export type SpellingMode = "prose" | "name" | "off";
 
+/**
+ * Ensure the first letter in plain text is uppercase (skips leading whitespace).
+ * Used live while typing email / WhatsApp / notes so messages always start capitalised.
+ */
+export function capitalizeFirstLetter(value: string): string {
+  if (value == null || value === "") return value ?? "";
+  const text = String(value);
+  const match = text.match(/^(\s*)(\p{L})/u);
+  if (!match) return text;
+  const [, leading, letter] = match;
+  const upper = letter.toLocaleUpperCase("en");
+  if (letter === upper) return text;
+  return leading + upper + text.slice(leading.length + letter.length);
+}
+
+/** Controlled input/textarea onChange that capitalises the first letter. */
+export function capitalizedChange(
+  onChange: (value: string) => void,
+): (value: string) => void {
+  return (value) => onChange(capitalizeFirstLetter(value));
+}
+
 /** HTML input/textarea attrs for native spellcheck / mobile autocorrect. */
 export function spellingInputProps(mode: SpellingMode = "prose"): {
   spellCheck: boolean;
@@ -133,6 +155,7 @@ export function autocorrectText(value: string, mode: SpellingMode = "prose"): st
   out = out.replace(/\n{3,}/g, "\n\n");
   if (mode === "prose" || mode === "name") {
     out = fixCommonTypos(out);
+    out = capitalizeFirstLetter(out);
   }
   return out.trim();
 }

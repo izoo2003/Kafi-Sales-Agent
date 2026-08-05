@@ -526,6 +526,90 @@ class CommsGenerator:
             .all()
         )
 
+    def get_whatsapp_buyer_preview(
+        self,
+        db: Session,
+        *,
+        buyer_id: int,
+        recent: int = 3,
+    ) -> dict:
+        """Recent WhatsApp messages for a buyer profile card (most-active contact)."""
+        from sqlalchemy import func as sa_func
+
+        recent = max(1, min(int(recent or 3), 10))
+        latest = (
+            db.query(
+                Interaction.contact_id.label("contact_id"),
+                sa_func.max(Interaction.created_at).label("last_at"),
+            )
+            .join(Contact, Contact.id == Interaction.contact_id)
+            .filter(
+                Contact.buyer_id == buyer_id,
+                Interaction.channel == Channel.whatsapp,
+            )
+            .group_by(Interaction.contact_id)
+            .order_by(sa_func.max(Interaction.created_at).desc())
+            .first()
+        )
+        if not latest:
+            return {
+                "buyer_id": buyer_id,
+                "contact_id": None,
+                "contact_name": None,
+                "contact_phone": None,
+                "within_session_window": False,
+                "total_messages": 0,
+                "messages": [],
+            }
+
+        contact = db.get(Contact, latest.contact_id)
+        if not contact:
+            return {
+                "buyer_id": buyer_id,
+                "contact_id": None,
+                "contact_name": None,
+                "contact_phone": None,
+                "within_session_window": False,
+                "total_messages": 0,
+                "messages": [],
+            }
+
+        total = (
+            db.query(Interaction)
+            .filter(
+                Interaction.contact_id == contact.id,
+                Interaction.channel == Channel.whatsapp,
+            )
+            .count()
+        )
+        # Newest first, then reverse so the preview reads like a short chat.
+        newest = (
+            db.query(Interaction)
+            .filter(
+                Interaction.contact_id == contact.id,
+                Interaction.channel == Channel.whatsapp,
+            )
+            .order_by(Interaction.created_at.desc())
+            .limit(recent)
+            .all()
+        )
+        messages = list(reversed(newest))
+
+        expires = contact.whatsapp_window_expires_at
+        if expires is not None and expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        within_window = bool(expires and expires > datetime.now(timezone.utc))
+
+        return {
+            "buyer_id": buyer_id,
+            "contact_id": contact.id,
+            "contact_name": contact.full_name,
+            "contact_phone": contact.phone or contact.wa_id,
+            "within_session_window": within_window,
+            "total_messages": total,
+            "messages": messages,
+        }
+
     def update_whatsapp_message_status(
         self,
         db: Session,

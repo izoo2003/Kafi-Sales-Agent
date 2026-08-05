@@ -138,7 +138,7 @@ export function AppTopActions({ onRefresh, onLogout, compact = false }: AppTopAc
             Notifications
           </p>
           <p className="text-xs text-slate-500 mt-1 mb-3">
-            Choose how alerts appear when new mail or follow-ups arrive.
+            Applies to email, WhatsApp, and follow-up alerts. Turning this off silences all of them.
           </p>
 
           <fieldset className="space-y-2">

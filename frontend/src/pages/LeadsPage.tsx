@@ -109,6 +109,10 @@ export function LeadsPage({ onError, onSelectLead, onTotalChange }: LeadsPagePro
           onSuccess={handleLeadCreated}
           onCancel={() => setShowCreateForm(false)}
           onError={onError}
+          onOpenExisting={(leadId) => {
+            setShowCreateForm(false);
+            onSelectLead(leadId);
+          }}
         />
       )}
 

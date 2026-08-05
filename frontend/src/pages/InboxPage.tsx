@@ -21,6 +21,7 @@ import {
   EmailBodyEditor,
   emailBodyHasContent,
 } from "../components/EmailBodyEditor";
+import { capitalizeFirstLetter } from "../utils/spelling";
 import { ActionButton } from "../components/ui/ActionButton";
 import {
   IconArchive,
@@ -1609,7 +1610,9 @@ export function InboxPage({
                       <input
                         type="text"
                         value={replySubjectLine}
-                        onChange={(e) => setReplySubjectLine(e.target.value)}
+                        onChange={(e) =>
+                          setReplySubjectLine(capitalizeFirstLetter(e.target.value))
+                        }
                         className="flex-1 rounded-lg bg-slate-950 border border-slate-700 px-3 py-1.5 text-sm"
                       />
                     </div>
@@ -1954,7 +1957,9 @@ export function InboxPage({
                     <input
                       type="text"
                       value={replySubjectLine}
-                      onChange={(e) => setReplySubjectLine(e.target.value)}
+                      onChange={(e) =>
+                        setReplySubjectLine(capitalizeFirstLetter(e.target.value))
+                      }
                       className="flex-1 rounded-lg bg-slate-950 border border-slate-700 px-3 py-1.5 text-sm"
                     />
                   </div>

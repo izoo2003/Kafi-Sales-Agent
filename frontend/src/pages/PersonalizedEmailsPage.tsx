@@ -3,16 +3,20 @@ import {
   client,
   type PersonalizedFollowupDraft,
   type PersonalizedFollowupListResponse,
+  type WhatsAppTemplate,
 } from "../api/client";
 import { ActionButton } from "../components/ui/ActionButton";
 import {
+  IconMail,
   IconRefresh,
   IconSave,
   IconSend,
   IconSparkles,
+  IconWhatsApp,
   IconX,
 } from "../components/icons/AppIcons";
 import { EmailBodyEditor } from "../components/EmailBodyEditor";
+import { ProseInput } from "../components/ProseTextField";
 import { deriveWhatsAppFromEmail } from "../utils/channelSync";
 
 interface PersonalizedEmailsPageProps {
@@ -21,6 +25,8 @@ interface PersonalizedEmailsPageProps {
   /** When true, omit the top page title (used inside AI Mode tabs). */
   embedded?: boolean;
 }
+
+type SendChannel = "email" | "whatsapp" | "both";
 
 const STATUS_LABELS: Record<string, string> = {
   awaiting_transcript: "Waiting for captions",
@@ -46,6 +52,10 @@ function statusClass(status: string): string {
   return "bg-slate-800 text-slate-400 border-slate-700";
 }
 
+function channelSent(status: string | null | undefined): boolean {
+  return status === "sent" || status === "queued";
+}
+
 export function PersonalizedEmailsPage({
   onError,
   onCountChange,
@@ -57,10 +67,16 @@ export function PersonalizedEmailsPage({
   const [subject, setSubject] = useState("");
   const [emailBody, setEmailBody] = useState("");
   const [saving, setSaving] = useState(false);
-  const [sending, setSending] = useState(false);
+  const [sending, setSending] = useState<SendChannel | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [filter, setFilter] = useState<"active" | "ready" | "sent">("active");
+
+  const [needsTemplate, setNeedsTemplate] = useState(false);
+  const [templates, setTemplates] = useState<WhatsAppTemplate[]>([]);
+  const [templateId, setTemplateId] = useState("");
+  const [variables, setVariables] = useState<string[]>([]);
+  const [pendingWaChannel, setPendingWaChannel] = useState<"whatsapp" | "both" | null>(null);
 
   const selected = rows.find((r) => r.id === selectedId) ?? null;
 
@@ -92,11 +108,32 @@ export function PersonalizedEmailsPage({
     if (!selected) {
       setSubject("");
       setEmailBody("");
+      setNeedsTemplate(false);
+      setPendingWaChannel(null);
       return;
     }
     setSubject(selected.subject || "");
     setEmailBody(selected.email_body || "");
-  }, [selected]);
+    setNeedsTemplate(false);
+    setPendingWaChannel(null);
+  }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps -- reset editor only on draft switch
+
+  useEffect(() => {
+    if (!needsTemplate) return;
+    client
+      .listWhatsAppTemplates(true)
+      .then((rows) => {
+        setTemplates(rows);
+        if (rows.length > 0) setTemplateId(String(rows[0].id));
+      })
+      .catch(() => setTemplates([]));
+  }, [needsTemplate]);
+
+  const selectedTemplate = templates.find((t) => String(t.id) === templateId);
+
+  useEffect(() => {
+    setVariables(Array(selectedTemplate?.variable_count ?? 0).fill(""));
+  }, [selectedTemplate]);
 
   // WhatsApp always mirrors email — same information on both channels.
   const whatsappBody = deriveWhatsAppFromEmail(emailBody);
@@ -147,24 +184,88 @@ export function PersonalizedEmailsPage({
     }
   }
 
-  async function handleSend() {
+  async function handleSend(
+    channels: SendChannel,
+    templateOpts?: {
+      template_name: string;
+      template_language: string;
+      template_variables: string[];
+    },
+  ) {
     if (!selected) return;
-    if (!window.confirm("Send this message via email and WhatsApp?")) return;
-    setSending(true);
+
+    const labels: Record<SendChannel, string> = {
+      email: "Send this message via email?",
+      whatsapp: "Send this message via WhatsApp?",
+      both: "Send this message via email and WhatsApp?",
+    };
+    if (!templateOpts && !window.confirm(labels[channels])) return;
+
+    setSending(channels);
     setNotice(null);
     try {
-      await client.updatePersonalizedFollowup(selected.id, {
-        subject,
-        email_body: emailBody,
+      // Don't PATCH a fully/partially sent draft — backend rejects edits after send.
+      if (selected.status !== "sent") {
+        await client.updatePersonalizedFollowup(selected.id, {
+          subject,
+          email_body: emailBody,
+        });
+      }
+      const result = await client.sendPersonalizedFollowup(selected.id, {
+        channels,
+        ...templateOpts,
       });
-      const result = await client.sendPersonalizedFollowup(selected.id);
       setNotice(result.message);
-      await refresh();
+      setRows((prev) =>
+        prev.map((r) => (r.id === result.draft.id ? result.draft : r)),
+      );
+
+      const waFailedNeedsTemplate =
+        result.needs_whatsapp_template ||
+        (!result.whatsapp_sent &&
+          channels !== "email" &&
+          /template/i.test(result.message || result.draft.whatsapp_send_message || ""));
+
+      if (waFailedNeedsTemplate) {
+        setNeedsTemplate(true);
+        setPendingWaChannel(channels === "email" ? "whatsapp" : channels);
+        setNotice(
+          result.email_sent
+            ? "Email sent. Outside the 24h WhatsApp window — pick an approved template below."
+            : "Outside the 24h WhatsApp window — select an approved template to send.",
+        );
+      } else {
+        setNeedsTemplate(false);
+        setPendingWaChannel(null);
+        await refresh();
+      }
     } catch (e) {
-      onError(e instanceof Error ? e.message : "Failed to send");
+      const message = e instanceof Error ? e.message : "Failed to send";
+      if (channels !== "email" && /template/i.test(message)) {
+        setNeedsTemplate(true);
+        setPendingWaChannel(channels === "both" ? "both" : "whatsapp");
+        setNotice(
+          "Outside the 24h WhatsApp window — select an approved template to send.",
+        );
+      } else {
+        onError(message);
+      }
     } finally {
-      setSending(false);
+      setSending(null);
     }
+  }
+
+  async function handleSendWithTemplate() {
+    if (!selectedTemplate) {
+      onError("Select an approved template first");
+      return;
+    }
+    const channels = pendingWaChannel || "whatsapp";
+    await handleSend(channels, {
+      template_name: selectedTemplate.name,
+      template_language: selectedTemplate.language,
+      template_variables: variables,
+    });
   }
 
   async function handleDismiss(id: number) {
@@ -181,6 +282,16 @@ export function PersonalizedEmailsPage({
     }
   }
 
+  const emailAlreadySent = channelSent(selected?.email_send_status);
+  const waAlreadySent = selected?.whatsapp_send_status === "sent";
+  const canEdit = selected?.status !== "sent" || needsTemplate;
+  const showSendActions =
+    selected &&
+    (selected.status !== "sent" ||
+      needsTemplate ||
+      !emailAlreadySent ||
+      !waAlreadySent);
+
   return (
     <section className={`w-full min-w-0 ${embedded ? "space-y-4" : "space-y-6"}`}>
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -190,7 +301,7 @@ export function PersonalizedEmailsPage({
           ) : null}
           <p className={`text-sm text-slate-400 max-w-2xl ${embedded ? "" : "mt-1"}`}>
             After a call is marked Interested or Follow up, a draft is built from closed
-            captions. Review once — the same message is sent on email and WhatsApp.
+            captions. Review, then send by email, WhatsApp, or both.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -304,22 +415,22 @@ export function PersonalizedEmailsPage({
 
               <label className="block space-y-1.5">
                 <span className="text-xs text-slate-400">Email subject</span>
-                <input
+                <ProseInput
                   value={subject}
-                  onChange={(e) => setSubject(e.target.value)}
-                  disabled={selected.status === "sent"}
+                  onChange={setSubject}
+                  disabled={!canEdit || selected.status === "sent"}
                   className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 disabled:opacity-60"
                 />
               </label>
 
               <div className="block space-y-1.5">
                 <span className="text-xs text-slate-400">
-                  Message (email + WhatsApp — same information)
+                  Message (email + WhatsApp free-text — same information)
                 </span>
                 <EmailBodyEditor
                   value={emailBody}
                   onChange={setEmailBody}
-                  disabled={selected.status === "sent"}
+                  disabled={!canEdit || selected.status === "sent"}
                   rows={10}
                   placeholder="Write the message…"
                 />
@@ -327,7 +438,8 @@ export function PersonalizedEmailsPage({
 
               <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 space-y-1.5">
                 <p className="text-xs text-emerald-300/90">
-                  WhatsApp preview (locked to the message above — both channels stay in sync)
+                  WhatsApp preview (locked to the message above — free-text inside the 24h
+                  window; outside that window use an approved template below)
                 </p>
                 <pre className="whitespace-pre-wrap break-words text-sm text-slate-300 font-sans m-0 max-h-36 overflow-y-auto">
                   {whatsappBody || "—"}
@@ -353,13 +465,65 @@ export function PersonalizedEmailsPage({
                 </div>
               )}
 
-              {selected.status !== "sent" && (
+              {needsTemplate && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 space-y-2">
+                  <p className="text-sm text-amber-200">
+                    Outside the 24h WhatsApp reply window — select an approved template to
+                    send instead of free text.
+                  </p>
+                  {templates.length === 0 ? (
+                    <p className="text-xs text-amber-200/80">
+                      No approved templates synced yet. Open{" "}
+                      <strong>WhatsApp templates</strong> and sync from Meta.
+                    </p>
+                  ) : (
+                    <>
+                      <select
+                        value={templateId}
+                        onChange={(e) => setTemplateId(e.target.value)}
+                        className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200"
+                      >
+                        {templates.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.name} ({t.language})
+                          </option>
+                        ))}
+                      </select>
+                      {variables.map((value, index) => (
+                        <input
+                          key={index}
+                          value={value}
+                          onChange={(e) =>
+                            setVariables((prev) =>
+                              prev.map((v, i) => (i === index ? e.target.value : v)),
+                            )
+                          }
+                          placeholder={`Variable {{${index + 1}}}`}
+                          className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200"
+                        />
+                      ))}
+                      <ActionButton
+                        icon={IconWhatsApp}
+                        variant="primary"
+                        size="md"
+                        onClick={() => void handleSendWithTemplate()}
+                        disabled={!!sending || !selectedTemplate}
+                        title="Send WhatsApp with template"
+                      >
+                        {sending ? "Sending…" : "Send with template"}
+                      </ActionButton>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {showSendActions && (
                 <div className="flex flex-wrap gap-2 pt-1">
                   <ActionButton
                     icon={IconSave}
                     size="md"
                     onClick={() => void handleSave()}
-                    disabled={saving}
+                    disabled={saving || selected.status === "sent"}
                     title="Save edits"
                   >
                     {saving ? "Saving…" : "Save"}
@@ -368,36 +532,72 @@ export function PersonalizedEmailsPage({
                     icon={IconSparkles}
                     size="md"
                     onClick={() => void handleRegenerate(selected.id)}
-                    disabled={busyId === selected.id}
+                    disabled={busyId === selected.id || selected.status === "sent"}
                     title="Regenerate from captions"
                   >
                     Regenerate
                   </ActionButton>
-                  <ActionButton
-                    icon={IconSend}
-                    variant="primary"
-                    size="md"
-                    onClick={() => void handleSend()}
-                    disabled={
-                      sending ||
-                      !subject.trim() ||
-                      !emailBody.trim() ||
-                      selected.status === "generating"
-                    }
-                    title="Send email and WhatsApp"
-                  >
-                    {sending ? "Sending…" : "Send email + WhatsApp"}
-                  </ActionButton>
-                  <ActionButton
-                    icon={IconX}
-                    variant="rose"
-                    size="md"
-                    onClick={() => void handleDismiss(selected.id)}
-                    disabled={busyId === selected.id}
-                    title="Dismiss"
-                  >
-                    Dismiss
-                  </ActionButton>
+                  {!emailAlreadySent && (
+                    <ActionButton
+                      icon={IconMail}
+                      size="md"
+                      onClick={() => void handleSend("email")}
+                      disabled={
+                        !!sending ||
+                        !subject.trim() ||
+                        !emailBody.trim() ||
+                        selected.status === "generating"
+                      }
+                      title="Send email only"
+                    >
+                      {sending === "email" ? "Sending…" : "Send email"}
+                    </ActionButton>
+                  )}
+                  {!waAlreadySent && (
+                    <ActionButton
+                      icon={IconWhatsApp}
+                      size="md"
+                      onClick={() => void handleSend("whatsapp")}
+                      disabled={
+                        !!sending ||
+                        !emailBody.trim() ||
+                        selected.status === "generating" ||
+                        !selected.contact_phone
+                      }
+                      title="Send WhatsApp only"
+                    >
+                      {sending === "whatsapp" ? "Sending…" : "Send WhatsApp"}
+                    </ActionButton>
+                  )}
+                  {!emailAlreadySent && !waAlreadySent && (
+                    <ActionButton
+                      icon={IconSend}
+                      variant="primary"
+                      size="md"
+                      onClick={() => void handleSend("both")}
+                      disabled={
+                        !!sending ||
+                        !subject.trim() ||
+                        !emailBody.trim() ||
+                        selected.status === "generating"
+                      }
+                      title="Send email and WhatsApp"
+                    >
+                      {sending === "both" ? "Sending…" : "Send both"}
+                    </ActionButton>
+                  )}
+                  {selected.status !== "sent" && (
+                    <ActionButton
+                      icon={IconX}
+                      variant="rose"
+                      size="md"
+                      onClick={() => void handleDismiss(selected.id)}
+                      disabled={busyId === selected.id}
+                      title="Dismiss"
+                    >
+                      Dismiss
+                    </ActionButton>
+                  )}
                 </div>
               )}
             </div>

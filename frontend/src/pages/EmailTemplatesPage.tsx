@@ -10,6 +10,7 @@ import {
   emptyTemplateForm,
   PLACEHOLDER_HINTS,
 } from "../utils/emailTemplateDefaults";
+import { capitalizeFirstLetter } from "../utils/spelling";
 
 interface EmailTemplatesPageProps {
   onError: (message: string) => void;
@@ -317,7 +318,12 @@ export function EmailTemplatesPage({ onError, onCountChange }: EmailTemplatesPag
                 <input
                   required
                   value={templateForm.subject}
-                  onChange={(e) => setTemplateForm((p) => ({ ...p, subject: e.target.value }))}
+                  onChange={(e) =>
+                    setTemplateForm((p) => ({
+                      ...p,
+                      subject: capitalizeFirstLetter(e.target.value),
+                    }))
+                  }
                   className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm"
                 />
               </label>

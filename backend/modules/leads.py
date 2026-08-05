@@ -42,6 +42,53 @@ def _assignee_label(user: AppUser | None) -> str:
     return (user.full_name or user.username or "unassigned").strip() or "unassigned"
 
 
+def suggest_company_names(
+    db: Session,
+    *,
+    q: str,
+    limit: int = 12,
+) -> list[dict]:
+    """Typeahead from the master buyers table — helps avoid duplicate company names."""
+    from sqlalchemy import case
+
+    query = (q or "").strip()
+    if len(query) < 1:
+        return []
+    limit = max(1, min(int(limit or 12), 25))
+    # Escape LIKE wildcards in user input.
+    safe = (
+        query.replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+    pattern = f"%{safe}%"
+    starts = f"{safe}%"
+    rows = (
+        db.query(Buyer)
+        .filter(Buyer.company_name.isnot(None))
+        .filter(Buyer.company_name != "")
+        .filter(Buyer.company_name.ilike(pattern, escape="\\"))
+        .order_by(
+            # Prefer names that start with the typed text, then alphabetical.
+            case((Buyer.company_name.ilike(starts, escape="\\"), 0), else_=1),
+            sa_func.lower(Buyer.company_name).asc(),
+            Buyer.id.asc(),
+        )
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": buyer.id,
+            "company_name": buyer.company_name,
+            "country": buyer.country,
+            "industry": buyer.industry,
+            "source": buyer.source,
+        }
+        for buyer in rows
+    ]
+
+
 def resolve_assignee_user(db: Session, user_id: int | None) -> AppUser | None:
     if user_id is None:
         return None

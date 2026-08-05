@@ -42,6 +42,19 @@ class BuyerListResponse(BaseModel):
     rows: list[BuyerRead]
 
 
+class CompanyNameSuggestion(BaseModel):
+    id: int
+    company_name: str
+    country: Optional[str] = None
+    industry: Optional[str] = None
+    source: Optional[str] = None
+
+
+class CompanyNameSuggestionsResponse(BaseModel):
+    q: str
+    rows: list[CompanyNameSuggestion]
+
+
 class QuotationEligibleLeadRead(BuyerRead):
     latest_score: str
     score_reasoning: str
@@ -1402,6 +1415,18 @@ class WhatsAppConversationListResponse(BaseModel):
     page_size: int = 20
     total_pages: int = 1
     rows: list[WhatsAppConversationRead]
+
+
+class WhatsAppBuyerPreviewResponse(BaseModel):
+    """Short WhatsApp thread snippet for the buyer profile page."""
+
+    buyer_id: int
+    contact_id: Optional[int] = None
+    contact_name: Optional[str] = None
+    contact_phone: Optional[str] = None
+    within_session_window: bool = False
+    total_messages: int = 0
+    messages: list[InteractionRead] = Field(default_factory=list)
 
 
 class WhatsAppReplyRequest(BaseModel):

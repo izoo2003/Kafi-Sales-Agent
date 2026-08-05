@@ -5,13 +5,14 @@ Routers are mounted in main.py. See backend/.env.example for Meta Cloud API setu
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from api.deps import get_current_user, get_db, require_admin
 from api.schemas import (
     BulkWhatsAppOptInUpdate,
     InteractionRead,
+    WhatsAppBuyerPreviewResponse,
     WhatsAppCampaignDraftRequest,
     WhatsAppCampaignDraftResponse,
     WhatsAppConfigRead,
@@ -305,6 +306,26 @@ def bulk_update_whatsapp_opt_in(
         details={"count": updated, "opt_in": payload.opt_in},
     )
     return {"updated_count": updated}
+
+
+@router.get("/buyers/{buyer_id}/preview", response_model=WhatsAppBuyerPreviewResponse)
+def whatsapp_buyer_preview(
+    buyer_id: int,
+    recent: int = Query(3, ge=1, le=10),
+    db: Session = Depends(get_db),
+    _user: AppUser = Depends(get_current_user),
+):
+    """Last few WhatsApp messages for a buyer profile (opens inbox via contact_id)."""
+    preview = comms.get_whatsapp_buyer_preview(db, buyer_id=buyer_id, recent=recent)
+    return WhatsAppBuyerPreviewResponse(
+        buyer_id=preview["buyer_id"],
+        contact_id=preview["contact_id"],
+        contact_name=preview["contact_name"],
+        contact_phone=preview["contact_phone"],
+        within_session_window=preview["within_session_window"],
+        total_messages=preview["total_messages"],
+        messages=[_interaction_read(db, row) for row in preview["messages"]],
+    )
 
 
 @router.get("/conversations", response_model=WhatsAppConversationListResponse)

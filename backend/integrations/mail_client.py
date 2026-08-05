@@ -59,7 +59,13 @@ class MailClient:
                     "Ask an admin to set your company email on the Users page."
                 ),
             }
-        with use_mailbox(account):
+        # user_id is required so the Vercel mailer JWT can resolve username
+        # (same pattern as inbox.py). Without it, send_via_mailer fails with
+        # "missing username or mailbox email".
+        with use_mailbox(
+            account,
+            user_id=mailbox_user.id if mailbox_user is not None else None,
+        ):
             if not outlook_client.is_configured:
                 return {
                     "status": "not_configured",

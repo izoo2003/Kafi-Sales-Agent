@@ -5,7 +5,11 @@ import {
   type ClientHistoryDetailEntry,
   type ClientHistoryDetailResponse,
 } from "../api/client";
-import { autocorrectText, spellingInputProps } from "../utils/spelling";
+import {
+  autocorrectText,
+  capitalizeFirstLetter,
+  spellingInputProps,
+} from "../utils/spelling";
 
 interface ClientHistoryPanelProps {
   buyerId: number;
@@ -212,7 +216,7 @@ export function ClientHistoryPanel({
           <textarea
             id={`client-remarks-${buyerId}`}
             value={note}
-            onChange={(e) => setNote(e.target.value)}
+            onChange={(e) => setNote(capitalizeFirstLetter(e.target.value))}
             onBlur={(e) => setNote(autocorrectText(e.target.value, "prose"))}
             rows={4}
             placeholder="Notes about this client…"

@@ -15,7 +15,11 @@ import {
   type NoAnswerVoiceOption,
   type NotInterestedReasonOption,
 } from "../utils/callOutcomes";
-import { autocorrectText, spellingInputProps } from "../utils/spelling";
+import {
+  autocorrectText,
+  capitalizeFirstLetter,
+  spellingInputProps,
+} from "../utils/spelling";
 import { ActionButton } from "./ui/ActionButton";
 import { IconSave } from "./icons/AppIcons";
 
@@ -169,7 +173,7 @@ export function CallRemarksForm({
         )}
         <textarea
           value={remarks}
-          onChange={(e) => onRemarksChange(e.target.value)}
+          onChange={(e) => onRemarksChange(capitalizeFirstLetter(e.target.value))}
           onBlur={(e) =>
             onRemarksChange(autocorrectText(e.target.value, "prose"))
           }

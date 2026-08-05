@@ -9,6 +9,14 @@ export interface InboxPopupPayload {
   count: number;
 }
 
+export interface WhatsAppPopupPayload {
+  id: string;
+  from: string;
+  preview: string;
+  count: number;
+  contactId?: number;
+}
+
 export interface InterestedFollowUpPopupPayload {
   id: string;
   buyerId: number;
@@ -42,6 +50,7 @@ const MODE_VALUES: NotificationMode[] = ["popup_sound", "popup_voiceover", "off"
 let audioCtx: AudioContext | null = null;
 let audioUnlocked = false;
 const popupListeners = new Set<(payload: InboxPopupPayload) => void>();
+const whatsappPopupListeners = new Set<(payload: WhatsAppPopupPayload) => void>();
 const followUpListeners = new Set<(payload: InterestedFollowUpPopupPayload) => void>();
 const interestedClientsListeners = new Set<
   (payload: InterestedClientsActivityPopupPayload) => void
@@ -101,6 +110,13 @@ export function subscribeInboxPopup(listener: (payload: InboxPopupPayload) => vo
   };
 }
 
+export function subscribeWhatsAppPopup(listener: (payload: WhatsAppPopupPayload) => void) {
+  whatsappPopupListeners.add(listener);
+  return () => {
+    whatsappPopupListeners.delete(listener);
+  };
+}
+
 export function subscribeInterestedFollowUpPopup(
   listener: (payload: InterestedFollowUpPopupPayload) => void,
 ) {
@@ -130,6 +146,10 @@ export function subscribeQuotationMeetingPopup(
 
 function emitInboxPopup(payload: InboxPopupPayload) {
   popupListeners.forEach((listener) => listener(payload));
+}
+
+function emitWhatsAppPopup(payload: WhatsAppPopupPayload) {
+  whatsappPopupListeners.forEach((listener) => listener(payload));
 }
 
 function emitInterestedFollowUpPopup(payload: InterestedFollowUpPopupPayload) {
@@ -250,14 +270,18 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
   return Notification.permission;
 }
 
-export function showDesktopNotification(title: string, body: string) {
+export function showDesktopNotification(
+  title: string,
+  body: string,
+  options?: { tag?: string },
+) {
   if (typeof window === "undefined" || !("Notification" in window)) return;
   if (Notification.permission !== "granted") return;
   if (getNotificationMode() === "off") return;
   try {
     const notification = new Notification(title, {
       body,
-      tag: "kafi-inbox",
+      tag: options?.tag || "kafi-inbox",
       requireInteraction: true,
       silent: true, // we already play our own chime / voiceover
     });
@@ -295,13 +319,47 @@ export function alertNewInboxMessage(details: {
       : `New inbox message from ${sender}. ${subject}.`;
 
   applyAlertEffects(mode, spoken);
-  showDesktopNotification("New inbox message", body);
+  showDesktopNotification("New inbox message", body, { tag: "kafi-inbox" });
 
   emitInboxPopup({
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     from: sender,
     subject,
     count,
+  });
+}
+
+/** Same gearbox preference as email — off disables WhatsApp popups too. */
+export function alertNewWhatsAppMessage(details: {
+  from?: string | null;
+  preview?: string | null;
+  count?: number;
+  contactId?: number;
+}) {
+  const mode = getNotificationMode();
+  if (mode === "off") return;
+
+  const sender = details.from?.trim() || "a WhatsApp contact";
+  const preview = details.preview?.trim() || "New WhatsApp message";
+  const count = details.count ?? 1;
+
+  const body =
+    count > 1 ? `${count} new WhatsApp messages` : `${sender}: ${preview}`;
+
+  const spoken =
+    count > 1
+      ? `You have ${count} new WhatsApp messages.`
+      : `New WhatsApp message from ${sender}. ${preview}.`;
+
+  applyAlertEffects(mode, spoken);
+  showDesktopNotification("New WhatsApp message", body, { tag: "kafi-whatsapp" });
+
+  emitWhatsAppPopup({
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    from: sender,
+    preview,
+    count,
+    contactId: details.contactId,
   });
 }
 

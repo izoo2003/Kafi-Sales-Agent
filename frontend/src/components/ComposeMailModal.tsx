@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { client, type EmailTemplate, type MailComposeDraft } from "../api/client";
 import { EmailBodyEditor, emailBodyHasContent } from "./EmailBodyEditor";
+import { ProseInput } from "./ProseTextField";
 
 interface ComposeMailModalProps {
   fromEmail: string;
@@ -283,10 +284,9 @@ export function ComposeMailModal({
 
           <label className="block space-y-1">
             <span className="text-xs text-slate-500">Subject</span>
-            <input
-              type="text"
+            <ProseInput
               value={subject}
-              onChange={(e) => setSubject(e.target.value)}
+              onChange={setSubject}
               placeholder="Subject"
               className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-emerald-600"
             />

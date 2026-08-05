@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
 import { type CallQueueState, BATCH_SIZE } from "../hooks/useCallQueue";
 import { CALL_OUTCOMES } from "../utils/callOutcomes";
-import { autocorrectText, spellingInputProps } from "../utils/spelling";
+import {
+  autocorrectText,
+  capitalizeFirstLetter,
+  spellingInputProps,
+} from "../utils/spelling";
 import { CallingCard } from "./CallingCard";
 import { DraggableFloat } from "./DraggableFloat";
 
@@ -333,7 +337,7 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
 
               <textarea
                 value={pendingNotes}
-                onChange={(e) => setPendingNotes(e.target.value)}
+                onChange={(e) => setPendingNotes(capitalizeFirstLetter(e.target.value))}
                 onBlur={(e) => setPendingNotes(autocorrectText(e.target.value, "prose"))}
                 rows={3}
                 placeholder="Call remarks…"

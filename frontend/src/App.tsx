@@ -19,6 +19,7 @@ import {
   type WhatsAppSection,
 } from "./components/AppSidebar";
 import { InboxAlertToasts } from "./components/InboxAlertToasts";
+import { WhatsAppAlertToasts } from "./components/WhatsAppAlertToasts";
 import { InterestedFollowUpAlertToasts } from "./components/InterestedFollowUpAlertToasts";
 import { QuotationMeetingAlertToasts } from "./components/QuotationMeetingAlertToasts";
 import { InterestedClientsActivityToasts } from "./components/InterestedClientsActivityToasts";
@@ -50,6 +51,7 @@ import {
   alertInterestedFollowUp,
   alertInterestedClientsActivity,
   alertNewInboxMessage,
+  alertNewWhatsAppMessage,
   alertQuotationMeeting,
   requestNotificationPermission,
   unlockNotificationAudio,
@@ -57,6 +59,7 @@ import {
 
 
 const INBOX_POLL_INTERVAL_MS = 20_000;
+const WHATSAPP_POLL_INTERVAL_MS = 15_000;
 const FOLLOW_UP_POLL_INTERVAL_MS = 60_000;
 const MEETING_POLL_INTERVAL_MS = 60_000;
 const INTERESTED_ACTIVITY_POLL_INTERVAL_MS = 30_000;
@@ -145,6 +148,9 @@ function DashboardApp() {
   });
   const [leadsTableRefreshToken, setLeadsTableRefreshToken] = useState(0);
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
+  const [pendingWhatsAppContactId, setPendingWhatsAppContactId] = useState<number | null>(
+    null,
+  );
   const [error, setErrorState] = useState<string | null>(null);
   const setError = useCallback((message: string | null) => {
     setErrorState(message == null ? null : sanitizeUserFacingError(message));
@@ -159,6 +165,7 @@ function DashboardApp() {
   const [inboxUnread, setInboxUnread] = useState(0);
   const seenMessageUidsRef = useRef<Set<string> | null>(null);
   const lastInboxUnreadRef = useRef(0);
+  const seenWhatsAppKeysRef = useRef<Set<string> | null>(null);
   const seenFollowUpIdsRef = useRef<Set<string>>(new Set());
   const seenMeetingAlertIdsRef = useRef<Set<string>>(new Set());
   const seenInterestedActivityIdRef = useRef<number | null>(null);
@@ -300,7 +307,7 @@ function DashboardApp() {
         lastInboxUnreadRef.current = status.unread_count;
         setInboxUnread(status.unread_count);
 
-        // Only pull a message list when unread goes up ΓÇö avoid downloading mail
+        // Only pull a message list when unread goes up — avoid downloading mail
         // on every badge poll just to detect new arrivals.
         if (status.unread_count <= previousUnread && seenMessageUidsRef.current !== null) {
           return;
@@ -329,7 +336,49 @@ function DashboardApp() {
         });
       })
       .catch(() => {
-        /* mailbox may be unconfigured ΓÇö ignore */
+        /* mailbox may be unconfigured — ignore */
+      });
+  }, []);
+
+  const pollWhatsAppInbox = useCallback(() => {
+    client
+      .listWhatsAppConversations({ page: 1, page_size: 50 })
+      .then((result) => {
+        const inbound = (result.rows || []).filter(
+          (row) => row.last_direction === "inbound" && row.last_message_at,
+        );
+        const currentKeys = new Set(
+          inbound.map((row) => `${row.contact_id}:${row.last_message_at}`),
+        );
+        const seen = seenWhatsAppKeysRef.current;
+
+        if (seen === null) {
+          seenWhatsAppKeysRef.current = currentKeys;
+          return;
+        }
+
+        const fresh = inbound.filter(
+          (row) => !seen.has(`${row.contact_id}:${row.last_message_at}`),
+        );
+        if (fresh.length > 0) {
+          const first = fresh[0];
+          const label =
+            first.contact_name?.trim() ||
+            first.company_name?.trim() ||
+            first.contact_phone ||
+            "WhatsApp contact";
+          alertNewWhatsAppMessage({
+            from: label,
+            preview: first.last_message,
+            count: fresh.length,
+            contactId: first.contact_id,
+          });
+        }
+
+        seenWhatsAppKeysRef.current = currentKeys;
+      })
+      .catch(() => {
+        /* WhatsApp may be unconfigured — ignore */
       });
   }, []);
 
@@ -468,6 +517,7 @@ function DashboardApp() {
       .then((r) => setWhatsappActivityUnread(r.unread_count))
       .catch(() => setWhatsappActivityUnread(0));
     pollInbox();
+    pollWhatsAppInbox();
     pollInterestedFollowUps();
     pollQuotationMeetings();
     pollInterestedClientsActivity();
@@ -480,6 +530,7 @@ function DashboardApp() {
     loadTableCounts,
     loadAssigneeNavUsers,
     pollInbox,
+    pollWhatsAppInbox,
     pollInterestedFollowUps,
     pollQuotationMeetings,
     pollInterestedClientsActivity,
@@ -500,6 +551,7 @@ function DashboardApp() {
     window.addEventListener("keydown", unlock, { once: true });
 
     pollInbox();
+    pollWhatsAppInbox();
     pollInterestedFollowUps();
     pollQuotationMeetings();
     pollInterestedClientsActivity();
@@ -512,6 +564,7 @@ function DashboardApp() {
       .then((r) => setWhatsappActivityUnread(r.unread_count))
       .catch(() => setWhatsappActivityUnread(0));
     const inboxTimer = window.setInterval(pollInbox, INBOX_POLL_INTERVAL_MS);
+    const whatsappTimer = window.setInterval(pollWhatsAppInbox, WHATSAPP_POLL_INTERVAL_MS);
     const followUpTimer = window.setInterval(pollInterestedFollowUps, FOLLOW_UP_POLL_INTERVAL_MS);
     const meetingTimer = window.setInterval(pollQuotationMeetings, MEETING_POLL_INTERVAL_MS);
     const interestedActivityTimer = window.setInterval(
@@ -530,6 +583,7 @@ function DashboardApp() {
     }, INBOX_POLL_INTERVAL_MS);
     return () => {
       window.clearInterval(inboxTimer);
+      window.clearInterval(whatsappTimer);
       window.clearInterval(followUpTimer);
       window.clearInterval(meetingTimer);
       window.clearInterval(interestedActivityTimer);
@@ -546,6 +600,7 @@ function DashboardApp() {
     loadTableCounts,
     loadAssigneeNavUsers,
     pollInbox,
+    pollWhatsAppInbox,
     pollInterestedFollowUps,
     pollQuotationMeetings,
     pollInterestedClientsActivity,
@@ -633,6 +688,12 @@ function DashboardApp() {
   function handleSelectWhatsAppSection(section: WhatsAppSection) {
     setSelectedLeadId(null);
     setTab(section);
+  }
+
+  function handleOpenWhatsAppChat(contactId: number) {
+    setSelectedLeadId(null);
+    setPendingWhatsAppContactId(contactId);
+    setTab("whatsapp-inbox");
   }
 
   const handleMailCountsChange = useCallback(
@@ -913,6 +974,11 @@ function DashboardApp() {
             handleSelectTab("inbox");
           }}
         />
+        <WhatsAppAlertToasts
+          onOpenWhatsAppInbox={() => {
+            handleSelectWhatsAppSection("whatsapp-inbox");
+          }}
+        />
         <InterestedFollowUpAlertToasts
           onViewClient={handleViewInterestedClient}
           onAcknowledge={handleAcknowledgeInterestedFollowUp}
@@ -1032,13 +1098,20 @@ function DashboardApp() {
                 onUnreadChange={setWhatsappActivityUnread}
               />
             )}
-            {tab === "whatsapp-inbox" && <WhatsAppInboxPage onError={setError} />}
+            {tab === "whatsapp-inbox" && (
+              <WhatsAppInboxPage
+                onError={setError}
+                initialContactId={pendingWhatsAppContactId}
+                onInitialContactConsumed={() => setPendingWhatsAppContactId(null)}
+              />
+            )}
             {tab === "leads" && isAdmin && selectedLeadId !== null && (
               <BuyerProfile
                 leadId={selectedLeadId}
                 onBack={handleBackFromProfile}
                 onError={setError}
                 onCallFollowUpSaved={handleCallFollowUpSaved}
+                onOpenWhatsAppChat={handleOpenWhatsAppChat}
                 canDiscover
               />
             )}
@@ -1055,6 +1128,7 @@ function DashboardApp() {
                 onBack={handleBackFromProfile}
                 onError={setError}
                 onCallFollowUpSaved={handleCallFollowUpSaved}
+                onOpenWhatsAppChat={handleOpenWhatsAppChat}
                 canDiscover={isAdmin}
               />
             )}
@@ -1083,6 +1157,7 @@ function DashboardApp() {
                 onBack={handleBackFromProfile}
                 onError={setError}
                 onCallFollowUpSaved={handleCallFollowUpSaved}
+                onOpenWhatsAppChat={handleOpenWhatsAppChat}
                 canDiscover={isAdmin}
               />
             )}

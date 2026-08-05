@@ -32,6 +32,7 @@ import {
   emailBodyHasContent,
 } from "../components/EmailBodyEditor";
 import { deriveWhatsAppFromEmail } from "../utils/channelSync";
+import { capitalizeFirstLetter } from "../utils/spelling";
 import { PersonalizedEmailsPage } from "./PersonalizedEmailsPage";
 
 interface AiModePageProps {
@@ -1042,7 +1043,10 @@ export function AiModePage({
               <input
                 value={draft.email_subject_template}
                 onChange={(e) =>
-                  setDraft({ ...draft, email_subject_template: e.target.value })
+                  setDraft({
+                    ...draft,
+                    email_subject_template: capitalizeFirstLetter(e.target.value),
+                  })
                 }
                 className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
               />

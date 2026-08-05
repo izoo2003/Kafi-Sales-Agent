@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   client,
   type WhatsAppConfig,
@@ -7,6 +7,8 @@ import {
   type WhatsAppTemplateNotification,
 } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { IconSearch } from "../components/icons/AppIcons";
+import { capitalizeFirstLetter } from "../utils/spelling";
 
 interface WhatsAppTemplatesPageProps {
   onError: (message: string) => void;
@@ -79,6 +81,7 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
   const [testPhone, setTestPhone] = useState("");
   const [testTemplateId, setTestTemplateId] = useState("");
   const [testSending, setTestSending] = useState(false);
+  const [templateSearch, setTemplateSearch] = useState("");
 
   const refreshNotifications = useCallback(async () => {
     try {
@@ -217,6 +220,18 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
   }
 
   const approvedTemplates = templates.filter((t) => t.status === "approved");
+
+  const filteredTemplates = useMemo(() => {
+    const q = templateSearch.trim().toLowerCase();
+    if (!q) return templates;
+    return templates.filter((t) => {
+      const haystack = [t.name, t.status, t.category, t.language, t.body_text, t.rejection_reason]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [templateSearch, templates]);
 
   return (
     <section className="space-y-6 w-full min-w-0">
@@ -400,7 +415,12 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
             <textarea
               rows={8}
               value={createForm.body}
-              onChange={(e) => setCreateForm((f) => ({ ...f, body: e.target.value }))}
+              onChange={(e) =>
+                setCreateForm((f) => ({
+                  ...f,
+                  body: capitalizeFirstLetter(e.target.value),
+                }))
+              }
               className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-mono"
               required
             />
@@ -481,9 +501,27 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
       )}
 
       <div className="rounded-xl border border-slate-800 bg-slate-900/50 overflow-hidden">
-        <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
-          <h3 className="text-sm font-medium text-slate-300">Templates</h3>
-          <span className="text-xs text-slate-500">{templates.length} total</span>
+        <div className="px-4 py-3 border-b border-slate-800 space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-sm font-medium text-slate-300">Templates</h3>
+            <span className="text-xs text-slate-500">
+              {templateSearch.trim()
+                ? `${filteredTemplates.length} / ${templates.length}`
+                : `${templates.length} total`}
+            </span>
+          </div>
+          <label className="relative block max-w-md">
+            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none">
+              <IconSearch size="sm" />
+            </span>
+            <input
+              type="search"
+              value={templateSearch}
+              onChange={(e) => setTemplateSearch(e.target.value)}
+              placeholder="Search templates by name, status, body…"
+              className="w-full rounded-lg border border-slate-700 bg-slate-950 pl-8 pr-3 py-1.5 text-sm text-slate-200 placeholder:text-slate-600"
+            />
+          </label>
         </div>
         <div className="p-4 space-y-2 max-h-[70vh] overflow-y-auto">
           {loading ? (
@@ -493,8 +531,12 @@ export function WhatsAppTemplatesPage({ onError, onCountChange }: WhatsAppTempla
               No templates yet. Click <strong className="text-slate-300">Create template</strong>{" "}
               to submit one to Meta, or sync existing templates from Business Manager.
             </p>
+          ) : filteredTemplates.length === 0 ? (
+            <p className="text-sm text-slate-500 rounded-lg border border-dashed border-slate-700 p-4">
+              No templates match “{templateSearch.trim()}”.
+            </p>
           ) : (
-            templates.map((template) => (
+            filteredTemplates.map((template) => (
               <div
                 key={template.id}
                 className="rounded-lg border border-slate-800 bg-slate-950 p-3 flex items-start justify-between gap-3"

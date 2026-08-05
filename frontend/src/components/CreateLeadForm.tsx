@@ -1,13 +1,20 @@
 import { useState, type FormEvent } from "react";
 import { CountrySelect } from "../components/CountrySelect";
 import { IndustrySelect } from "../components/IndustrySelect";
-import { client } from "../api/client";
-import { autocorrectText, spellingInputProps } from "../utils/spelling";
+import { CompanyNameSuggest } from "../components/CompanyNameSuggest";
+import { client, type CompanyNameSuggestion } from "../api/client";
+import {
+  autocorrectText,
+  capitalizeFirstLetter,
+  spellingInputProps,
+} from "../utils/spelling";
 
 interface CreateLeadFormProps {
   onSuccess: (leadId: number) => void;
   onCancel: () => void;
   onError: (message: string) => void;
+  /** When user picks an existing master-table match — open that profile instead. */
+  onOpenExisting?: (leadId: number) => void;
   /** Buyer source so the lead appears in the right table section (e.g. old_clients). */
   source?: string;
   title?: string;
@@ -28,20 +35,53 @@ export function CreateLeadForm({
   onSuccess,
   onCancel,
   onError,
+  onOpenExisting,
   source = "manual",
   title = "Add new lead",
 }: CreateLeadFormProps) {
   const [form, setForm] = useState(emptyForm);
   const [submitting, setSubmitting] = useState(false);
+  const [existingMatch, setExistingMatch] = useState<CompanyNameSuggestion | null>(
+    null,
+  );
 
   function updateField(field: keyof typeof emptyForm, value: string) {
     setForm((prev) => ({ ...prev, [field]: value }));
+    if (field === "company_name") {
+      setExistingMatch((prev) => {
+        if (!prev) return null;
+        return prev.company_name.trim().toLowerCase() === value.trim().toLowerCase()
+          ? prev
+          : null;
+      });
+    }
+  }
+
+  function handleSelectExisting(suggestion: CompanyNameSuggestion) {
+    setForm((prev) => ({
+      ...prev,
+      company_name: suggestion.company_name,
+      country: suggestion.country || prev.country,
+      industry: suggestion.industry || prev.industry,
+    }));
+    setExistingMatch(suggestion);
   }
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     if (!form.company_name.trim()) {
       onError("Company or buyer name is required");
+      return;
+    }
+
+    if (
+      existingMatch &&
+      existingMatch.company_name.trim().toLowerCase() ===
+        form.company_name.trim().toLowerCase()
+    ) {
+      onError(
+        `"${existingMatch.company_name}" already exists in the master table. Open the existing lead instead of creating a duplicate.`,
+      );
       return;
     }
 
@@ -71,6 +111,7 @@ export function CreateLeadForm({
       }
 
       setForm(emptyForm);
+      setExistingMatch(null);
       onSuccess(lead.id);
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to create lead");
@@ -98,19 +139,37 @@ export function CreateLeadForm({
       <div className="grid gap-4 sm:grid-cols-2">
         <label className="block sm:col-span-2">
           <span className="text-sm text-slate-400">Company / buyer name *</span>
-          <input
-            type="text"
-            required
+          <CompanyNameSuggest
             value={form.company_name}
-            onChange={(e) => updateField("company_name", e.target.value)}
-            onBlur={(e) =>
-              updateField("company_name", autocorrectText(e.target.value, "name"))
-            }
-            placeholder="e.g. Al Noor Food Trading"
-            className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600"
-            {...spellingInputProps("name")}
+            onChange={(value) => updateField("company_name", value)}
+            onSelectExisting={handleSelectExisting}
+            disabled={submitting}
           />
+          <p className="text-xs text-slate-500 mt-1">
+            Suggestions come from the master table as you type — pick a match to avoid
+            duplicates.
+          </p>
         </label>
+
+        {existingMatch ? (
+          <div className="sm:col-span-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-amber-100/95">
+              <span className="font-medium">{existingMatch.company_name}</span> is already
+              in the master table
+              {existingMatch.country ? ` (${existingMatch.country})` : ""}. Creating again
+              would duplicate this lead.
+            </p>
+            {onOpenExisting ? (
+              <button
+                type="button"
+                onClick={() => onOpenExisting(existingMatch.id)}
+                className="shrink-0 rounded-md border border-amber-500/40 bg-amber-500/15 px-2.5 py-1 text-xs font-medium text-amber-100 hover:bg-amber-500/25"
+              >
+                Open existing
+              </button>
+            ) : null}
+          </div>
+        ) : null}
 
         <CountrySelect
           label="Country"
@@ -152,7 +211,9 @@ export function CreateLeadForm({
             <input
               type="text"
               value={form.contact_name}
-              onChange={(e) => updateField("contact_name", e.target.value)}
+              onChange={(e) =>
+                updateField("contact_name", capitalizeFirstLetter(e.target.value))
+              }
               onBlur={(e) =>
                 updateField("contact_name", autocorrectText(e.target.value, "name"))
               }
@@ -191,7 +252,12 @@ export function CreateLeadForm({
             <input
               type="text"
               value={form.contact_designation}
-              onChange={(e) => updateField("contact_designation", e.target.value)}
+              onChange={(e) =>
+                updateField(
+                  "contact_designation",
+                  capitalizeFirstLetter(e.target.value),
+                )
+              }
               onBlur={(e) =>
                 updateField(
                   "contact_designation",
@@ -216,8 +282,13 @@ export function CreateLeadForm({
         </button>
         <button
           type="submit"
-          disabled={submitting}
+          disabled={submitting || Boolean(existingMatch)}
           className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium disabled:opacity-50"
+          title={
+            existingMatch
+              ? "This company already exists — open the existing lead instead"
+              : undefined
+          }
         >
           {submitting ? "Creating…" : "Create lead"}
         </button>

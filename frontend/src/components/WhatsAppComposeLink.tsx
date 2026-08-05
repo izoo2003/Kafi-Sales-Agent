@@ -14,6 +14,7 @@ import {
   IconWhatsApp,
   IconX,
 } from "./icons/AppIcons";
+import { ProseTextarea } from "./ProseTextField";
 
 type ComposeTab = "personal" | "template";
 
@@ -316,10 +317,10 @@ export function LeadWhatsAppComposeModal({
               )}
               <label className="block">
                 <span className="text-sm text-slate-400">Message</span>
-                <textarea
+                <ProseTextarea
                   rows={10}
                   value={message}
-                  onChange={(e) => setMessage(e.target.value)}
+                  onChange={setMessage}
                   className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
                 />
               </label>

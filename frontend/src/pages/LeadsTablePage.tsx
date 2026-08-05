@@ -2256,6 +2256,10 @@ export function LeadsTablePage({
           title={isOldClients && !isAdmin ? "Add new client" : "Add new lead"}
           onCancel={() => setShowCreateLead(false)}
           onError={onError}
+          onOpenExisting={(leadId) => {
+            setShowCreateLead(false);
+            onSelectLead(leadId);
+          }}
           onSuccess={async (leadId) => {
             setShowCreateLead(false);
             setSaveNotice("Lead added to your table.");

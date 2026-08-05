@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { client, type ChatMessage } from "../api/client";
+import { capitalizeFirstLetter } from "../utils/spelling";
 
 interface ChatbotPageProps {
   onError: (msg: string) => void;
@@ -340,7 +341,7 @@ export function ChatbotPage({ onError }: ChatbotPageProps) {
           <textarea
             ref={textareaRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => setInput(capitalizeFirstLetter(e.target.value))}
             onKeyDown={handleKeyDown}
             rows={1}
             placeholder={

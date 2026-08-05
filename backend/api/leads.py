@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pathlib import Path
 from sqlalchemy.orm import Session
 
@@ -9,6 +9,8 @@ from api.schemas import (
     BuyerListResponse,
     BuyerProfileRead,
     BuyerRead,
+    CompanyNameSuggestion,
+    CompanyNameSuggestionsResponse,
     ContactCreate,
     ContactRead,
     ContactUpdate,
@@ -148,6 +150,21 @@ def list_leads(page: int = 1, page_size: int = 20, db: Session = Depends(get_db)
         page=page,
         page_size=page_size,
         exclude_source="old_clients",
+    )
+
+
+@router.get("/company-suggestions", response_model=CompanyNameSuggestionsResponse)
+def company_name_suggestions(
+    q: str = Query("", min_length=0, max_length=200),
+    limit: int = Query(12, ge=1, le=25),
+    db: Session = Depends(get_db),
+    _user: AppUser = Depends(get_current_user),
+):
+    """Autocomplete company names from the master buyers table (all sections)."""
+    rows = leads_module.suggest_company_names(db, q=q, limit=limit)
+    return CompanyNameSuggestionsResponse(
+        q=q.strip(),
+        rows=[CompanyNameSuggestion(**row) for row in rows],
     )
 
 

@@ -687,10 +687,18 @@ export interface PersonalizedFollowupListResponse {
   rows: PersonalizedFollowupDraft[];
 }
 
+export interface PersonalizedFollowupSendPayload {
+  channels?: "email" | "whatsapp" | "both";
+  template_name?: string;
+  template_language?: string;
+  template_variables?: string[];
+}
+
 export interface PersonalizedFollowupSendResponse {
   draft: PersonalizedFollowupDraft;
   email_sent: boolean;
   whatsapp_sent: boolean;
+  needs_whatsapp_template?: boolean;
   message: string;
 }
 
@@ -896,6 +904,19 @@ export interface LeadCreate {
   country?: string;
   industry?: string;
   source?: string;
+}
+
+export interface CompanyNameSuggestion {
+  id: number;
+  company_name: string;
+  country: string | null;
+  industry: string | null;
+  source: string | null;
+}
+
+export interface CompanyNameSuggestionsResponse {
+  q: string;
+  rows: CompanyNameSuggestion[];
 }
 
 export interface Contact {
@@ -1417,6 +1438,16 @@ export interface WhatsAppConversationListResponse {
   rows: WhatsAppConversation[];
 }
 
+export interface WhatsAppBuyerPreview {
+  buyer_id: number;
+  contact_id: number | null;
+  contact_name: string | null;
+  contact_phone: string | null;
+  within_session_window: boolean;
+  total_messages: number;
+  messages: DraftInteraction[];
+}
+
 export interface WhatsAppReplyResponse {
   interaction: DraftInteraction;
   sent: boolean;
@@ -1655,6 +1686,14 @@ export const client = {
   },
   createLead: (data: LeadCreate) =>
     request<Lead>("/leads", { method: "POST", body: JSON.stringify(data) }),
+  suggestCompanyNames: (q: string, limit = 12) => {
+    const query = new URLSearchParams();
+    query.set("q", q);
+    if (limit) query.set("limit", String(limit));
+    return request<CompanyNameSuggestionsResponse>(
+      `/leads/company-suggestions?${query.toString()}`,
+    );
+  },
   getLead: (id: number) => request<Lead>(`/leads/${id}`),
   getLeadProfile: (id: number) => request<BuyerProfile>(`/leads/${id}/profile`),
   researchLead: (id: number) =>
@@ -2101,9 +2140,13 @@ export const client = {
     request<PersonalizedFollowupDraft>(`/personalized-followups/${id}/regenerate`, {
       method: "POST",
     }),
-  sendPersonalizedFollowup: (id: number) =>
+  sendPersonalizedFollowup: (
+    id: number,
+    payload: PersonalizedFollowupSendPayload = { channels: "both" },
+  ) =>
     request<PersonalizedFollowupSendResponse>(`/personalized-followups/${id}/send`, {
       method: "POST",
+      body: JSON.stringify(payload),
     }),
   dismissPersonalizedFollowup: (id: number) =>
     request<PersonalizedFollowupDraft>(`/personalized-followups/${id}/dismiss`, {
@@ -2405,6 +2448,10 @@ export const client = {
       `/whatsapp/conversations${qs ? `?${qs}` : ""}`,
     );
   },
+  getWhatsAppBuyerPreview: (buyerId: number, recent = 3) =>
+    request<WhatsAppBuyerPreview>(
+      `/whatsapp/buyers/${buyerId}/preview?recent=${encodeURIComponent(String(recent))}`,
+    ),
   listWhatsAppConversationMessages: (contactId: number) =>
     request<DraftInteraction[]>(`/whatsapp/conversations/${contactId}/messages`),
   replyToWhatsAppConversation: (

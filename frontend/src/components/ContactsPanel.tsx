@@ -2,7 +2,11 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { client, type Contact, type ContactCreate, type ContactUpdate } from "../api/client";
 import { CallLeadButton } from "./CallLeadButton";
 import { DialpadPhoneText } from "./DialpadPhoneText";
-import { autocorrectText, spellingInputProps } from "../utils/spelling";
+import {
+  autocorrectText,
+  capitalizeFirstLetter,
+  spellingInputProps,
+} from "../utils/spelling";
 
 interface ContactsPanelProps {
   leadId: number;
@@ -336,7 +340,9 @@ function ContactFormFields({
           type="text"
           required
           value={form.full_name}
-          onChange={(e) => onChange("full_name", e.target.value)}
+          onChange={(e) =>
+            onChange("full_name", capitalizeFirstLetter(e.target.value))
+          }
           onBlur={(e) => onChange("full_name", autocorrectText(e.target.value, "name"))}
           placeholder="e.g. Ahmed Al-Rashid"
           className={inputClass}
@@ -370,7 +376,9 @@ function ContactFormFields({
         <input
           type="text"
           value={form.designation}
-          onChange={(e) => onChange("designation", e.target.value)}
+          onChange={(e) =>
+            onChange("designation", capitalizeFirstLetter(e.target.value))
+          }
           onBlur={(e) =>
             onChange("designation", autocorrectText(e.target.value, "prose"))
           }

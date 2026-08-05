@@ -21,6 +21,18 @@ class PersonalizedFollowupUpdate(BaseModel):
     whatsapp_body: Optional[str] = None
 
 
+class PersonalizedFollowupSend(BaseModel):
+    """Send one or both channels. Use template_* when outside the 24h WA window."""
+
+    channels: str = Field(
+        default="both",
+        description="email | whatsapp | both",
+    )
+    template_name: Optional[str] = None
+    template_language: str = "en_US"
+    template_variables: list[str] = Field(default_factory=list)
+
+
 def _generate_in_background(draft_id: int) -> None:
     from db.session import SessionLocal
 
@@ -97,11 +109,21 @@ def regenerate_personalized_followup(
 @router.post("/{draft_id}/send")
 def send_personalized_followup(
     draft_id: int,
+    payload: PersonalizedFollowupSend | None = None,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ) -> dict[str, Any]:
+    body = payload or PersonalizedFollowupSend()
     try:
-        return pf_module.send_draft(db, draft_id, user=user)
+        return pf_module.send_draft(
+            db,
+            draft_id,
+            user=user,
+            channels=body.channels,
+            template_name=body.template_name,
+            template_language=body.template_language,
+            template_variables=body.template_variables,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
