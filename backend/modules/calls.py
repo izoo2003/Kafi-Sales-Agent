@@ -715,12 +715,15 @@ def update_call_followup(
         if notes_changed and (new_notes or "").strip() and buyer:
             from modules.client_history import append_client_history, username_for_user
 
+            note_text = (new_notes or "").strip()
             append_client_history(
                 buyer,
-                text=(new_notes or "").strip(),
+                text=note_text,
                 by_username=username_for_user(db, app_user_id),
                 source="call",
             )
+            # Keep the single client-remarks box on the latest note.
+            buyer.remarks = note_text
             preview = (new_notes or "").strip()
             if len(preview) > 160:
                 preview = preview[:157] + "…"

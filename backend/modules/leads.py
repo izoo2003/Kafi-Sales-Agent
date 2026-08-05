@@ -8,6 +8,7 @@ from db.models import AppUser, AppUserRole, Buyer, Contact, LeadScore, LeadScore
 from modules.cache import MISS, cache
 from modules import buyers as buyers_module
 from modules.call_timing import get_call_recommendation
+from modules.client_history import resolve_current_remarks
 from modules.countries import list_countries
 from modules.orchestrator import Orchestrator
 from modules.product_categories import (
@@ -618,7 +619,7 @@ def _hydrate_lead_table_rows(
                 "product_interest": buyer.product_interest,
                 "city": buyer.city,
                 "address": buyer.address,
-                "remarks": buyer.remarks,
+                "remarks": resolve_current_remarks(buyer) or buyer.remarks,
                 "remarks_history": buyer.remarks_history or [],
                 "call_remarks": call_notes_by_buyer.get(buyer.id),
                 "assigned_to": buyer.assigned_to or "unassigned",
@@ -1253,7 +1254,7 @@ def get_lead_table_row(db: Session, buyer_id: int) -> dict[str, object] | None:
         "product_interest": buyer.product_interest,
         "city": buyer.city,
         "address": buyer.address,
-        "remarks": buyer.remarks,
+        "remarks": resolve_current_remarks(buyer) or buyer.remarks,
         "remarks_history": buyer.remarks_history or [],
         "call_remarks": call_notes,
         "assigned_to": buyer.assigned_to or "unassigned",

@@ -22,6 +22,37 @@ function formatWhen(iso: string | null | undefined) {
   return date.toLocaleString();
 }
 
+/** Prefer buyers.remarks; if empty, use the newest history entry. */
+function currentRemarkFromDetail(detail: ClientHistoryDetailResponse | null): string {
+  const fromField = (detail?.remarks || "").trim();
+  if (fromField) return fromField;
+  const entries = detail?.entries || [];
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const text = (entries[i]?.text || "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function latestEntryMeta(detail: ClientHistoryDetailResponse | null): {
+  at?: string | null;
+  by?: string | null;
+} {
+  if (detail?.remarks_updated_at) {
+    return { at: detail.remarks_updated_at, by: detail.remarks_updated_by };
+  }
+  const current = currentRemarkFromDetail(detail);
+  const entries = detail?.entries || [];
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
+    if ((entry?.text || "").trim() === current) {
+      return { at: entry.at, by: entry.by };
+    }
+  }
+  const last = entries[entries.length - 1];
+  return last ? { at: last.at, by: last.by } : {};
+}
+
 function RemarksHistoryList({
   entries,
   emptyLabel = "No earlier remarks yet.",
@@ -83,21 +114,27 @@ export function ClientHistoryPanel({
   const [detail, setDetail] = useState<ClientHistoryDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [note, setNote] = useState("");
+  const [baseline, setBaseline] = useState("");
   const [saving, setSaving] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+
+  const applyDetail = useCallback((next: ClientHistoryDetailResponse) => {
+    const current = currentRemarkFromDetail(next);
+    setDetail(next);
+    setNote(current);
+    setBaseline(current);
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const next = await client.getClientHistory(buyerId);
-      setDetail(next);
-      setNote(next.remarks || "");
+      applyDetail(await client.getClientHistory(buyerId));
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to load client remarks");
     } finally {
       setLoading(false);
     }
-  }, [buyerId, onError]);
+  }, [applyDetail, buyerId, onError]);
 
   useEffect(() => {
     void load();
@@ -117,10 +154,13 @@ export function ClientHistoryPanel({
     };
   }, [historyOpen]);
 
-  const dirty = useMemo(() => {
-    const current = (detail?.remarks || "").trim();
-    return autocorrectText(note, "prose").trim() !== current;
-  }, [detail?.remarks, note]);
+  const dirty = useMemo(
+    () => autocorrectText(note, "prose").trim() !== baseline.trim(),
+    [baseline, note],
+  );
+
+  const hasExisting = Boolean(baseline.trim());
+  const meta = latestEntryMeta(detail);
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -129,12 +169,12 @@ export function ClientHistoryPanel({
     if (!dirty) return;
     setSaving(true);
     try {
+      // Overwrite current remarks; previous versions stay in history.
       const next = await client.addClientHistoryRemark(buyerId, { text });
-      setDetail(next);
-      setNote(next.remarks || text);
-      onRemarksSaved?.(next.remarks || text);
+      applyDetail(next);
+      onRemarksSaved?.(currentRemarkFromDetail(next) || text);
     } catch (err) {
-      onError(err instanceof Error ? err.message : "Failed to save remark");
+      onError(err instanceof Error ? err.message : "Failed to update remark");
     } finally {
       setSaving(false);
     }
@@ -149,7 +189,8 @@ export function ClientHistoryPanel({
         <div>
           <h3 className="text-sm font-medium text-slate-100">Client remarks</h3>
           <p className="text-xs text-slate-500 mt-1">
-            One remarks box for {companyName}. Save to update it — every change is kept in history.
+            Latest remark for {companyName}. Update overwrites this box — every version stays in
+            History.
           </p>
         </div>
         <button
@@ -180,12 +221,12 @@ export function ClientHistoryPanel({
           />
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs text-slate-500">
-              {detail?.remarks_updated_at ? (
+              {meta.at ? (
                 <>
-                  Updated at {formatWhen(detail.remarks_updated_at)}
-                  {detail.remarks_updated_by ? ` · ${detail.remarks_updated_by}` : ""}
+                  Updated at {formatWhen(meta.at)}
+                  {meta.by ? ` · ${meta.by}` : ""}
                 </>
-              ) : detail?.remarks?.trim() ? (
+              ) : hasExisting ? (
                 "Updated time not recorded yet"
               ) : (
                 "No remarks saved yet"
@@ -196,7 +237,13 @@ export function ClientHistoryPanel({
               disabled={saving || !note.trim() || !dirty}
               className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium disabled:opacity-50"
             >
-              {saving ? "Saving…" : "Save remarks"}
+              {saving
+                ? hasExisting
+                  ? "Updating…"
+                  : "Saving…"
+                : hasExisting
+                  ? "Update remarks"
+                  : "Save remarks"}
             </button>
           </div>
         </form>

@@ -139,30 +139,61 @@ def list_client_history_feed(
     }
 
 
-def _current_remark_meta(buyer: Buyer) -> tuple[str | None, str | None]:
-    """Return (updated_at, updated_by) for the current remarks snapshot."""
+def _latest_history_entry(buyer: Buyer) -> dict[str, Any] | None:
+    history = [e for e in (buyer.remarks_history or []) if isinstance(e, dict)]
+    for entry in reversed(history):
+        if (entry.get("text") or "").strip():
+            return entry
+    return None
+
+
+def resolve_current_remarks(buyer: Buyer) -> str:
+    """Current remarks text: buyers.remarks, or the newest history entry if empty."""
     current = (buyer.remarks or "").strip()
-    if not current:
+    if current:
+        return current
+    latest = _latest_history_entry(buyer)
+    return ((latest or {}).get("text") or "").strip()
+
+
+def _current_remark_meta(buyer: Buyer, current: str | None = None) -> tuple[str | None, str | None]:
+    """Return (updated_at, updated_by) for the current remarks snapshot."""
+    text = (current if current is not None else resolve_current_remarks(buyer)).strip()
+    if not text:
         return None, None
     history = [e for e in (buyer.remarks_history or []) if isinstance(e, dict)]
     for entry in reversed(history):
-        if (entry.get("text") or "").strip() == current:
+        if (entry.get("text") or "").strip() == text:
             return entry.get("at"), entry.get("by")
     if buyer.updated_at:
         return buyer.updated_at.isoformat(), None
     return None, None
 
 
-def history_for_buyer(db: Session, buyer_id: int) -> dict[str, Any] | None:
+def history_for_buyer(
+    db: Session,
+    buyer_id: int,
+    *,
+    heal_remarks: bool = True,
+) -> dict[str, Any] | None:
     buyer = db.get(Buyer, buyer_id)
     if not buyer:
         return None
+
+    # Keep the single remarks box in sync when history exists but remarks was never set
+    # (e.g. older call-note history writes).
+    current = resolve_current_remarks(buyer)
+    if heal_remarks and current and not (buyer.remarks or "").strip():
+        buyer.remarks = current
+        db.commit()
+        db.refresh(buyer)
+
     entries = buyer_history_entries(buyer)
-    updated_at, updated_by = _current_remark_meta(buyer)
+    updated_at, updated_by = _current_remark_meta(buyer, current)
     return {
         "buyer_id": buyer.id,
         "company_name": buyer.company_name,
-        "remarks": buyer.remarks,
+        "remarks": current or buyer.remarks,
         "remarks_updated_at": updated_at,
         "remarks_updated_by": updated_by,
         "entries": [
