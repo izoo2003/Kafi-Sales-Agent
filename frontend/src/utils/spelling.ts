@@ -169,14 +169,15 @@ export function spellingPropsForLeadField(field: string) {
 }
 
 /** Autocorrect all spellcheck-enabled string fields on a lead draft. */
-export function autocorrectLeadDraft<T extends Record<string, unknown>>(draft: T): T {
-  const next = { ...draft };
+export function autocorrectLeadDraft<T extends object>(draft: T): T {
+  const next: T = { ...draft };
+  const mutable = next as Record<string, unknown>;
   for (const [field, mode] of Object.entries(LEAD_FIELD_SPELLING)) {
     if (mode === "off") continue;
-    if (!(field in next)) continue;
-    const value = next[field as keyof T];
+    if (!(field in mutable)) continue;
+    const value = mutable[field];
     if (typeof value === "string") {
-      (next as Record<string, unknown>)[field] = autocorrectText(value, mode);
+      mutable[field] = autocorrectText(value, mode);
     }
   }
   return next;
