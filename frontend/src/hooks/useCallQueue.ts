@@ -4,6 +4,7 @@ import { autocorrectText } from "../utils/spelling";
 import { useTwilioVoice } from "./useTwilioVoice";
 
 export const BATCH_SIZE = 10;
+/** Brief pause before auto-advancing past a failed placeCall. */
 export const GAP_SECONDS = 3;
 
 export type QueueStatus = "idle" | "running" | "between" | "paused" | "completed";
@@ -33,7 +34,7 @@ export interface CallQueueState {
   currentIndex: number;
   status: QueueStatus;
   results: QueueResult[];
-  /** Countdown seconds remaining in the gap between calls (null when not in gap). */
+  /** Countdown only used for failed placeCall auto-advance; null during remarks gap. */
   gapSecondsLeft: number | null;
   batchNumber: number;
   totalBatches: number;
@@ -42,8 +43,11 @@ export interface CallQueueState {
   /** Outcome/notes for the call that just ended — settable during the gap. */
   pendingOutcome: string | null;
   pendingNotes: string;
+  savingRemarks: boolean;
   setPendingOutcome: (v: string | null) => void;
   setPendingNotes: (v: string) => void;
+  /** Persist remarks for the finished call, then dial the next lead. */
+  savePendingAndContinue: () => Promise<void>;
   start: (leads: QueueEntry[]) => void;
   pause: () => void;
   resume: () => void;
@@ -62,11 +66,15 @@ export function useCallQueue(): CallQueueState {
   const [gapSecondsLeft, setGapSecondsLeft] = useState<number | null>(null);
   const [pendingOutcome, setPendingOutcome] = useState<string | null>(null);
   const [pendingNotes, setPendingNotes] = useState("");
+  const [savingRemarks, setSavingRemarks] = useState(false);
 
   const statusRef = useRef<QueueStatus>("idle");
   const currentIndexRef = useRef(0);
   const gapTimerRef = useRef<number | null>(null);
   const countdownRef = useRef<number | null>(null);
+  const pendingInteractionIdRef = useRef<number | undefined>(undefined);
+  const pendingOutcomeRef = useRef<string | null>(null);
+  const pendingNotesRef = useRef("");
 
   const clearTimers = () => {
     if (gapTimerRef.current !== null) {
@@ -79,15 +87,21 @@ export function useCallQueue(): CallQueueState {
     }
   };
 
-  // Keep refs in sync with state
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
   useEffect(() => {
     currentIndexRef.current = currentIndex;
   }, [currentIndex]);
+  const setPendingOutcomeSafe = useCallback((v: string | null) => {
+    pendingOutcomeRef.current = v;
+    setPendingOutcome(v);
+  }, []);
+  const setPendingNotesSafe = useCallback((v: string) => {
+    pendingNotesRef.current = v;
+    setPendingNotes(v);
+  }, []);
 
-  // Derived batch info
   const batchNumber = Math.floor(currentIndex / BATCH_SIZE) + 1;
   const totalBatches = Math.ceil(queue.length / BATCH_SIZE);
   const indexInBatch = currentIndex % BATCH_SIZE;
@@ -134,7 +148,6 @@ export function useCallQueue(): CallQueueState {
               : r,
           ),
         );
-        // Auto-advance past failed call after 3s
         gapTimerRef.current = window.setTimeout(() => {
           if (statusRef.current === "running") {
             advanceToNext(nextIndex, queueSnapshot);
@@ -145,7 +158,7 @@ export function useCallQueue(): CallQueueState {
     [placeCall, setBulkModeActive],
   );
 
-  // React to call ending (pendingFollowUp fires from voice provider)
+  // After a call ends, wait for Save & next (or Skip) — do not auto-advance.
   useEffect(() => {
     if (!pendingFollowUp || statusRef.current === "idle" || statusRef.current === "completed") {
       return;
@@ -154,53 +167,71 @@ export function useCallQueue(): CallQueueState {
     const interactionId = pendingFollowUp.interactionId;
     const idx = currentIndexRef.current;
 
-    // Capture the interactionId into results
     setResults((prev) =>
       prev.map((r, i) => (i === idx ? { ...r, interactionId } : r)),
     );
 
-    // Suppress the global modal
     clearPendingFollowUp();
 
     if (statusRef.current === "paused") {
-      // Stay paused; user will resume manually
+      pendingInteractionIdRef.current = interactionId;
       return;
     }
 
-    // Start the gap countdown
+    clearTimers();
+    pendingInteractionIdRef.current = interactionId;
+    setPendingOutcomeSafe(null);
+    setPendingNotesSafe("");
     setStatus("between");
     statusRef.current = "between";
-    setGapSecondsLeft(GAP_SECONDS);
-
-    let remaining = GAP_SECONDS;
-    countdownRef.current = window.setInterval(() => {
-      remaining -= 1;
-      setGapSecondsLeft(remaining);
-      if (remaining <= 0) {
-        clearTimers();
-      }
-    }, 1000);
-
-    // Capture current pending values via closure — they may change during the gap
-    const outcomeAtEnd = pendingOutcome;
-    const notesAtEnd = autocorrectText(pendingNotes, "prose");
-
-    gapTimerRef.current = window.setTimeout(() => {
-      clearTimers();
-      // Flush remarks with whatever the user had at fire time
-      void flushPendingRemarks(interactionId, outcomeAtEnd, notesAtEnd);
-      setPendingOutcome(null);
-      setPendingNotes("");
-
-      // Grab a fresh snapshot of queue state
-      setQueue((currentQueue) => {
-        if (statusRef.current !== "between") return currentQueue;
-        advanceToNext(idx, currentQueue);
-        return currentQueue;
-      });
-    }, GAP_SECONDS * 1000);
+    setGapSecondsLeft(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingFollowUp]);
+
+  const savePendingAndContinue = useCallback(async () => {
+    if (statusRef.current !== "between" && statusRef.current !== "paused") return;
+    if (savingRemarks) return;
+
+    const interactionId = pendingInteractionIdRef.current;
+    const outcome = pendingOutcomeRef.current;
+    const notes = autocorrectText(pendingNotesRef.current, "prose");
+    const idx = currentIndexRef.current;
+
+    setSavingRemarks(true);
+    try {
+      await flushPendingRemarks(interactionId, outcome, notes);
+      setResults((prev) =>
+        prev.map((r, i) =>
+          i === idx
+            ? {
+                ...r,
+                interactionId: interactionId ?? r.interactionId,
+                outcome: outcome || r.outcome,
+                notes: notes || r.notes,
+              }
+            : r,
+        ),
+      );
+    } finally {
+      setSavingRemarks(false);
+    }
+
+    pendingInteractionIdRef.current = undefined;
+    setPendingOutcomeSafe(null);
+    setPendingNotesSafe("");
+    setGapSecondsLeft(null);
+
+    setQueue((currentQueue) => {
+      advanceToNext(idx, currentQueue);
+      return currentQueue;
+    });
+  }, [
+    advanceToNext,
+    flushPendingRemarks,
+    savingRemarks,
+    setPendingNotesSafe,
+    setPendingOutcomeSafe,
+  ]);
 
   const start = useCallback(
     (leads: QueueEntry[]) => {
@@ -217,8 +248,10 @@ export function useCallQueue(): CallQueueState {
       setStatus("running");
       statusRef.current = "running";
       setGapSecondsLeft(null);
-      setPendingOutcome(null);
-      setPendingNotes("");
+      setPendingOutcomeSafe(null);
+      setPendingNotesSafe("");
+      pendingInteractionIdRef.current = undefined;
+      setSavingRemarks(false);
       setBulkModeActive(true);
 
       const first = leads[0];
@@ -235,7 +268,7 @@ export function useCallQueue(): CallQueueState {
         }, GAP_SECONDS * 1000);
       });
     },
-    [placeCall, advanceToNext, setBulkModeActive],
+    [placeCall, advanceToNext, setBulkModeActive, setPendingNotesSafe, setPendingOutcomeSafe],
   );
 
   const pause = useCallback(() => {
@@ -248,6 +281,12 @@ export function useCallQueue(): CallQueueState {
 
   const resume = useCallback(() => {
     if (statusRef.current !== "paused") return;
+    // If a call already ended while paused, show remarks before dialing next.
+    if (pendingInteractionIdRef.current != null) {
+      setStatus("between");
+      statusRef.current = "between";
+      return;
+    }
     setStatus("running");
     statusRef.current = "running";
     setQueue((currentQueue) => {
@@ -273,23 +312,37 @@ export function useCallQueue(): CallQueueState {
     setCurrentIndex(0);
     currentIndexRef.current = 0;
     setGapSecondsLeft(null);
-    setPendingOutcome(null);
-    setPendingNotes("");
+    setPendingOutcomeSafe(null);
+    setPendingNotesSafe("");
+    pendingInteractionIdRef.current = undefined;
+    setSavingRemarks(false);
     setBulkModeActive(false);
-  }, [hangUp, clearPendingFollowUp, setBulkModeActive]);
+  }, [
+    hangUp,
+    clearPendingFollowUp,
+    setBulkModeActive,
+    setPendingNotesSafe,
+    setPendingOutcomeSafe,
+  ]);
 
   const skipCurrent = useCallback(() => {
     clearTimers();
     hangUp();
     const idx = currentIndexRef.current;
-    setResults((prev) =>
-      prev.map((r, i) => (i === idx ? { ...r, skipped: true } : r)),
-    );
+    // Mid-call skip marks the lead skipped; skipping the remarks gap just advances.
+    if (statusRef.current === "running") {
+      setResults((prev) =>
+        prev.map((r, i) => (i === idx ? { ...r, skipped: true } : r)),
+      );
+    }
+    pendingInteractionIdRef.current = undefined;
+    setPendingOutcomeSafe(null);
+    setPendingNotesSafe("");
     setQueue((currentQueue) => {
       advanceToNext(idx, currentQueue);
       return currentQueue;
     });
-  }, [hangUp, advanceToNext]);
+  }, [hangUp, advanceToNext, setPendingNotesSafe, setPendingOutcomeSafe]);
 
   return {
     queue,
@@ -303,8 +356,10 @@ export function useCallQueue(): CallQueueState {
     batchSize: BATCH_SIZE,
     pendingOutcome,
     pendingNotes,
-    setPendingOutcome,
-    setPendingNotes,
+    savingRemarks,
+    setPendingOutcome: setPendingOutcomeSafe,
+    setPendingNotes: setPendingNotesSafe,
+    savePendingAndContinue,
     start,
     pause,
     resume,

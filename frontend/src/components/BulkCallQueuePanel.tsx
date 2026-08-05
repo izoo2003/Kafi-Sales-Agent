@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { type CallQueueState, BATCH_SIZE, GAP_SECONDS } from "../hooks/useCallQueue";
+import { type CallQueueState, BATCH_SIZE } from "../hooks/useCallQueue";
 import { CALL_OUTCOMES } from "../utils/callOutcomes";
 import { autocorrectText, spellingInputProps } from "../utils/spelling";
 import { CallingCard } from "./CallingCard";
@@ -60,14 +60,15 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
     status,
     currentIndex,
     results,
-    gapSecondsLeft,
     batchNumber,
     totalBatches,
     indexInBatch,
     pendingOutcome,
     pendingNotes,
+    savingRemarks,
     setPendingOutcome,
     setPendingNotes,
+    savePendingAndContinue,
     pause,
     resume,
     stop,
@@ -141,7 +142,7 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
                 : status === "paused"
                   ? "Bulk call paused"
                   : status === "between"
-                    ? `Next call in ${gapSecondsLeft ?? GAP_SECONDS}s…`
+                    ? "Save remarks, then continue"
                     : `Calling ${currentEntry?.companyName ?? "…"}`}
             </p>
             <p className="text-xs text-slate-400 mt-0.5">
@@ -166,19 +167,31 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
             </button>
           )}
           {status === "between" && (
-            <button
-              type="button"
-              onClick={skipCurrent}
-              className="px-2.5 py-1.5 rounded-lg bg-amber-900/50 hover:bg-amber-900/70 border border-amber-700/40 text-amber-200 text-xs"
-            >
-              Skip ahead
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => void savePendingAndContinue()}
+                disabled={savingRemarks}
+                className="px-2.5 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 border border-emerald-600 text-white text-xs font-medium"
+              >
+                {savingRemarks ? "Saving…" : "Save & next"}
+              </button>
+              <button
+                type="button"
+                onClick={skipCurrent}
+                disabled={savingRemarks}
+                className="px-2.5 py-1.5 rounded-lg bg-amber-900/50 hover:bg-amber-900/70 border border-amber-700/40 text-amber-200 text-xs disabled:opacity-60"
+              >
+                Skip ahead
+              </button>
+            </>
           )}
           {(status === "running" || status === "between") && (
             <button
               type="button"
               onClick={pause}
-              className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs"
+              disabled={savingRemarks}
+              className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs disabled:opacity-60"
             >
               Pause
             </button>
@@ -307,17 +320,31 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
                 value={pendingNotes}
                 onChange={(e) => setPendingNotes(e.target.value)}
                 onBlur={(e) => setPendingNotes(autocorrectText(e.target.value, "prose"))}
-                rows={2}
-                placeholder="Quick note… (auto-saved)"
+                rows={3}
+                placeholder="Call remarks…"
                 className="w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-slate-200 placeholder-slate-600 resize-none"
                 {...spellingInputProps("prose")}
               />
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void savePendingAndContinue()}
+                  disabled={savingRemarks}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 border border-emerald-600 text-white text-xs font-medium"
+                >
+                  {savingRemarks ? "Saving…" : "Save remarks & next"}
+                </button>
+                <button
+                  type="button"
+                  onClick={skipCurrent}
+                  disabled={savingRemarks}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs disabled:opacity-60"
+                >
+                  Skip without saving
+                </button>
+              </div>
               <p className="text-xs text-slate-500">
-                Next call starts in{" "}
-                <span className="text-amber-300 font-medium tabular-nums">
-                  {gapSecondsLeft ?? GAP_SECONDS}s
-                </span>
-                . Outcome is saved automatically.
+                Remarks are only saved when you click Save. The next call starts after that.
               </p>
             </>
           )}
@@ -331,7 +358,7 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
               )}
               <p className="text-xs text-slate-500">{currentEntry.phone}</p>
               <p className="text-xs text-slate-600 mt-2">
-                Outcome form appears during the 3s gap after the call ends.
+                When the call ends, add an outcome and remarks, then click Save & next.
               </p>
             </div>
           )}

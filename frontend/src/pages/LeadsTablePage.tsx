@@ -28,6 +28,7 @@ import {
   BulkActionProgressPanel,
   type BulkActionProgress,
 } from "../components/BulkActionProgressPanel";
+import { BulkCallQueuePanel } from "../components/BulkCallQueuePanel";
 import { CallLeadButton } from "../components/CallLeadButton";
 import { WhatsAppLeadButton } from "../components/WhatsAppLeadButton";
 import { DialpadPhoneText } from "../components/DialpadPhoneText";
@@ -41,6 +42,7 @@ import {
   IconEdit,
   IconHeart,
   IconMail,
+  IconPhone,
   IconPlus,
   IconRefresh,
   IconSearch,
@@ -50,6 +52,7 @@ import {
   IconX,
   IconXCircle,
 } from "../components/icons/AppIcons";
+import { BATCH_SIZE, useCallQueue, type QueueEntry } from "../hooks/useCallQueue";
 import { exportLeadsTableCsv } from "../utils/exportCsv";
 import { UNASSIGNED } from "../utils/leadAssignees";
 import {
@@ -601,6 +604,9 @@ export function LeadsTablePage({
   const [whatsappComposeTarget, setWhatsappComposeTarget] =
     useState<WhatsAppComposeTarget | null>(null);
   const [bulkWhatsAppNotice, setBulkWhatsAppNotice] = useState<string | null>(null);
+  const [showBulkQueue, setShowBulkQueue] = useState(false);
+  const [startingBulkCall, setStartingBulkCall] = useState(false);
+  const callQueue = useCallQueue();
   const [showCsvImport, setShowCsvImport] = useState(false);
   const [showCreateLead, setShowCreateLead] = useState(false);
   const [bulkEmailNotice, setBulkEmailNotice] = useState<string | null>(null);
@@ -1268,6 +1274,87 @@ export function LeadsTablePage({
 
   function openWhatsAppCompose(row: LeadTableRow, phone: string) {
     setWhatsappComposeTarget({ row, phone: phone.trim() });
+  }
+
+  function dialPhoneForRow(row: LeadTableRow): string | null {
+    const phone =
+      row.contact_phone?.trim() ||
+      row.contact_primary_phone?.trim() ||
+      row.contact_secondary_phone?.trim() ||
+      row.contact_secondary_mobile?.trim() ||
+      "";
+    return phone || null;
+  }
+
+  async function startBulkCallFromTable() {
+    const ids = [...selected];
+    if (!ids.length || startingBulkCall || callQueue.status !== "idle") return;
+
+    setStartingBulkCall(true);
+    try {
+      const idSet = new Set(ids);
+      const byId = new Map<number, LeadTableRow>();
+      for (const row of rows) {
+        if (idSet.has(row.id)) byId.set(row.id, row);
+      }
+
+      if (byId.size < ids.length) {
+        let pageNum = 1;
+        const pageSize = 100;
+        while (byId.size < ids.length && pageNum <= 500) {
+          const result = await client.listLeadsTable({
+            ...tableQueryParams,
+            page: pageNum,
+            page_size: pageSize,
+          });
+          for (const row of result.rows) {
+            if (idSet.has(row.id)) byId.set(row.id, row);
+          }
+          if (pageNum >= result.total_pages || result.rows.length === 0) break;
+          pageNum += 1;
+        }
+      }
+
+      const leads: QueueEntry[] = [];
+      let missingPhone = 0;
+      for (const id of ids) {
+        const row = byId.get(id);
+        if (!row) continue;
+        const phone = dialPhoneForRow(row);
+        if (!phone) {
+          missingPhone += 1;
+          continue;
+        }
+        leads.push({
+          leadId: row.id,
+          contactId: row.contact_id ?? undefined,
+          companyName: row.company_name,
+          contactName: row.contact_name,
+          phone,
+          country: row.country,
+        });
+      }
+
+      if (!leads.length) {
+        onError("None of the selected leads have a phone number to call.");
+        return;
+      }
+
+      clearSelection();
+      setShowBulkQueue(true);
+      callQueue.start(leads);
+      if (missingPhone > 0) {
+        setSaveNotice(
+          `Bulk call started with ${leads.length} lead${leads.length === 1 ? "" : "s"}. ` +
+            `${missingPhone} skipped (no phone).`,
+        );
+        window.setTimeout(() => setSaveNotice(null), 5000);
+      }
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to start bulk call");
+    } finally {
+      setStartingBulkCall(false);
+    }
   }
 
   async function saveFollowUpAt(rowId: number, followUpAt: string | null) {
@@ -1944,6 +2031,28 @@ export function LeadsTablePage({
             {openingMailer ? "Opening mailer…" : `Send emails (${selected.size})`}
           </ActionButton>
           <ActionButton
+            icon={IconPhone}
+            variant="sky"
+            onClick={() => void startBulkCallFromTable()}
+            disabled={
+              selected.size === 0 ||
+              bulkOnboarding ||
+              deletingSelected ||
+              deletingId !== null ||
+              editMode ||
+              startingBulkCall ||
+              callQueue.status !== "idle"
+            }
+            title="Bulk call selected leads"
+          >
+            {startingBulkCall
+              ? "Starting…"
+              : `Bulk call (${selected.size})`}
+            {!startingBulkCall && selected.size > BATCH_SIZE
+              ? ` · ${Math.ceil(selected.size / BATCH_SIZE)} batches`
+              : ""}
+          </ActionButton>
+          <ActionButton
             icon={IconWhatsApp}
             variant="emerald"
             onClick={() => {
@@ -2166,6 +2275,18 @@ export function LeadsTablePage({
         <p className="text-xs text-emerald-300 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 shrink-0">
           {saveNotice}
         </p>
+      )}
+
+      {showBulkQueue && callQueue.status !== "idle" && (
+        <div className="shrink-0">
+          <BulkCallQueuePanel
+            queue={callQueue}
+            onClose={() => {
+              callQueue.stop();
+              setShowBulkQueue(false);
+            }}
+          />
+        </div>
       )}
 
       {bulkEmailNotice && (
