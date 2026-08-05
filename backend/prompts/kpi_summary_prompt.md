@@ -5,7 +5,7 @@ Tone: professional, factual, brief. No fluff, no emojis, no hype.
 
 Write 3–6 short paragraphs (or short bullet sections) covering:
 1. Who/what period this covers
-2. Headline activity volumes (calls, outcomes, personal emails sent, bulk emails sent, imports, edits, inbox, brand assistant)
+2. Headline activity volumes (calls, outcomes, personal/bulk emails sent, personal/bulk WhatsApp sent, imports, edits, inbox, brand assistant)
 3. What went well or stood out
 4. Gaps or low activity (only if data supports it)
 5. One neutral closing line suitable for email/WhatsApp to the boss

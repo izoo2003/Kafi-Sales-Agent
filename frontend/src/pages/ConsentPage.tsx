@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { client, type ComplianceContact, type ConsentSummary } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
+import { ColumnVisibilityMenu } from "../components/ColumnVisibilityMenu";
+import {
+  useColumnVisibility,
+  type ColumnDef,
+} from "../hooks/useColumnVisibility";
 
 interface ConsentPageProps {
   onError: (message: string) => void;
@@ -13,7 +19,19 @@ const CONSENT_OPTIONS = [
   { value: "denied", label: "Denied" },
 ];
 
+const CONSENT_COLUMNS: ColumnDef[] = [
+  { id: "select", label: "Select", locked: true },
+  { id: "company", label: "Company", locked: true },
+  { id: "contact", label: "Contact" },
+  { id: "email", label: "Email" },
+  { id: "message_status", label: "Message status" },
+  { id: "birthday", label: "Birthday" },
+  { id: "birthday_ok", label: "Birthday OK" },
+];
+
 export function ConsentPage({ onError, onSelectLead }: ConsentPageProps) {
+  const { user } = useAuth();
+  const columnsUi = useColumnVisibility("consent", CONSENT_COLUMNS, user?.id);
   const [summary, setSummary] = useState<ConsentSummary | null>(null);
   const [contacts, setContacts] = useState<ComplianceContact[]>([]);
   const [loading, setLoading] = useState(true);
@@ -165,7 +183,7 @@ export function ConsentPage({ onError, onSelectLead }: ConsentPageProps) {
           </label>
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => void bulkSetConsent("granted")}
@@ -190,6 +208,15 @@ export function ConsentPage({ onError, onSelectLead }: ConsentPageProps) {
           >
             Reset to unknown
           </button>
+          <ColumnVisibilityMenu
+            className="ml-auto"
+            columns={columnsUi.columns}
+            isVisible={columnsUi.isVisible}
+            toggle={columnsUi.toggle}
+            showAll={columnsUi.showAll}
+            resetDefaults={columnsUi.resetDefaults}
+            hiddenCount={columnsUi.hiddenCount}
+          />
         </div>
       </div>
 
@@ -199,10 +226,11 @@ export function ConsentPage({ onError, onSelectLead }: ConsentPageProps) {
         <p className="text-slate-500 text-sm">No contacts match your filters.</p>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-slate-800">
+          {columnsUi.css ? <style>{columnsUi.css}</style> : null}
           <table className="w-full text-sm">
             <thead className="bg-slate-900 text-slate-400">
               <tr>
-                <th className="p-3 text-left">
+                <th data-col="select" className="p-3 text-left">
                   <input
                     type="checkbox"
                     checked={allSelected}
@@ -210,18 +238,18 @@ export function ConsentPage({ onError, onSelectLead }: ConsentPageProps) {
                     aria-label="Select all contacts"
                   />
                 </th>
-                <th className="p-3 text-left">Company</th>
-                <th className="p-3 text-left">Contact</th>
-                <th className="p-3 text-left">Email</th>
-                <th className="p-3 text-left">Message status</th>
-                <th className="p-3 text-left">Birthday</th>
-                <th className="p-3 text-left">Birthday OK</th>
+                <th data-col="company" className="p-3 text-left">Company</th>
+                <th data-col="contact" className="p-3 text-left">Contact</th>
+                <th data-col="email" className="p-3 text-left">Email</th>
+                <th data-col="message_status" className="p-3 text-left">Message status</th>
+                <th data-col="birthday" className="p-3 text-left">Birthday</th>
+                <th data-col="birthday_ok" className="p-3 text-left">Birthday OK</th>
               </tr>
             </thead>
             <tbody>
               {contacts.map((contact) => (
                 <tr key={contact.id} className="border-t border-slate-800 bg-slate-950/40">
-                  <td className="p-3">
+                  <td data-col="select" className="p-3">
                     <input
                       type="checkbox"
                       checked={selected.has(contact.id)}
@@ -229,7 +257,7 @@ export function ConsentPage({ onError, onSelectLead }: ConsentPageProps) {
                       aria-label={`Select ${contact.full_name}`}
                     />
                   </td>
-                  <td className="p-3">
+                  <td data-col="company" className="p-3">
                     <button
                       type="button"
                       onClick={() => onSelectLead(contact.buyer_id)}
@@ -241,9 +269,9 @@ export function ConsentPage({ onError, onSelectLead }: ConsentPageProps) {
                       <p className="text-xs text-slate-500 mt-0.5">{contact.country}</p>
                     )}
                   </td>
-                  <td className="p-3 text-slate-200">{contact.full_name}</td>
-                  <td className="p-3 text-slate-400">{contact.email ?? "—"}</td>
-                  <td className="p-3">
+                  <td data-col="contact" className="p-3 text-slate-200">{contact.full_name}</td>
+                  <td data-col="email" className="p-3 text-slate-400">{contact.email ?? "—"}</td>
+                  <td data-col="message_status" className="p-3">
                     <select
                       value={contact.consent_status}
                       onChange={(e) =>
@@ -257,7 +285,7 @@ export function ConsentPage({ onError, onSelectLead }: ConsentPageProps) {
                       <option value="denied">Denied</option>
                     </select>
                   </td>
-                  <td className="p-3">
+                  <td data-col="birthday" className="p-3">
                     <input
                       type="date"
                       value={contact.date_of_birth ?? ""}
@@ -268,7 +296,7 @@ export function ConsentPage({ onError, onSelectLead }: ConsentPageProps) {
                       className="rounded-md bg-slate-900 border border-slate-700 px-2 py-1 text-xs text-slate-200"
                     />
                   </td>
-                  <td className="p-3">
+                  <td data-col="birthday_ok" className="p-3">
                     {contact.birthday_outreach_ok ? (
                       <span className="text-xs text-emerald-300">Ready</span>
                     ) : (

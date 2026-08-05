@@ -1,12 +1,29 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { client, type AppUser } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
+import { ColumnVisibilityMenu } from "../components/ColumnVisibilityMenu";
+import {
+  useColumnVisibility,
+  type ColumnDef,
+} from "../hooks/useColumnVisibility";
 
 interface UsersPageProps {
   onError: (message: string) => void;
   onUsersChanged?: () => void;
 }
 
+const USERS_COLUMNS: ColumnDef[] = [
+  { id: "username", label: "Username", locked: true },
+  { id: "name", label: "Name" },
+  { id: "mailbox", label: "Mailbox" },
+  { id: "role", label: "Role" },
+  { id: "status", label: "Status" },
+  { id: "actions", label: "Actions", locked: true },
+];
+
 export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
+  const { user: authUser } = useAuth();
+  const columnsUi = useColumnVisibility("users", USERS_COLUMNS, authUser?.id);
   const [users, setUsers] = useState<AppUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [username, setUsername] = useState("");
@@ -229,15 +246,26 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
       </form>
 
       <div className="rounded-xl border border-slate-800 overflow-x-auto">
+        <div className="flex items-center justify-end gap-2 px-3 py-2 border-b border-slate-800/80 bg-slate-950/60">
+          <ColumnVisibilityMenu
+            columns={columnsUi.columns}
+            isVisible={columnsUi.isVisible}
+            toggle={columnsUi.toggle}
+            showAll={columnsUi.showAll}
+            resetDefaults={columnsUi.resetDefaults}
+            hiddenCount={columnsUi.hiddenCount}
+          />
+        </div>
+        {columnsUi.css ? <style>{columnsUi.css}</style> : null}
         <table className="w-full text-sm">
           <thead className="bg-slate-900/80 text-slate-400 text-left">
             <tr>
-              <th className="px-4 py-3 font-medium">Username</th>
-              <th className="px-4 py-3 font-medium">Name</th>
-              <th className="px-4 py-3 font-medium">Mailbox</th>
-              <th className="px-4 py-3 font-medium">Role</th>
-              <th className="px-4 py-3 font-medium">Status</th>
-              <th className="px-4 py-3 font-medium text-right">Actions</th>
+              <th data-col="username" className="px-4 py-3 font-medium">Username</th>
+              <th data-col="name" className="px-4 py-3 font-medium">Name</th>
+              <th data-col="mailbox" className="px-4 py-3 font-medium">Mailbox</th>
+              <th data-col="role" className="px-4 py-3 font-medium">Role</th>
+              <th data-col="status" className="px-4 py-3 font-medium">Status</th>
+              <th data-col="actions" className="px-4 py-3 font-medium text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -351,9 +379,9 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
                     </td>
                   ) : (
                     <>
-                      <td className="px-4 py-3 text-slate-100">{user.username}</td>
-                      <td className="px-4 py-3 text-slate-300">{user.full_name}</td>
-                      <td className="px-4 py-3 text-slate-300">
+                      <td data-col="username" className="px-4 py-3 text-slate-100">{user.username}</td>
+                      <td data-col="name" className="px-4 py-3 text-slate-300">{user.full_name}</td>
+                      <td data-col="mailbox" className="px-4 py-3 text-slate-300">
                         {user.mailbox_configured ? (
                           <span className="text-emerald-300">{user.mailbox_email}</span>
                         ) : user.mailbox_email ? (
@@ -362,7 +390,7 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
                           <span className="text-slate-500">Not set</span>
                         )}
                       </td>
-                      <td className="px-4 py-3">
+                      <td data-col="role" className="px-4 py-3">
                         <span
                           className={`px-2 py-0.5 rounded text-xs font-medium border ${
                             user.role === "admin"
@@ -373,10 +401,10 @@ export function UsersPage({ onError, onUsersChanged }: UsersPageProps) {
                           {user.role}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-slate-400">
+                      <td data-col="status" className="px-4 py-3 text-slate-400">
                         {user.is_active ? "Active" : "Inactive"}
                       </td>
-                      <td className="px-4 py-3 text-right">
+                      <td data-col="actions" className="px-4 py-3 text-right">
                         <div className="inline-flex flex-wrap justify-end gap-2">
                           <button
                             type="button"

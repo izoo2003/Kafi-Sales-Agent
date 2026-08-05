@@ -7,6 +7,11 @@ import {
   type AppUser,
 } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { ColumnVisibilityMenu } from "../components/ColumnVisibilityMenu";
+import {
+  useColumnVisibility,
+  type ColumnDef,
+} from "../hooks/useColumnVisibility";
 import { exportKpiReportPdf } from "../utils/exportKpiPdf";
 
 interface KpiPageProps {
@@ -54,12 +59,29 @@ const COUNT_CARDS: { key: keyof KpiCounts; label: string }[] = [
   { key: "email_templates_created", label: "Templates created" },
   { key: "personal_emails_sent", label: "Personal emails sent" },
   { key: "bulk_emails_sent", label: "Bulk emails sent" },
+  { key: "personal_whatsapp_sent", label: "Personal WhatsApp sent" },
+  { key: "bulk_whatsapp_sent", label: "Bulk WhatsApp sent" },
   { key: "inbox_replies", label: "Inbox replies" },
   { key: "brand_assistant_sessions", label: "Brand assistant" },
 ];
 
+const KPI_PER_USER_COLUMNS: ColumnDef[] = [
+  { id: "user", label: "User", locked: true },
+  { id: "calls", label: "Calls" },
+  { id: "outcomes", label: "Outcomes" },
+  { id: "edits", label: "Edits" },
+  { id: "email", label: "Email" },
+  { id: "whatsapp", label: "WhatsApp" },
+  { id: "events", label: "Events" },
+];
+
 export function KpiPage({ onError }: KpiPageProps) {
   const { isAdmin, user } = useAuth();
+  const columnsUi = useColumnVisibility(
+    "kpi.per_user",
+    KPI_PER_USER_COLUMNS,
+    user?.id,
+  );
   const [period, setPeriod] = useState<KpiPeriod>("day");
   const [date, setDate] = useState(todayInKarachi);
   const [selectedUserId, setSelectedUserId] = useState<string>("");
@@ -323,20 +345,31 @@ export function KpiPage({ onError }: KpiPageProps) {
 
           {isAdmin && report.scope === "team" && report.per_user.length > 0 && (
             <section className="space-y-3">
-              <h3 className="text-sm font-medium uppercase tracking-wider text-slate-500">
-                Per user
-              </h3>
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-medium uppercase tracking-wider text-slate-500">
+                  Per user
+                </h3>
+                <ColumnVisibilityMenu
+                  columns={columnsUi.columns}
+                  isVisible={columnsUi.isVisible}
+                  toggle={columnsUi.toggle}
+                  showAll={columnsUi.showAll}
+                  resetDefaults={columnsUi.resetDefaults}
+                  hiddenCount={columnsUi.hiddenCount}
+                />
+              </div>
               <div className="overflow-x-auto rounded-lg border border-slate-800">
+                {columnsUi.css ? <style>{columnsUi.css}</style> : null}
                 <table className="min-w-full text-left text-sm">
                   <thead className="bg-slate-900/80 text-xs uppercase text-slate-500">
                     <tr>
-                      <th className="px-3 py-2 font-medium">User</th>
-                      <th className="px-3 py-2 font-medium">Calls</th>
-                      <th className="px-3 py-2 font-medium">Outcomes</th>
-                      <th className="px-3 py-2 font-medium">Edits</th>
-                      <th className="px-3 py-2 font-medium">Personal</th>
-                      <th className="px-3 py-2 font-medium">Bulk</th>
-                      <th className="px-3 py-2 font-medium">Events</th>
+                      <th data-col="user" className="px-3 py-2 font-medium">User</th>
+                      <th data-col="calls" className="px-3 py-2 font-medium">Calls</th>
+                      <th data-col="outcomes" className="px-3 py-2 font-medium">Outcomes</th>
+                      <th data-col="edits" className="px-3 py-2 font-medium">Edits</th>
+                      <th data-col="email" className="px-3 py-2 font-medium">Email</th>
+                      <th data-col="whatsapp" className="px-3 py-2 font-medium">WhatsApp</th>
+                      <th data-col="events" className="px-3 py-2 font-medium">Events</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800">
@@ -346,19 +379,22 @@ export function KpiPage({ onError }: KpiPageProps) {
                         (row.counts.outcomes_follow_up ?? 0) +
                         row.counts.outcomes_not_interested +
                         row.counts.outcomes_not_received_call;
+                      const emails =
+                        (row.counts.personal_emails_sent ?? 0) + (row.counts.bulk_emails_sent ?? 0);
+                      const whatsapp =
+                        (row.counts.personal_whatsapp_sent ?? 0) +
+                        (row.counts.bulk_whatsapp_sent ?? 0);
                       return (
                         <tr key={row.user?.id ?? row.activity_count} className="text-slate-300">
-                          <td className="px-3 py-2 text-slate-100">
+                          <td data-col="user" className="px-3 py-2 text-slate-100">
                             {row.user?.full_name || "Unknown"}
                           </td>
-                          <td className="px-3 py-2 tabular-nums">{row.counts.calls_logged}</td>
-                          <td className="px-3 py-2 tabular-nums">{outcomes}</td>
-                          <td className="px-3 py-2 tabular-nums">{row.counts.table_edits}</td>
-                          <td className="px-3 py-2 tabular-nums">
-                            {row.counts.personal_emails_sent ?? 0}
-                          </td>
-                          <td className="px-3 py-2 tabular-nums">{row.counts.bulk_emails_sent}</td>
-                          <td className="px-3 py-2 tabular-nums">{row.activity_count}</td>
+                          <td data-col="calls" className="px-3 py-2 tabular-nums">{row.counts.calls_logged}</td>
+                          <td data-col="outcomes" className="px-3 py-2 tabular-nums">{outcomes}</td>
+                          <td data-col="edits" className="px-3 py-2 tabular-nums">{row.counts.table_edits}</td>
+                          <td data-col="email" className="px-3 py-2 tabular-nums">{emails}</td>
+                          <td data-col="whatsapp" className="px-3 py-2 tabular-nums">{whatsapp}</td>
+                          <td data-col="events" className="px-3 py-2 tabular-nums">{row.activity_count}</td>
                         </tr>
                       );
                     })}

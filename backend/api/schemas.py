@@ -1220,6 +1220,8 @@ class KpiCounts(BaseModel):
     email_templates_created: int = 0
     personal_emails_sent: int = 0
     bulk_emails_sent: int = 0
+    personal_whatsapp_sent: int = 0
+    bulk_whatsapp_sent: int = 0
     inbox_replies: int = 0
     brand_assistant_sessions: int = 0
 

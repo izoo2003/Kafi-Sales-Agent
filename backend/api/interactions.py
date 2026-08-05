@@ -407,6 +407,18 @@ def approve_interaction(
                 entity_id=approved.id,
                 details={"mode": "approve", "channel": channel},
             )
+        elif payload.send and channel == Channel.whatsapp.value:
+            activity_module.log_activity(
+                db,
+                user_id=user.id,
+                activity_type=activity_module.PERSONAL_WHATSAPP_SENT,
+                title="Personal WhatsApp sent",
+                summary=f"Approved and sent WhatsApp (interaction #{approved.id})",
+                quantity=1,
+                entity_type="interaction",
+                entity_id=approved.id,
+                details={"mode": "approve", "channel": channel},
+            )
     elif send_result and payload.send:
         log_action(
             db,

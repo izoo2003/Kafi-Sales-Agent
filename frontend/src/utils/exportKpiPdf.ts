@@ -13,6 +13,8 @@ const COUNT_LABELS: { key: keyof KpiCounts; label: string }[] = [
   { key: "email_templates_created", label: "Templates created" },
   { key: "personal_emails_sent", label: "Personal emails sent" },
   { key: "bulk_emails_sent", label: "Bulk emails sent" },
+  { key: "personal_whatsapp_sent", label: "Personal WhatsApp sent" },
+  { key: "bulk_whatsapp_sent", label: "Bulk WhatsApp sent" },
   { key: "inbox_replies", label: "Inbox replies" },
   { key: "brand_assistant_sessions", label: "Brand assistant" },
 ];
@@ -145,7 +147,7 @@ export function exportKpiReportPdf(input: KpiPdfInput): void {
         row.counts.outcomes_not_interested +
         row.counts.outcomes_not_received_call;
       addBody(
-        `${name} — calls ${row.counts.calls_logged}, outcomes ${outcomes}, edits ${row.counts.table_edits}, personal ${row.counts.personal_emails_sent ?? 0}, bulk ${row.counts.bulk_emails_sent}, events ${row.activity_count}`,
+        `${name} — calls ${row.counts.calls_logged}, outcomes ${outcomes}, edits ${row.counts.table_edits}, email ${(row.counts.personal_emails_sent ?? 0) + (row.counts.bulk_emails_sent ?? 0)}, WhatsApp ${(row.counts.personal_whatsapp_sent ?? 0) + (row.counts.bulk_whatsapp_sent ?? 0)}, events ${row.activity_count}`,
         { size: 9 },
       );
     }

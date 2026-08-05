@@ -359,6 +359,8 @@ export interface KpiCounts {
   email_templates_created: number;
   personal_emails_sent?: number;
   bulk_emails_sent: number;
+  personal_whatsapp_sent?: number;
+  bulk_whatsapp_sent?: number;
   inbox_replies: number;
   brand_assistant_sessions: number;
 }

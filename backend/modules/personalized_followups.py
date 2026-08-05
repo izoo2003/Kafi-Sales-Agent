@@ -534,6 +534,7 @@ def send_draft(
     db.refresh(draft)
 
     from modules.audit import log_action
+    from modules import activity as activity_module
 
     log_action(
         db,
@@ -549,6 +550,31 @@ def send_draft(
             "template_name": template_name,
         },
     )
+
+    if requested_email and email_ok:
+        activity_module.log_activity(
+            db,
+            user_id=user.id,
+            activity_type=activity_module.PERSONAL_EMAILS_SENT,
+            title="Personal email sent",
+            summary=f"Personalized follow-up email (draft #{draft.id})",
+            quantity=1,
+            entity_type="personalized_followup",
+            entity_id=draft.id,
+            details={"mode": "personalized_followup", "channel": "email", "buyer_id": draft.buyer_id},
+        )
+    if requested_wa and wa_ok:
+        activity_module.log_activity(
+            db,
+            user_id=user.id,
+            activity_type=activity_module.PERSONAL_WHATSAPP_SENT,
+            title="Personal WhatsApp sent",
+            summary=f"Personalized follow-up WhatsApp (draft #{draft.id})",
+            quantity=1,
+            entity_type="personalized_followup",
+            entity_id=draft.id,
+            details={"mode": "personalized_followup", "channel": "whatsapp", "buyer_id": draft.buyer_id},
+        )
 
     if requested_email and requested_wa:
         if email_ok and wa_ok:

@@ -3,8 +3,14 @@ import {
   client,
   type ClientHistoryFeedResponse,
 } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
+import { ColumnVisibilityMenu } from "../components/ColumnVisibilityMenu";
 import { Pagination } from "../components/Pagination";
 import { sourceLabelForHistory } from "../components/ClientHistoryPanel";
+import {
+  useColumnVisibility,
+  type ColumnDef,
+} from "../hooks/useColumnVisibility";
 
 interface ClientHistoryPageProps {
   onError: (message: string) => void;
@@ -13,6 +19,14 @@ interface ClientHistoryPageProps {
 }
 
 const PAGE_SIZE = 30;
+
+const CLIENT_HISTORY_COLUMNS: ColumnDef[] = [
+  { id: "when", label: "Date & time" },
+  { id: "client", label: "Client", locked: true },
+  { id: "source", label: "Source" },
+  { id: "added_by", label: "Added by" },
+  { id: "remark", label: "Remark" },
+];
 
 function formatWhen(iso: string | null | undefined) {
   if (!iso) return "—";
@@ -26,6 +40,12 @@ export function ClientHistoryPage({
   onOpenClient,
   initialBuyerId = null,
 }: ClientHistoryPageProps) {
+  const { user } = useAuth();
+  const columnsUi = useColumnVisibility(
+    "client_history",
+    CLIENT_HISTORY_COLUMNS,
+    user?.id,
+  );
   const [data, setData] = useState<ClientHistoryFeedResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
@@ -90,30 +110,41 @@ export function ClientHistoryPage({
             Search
           </button>
         </form>
-        {buyerFilter != null ? (
-          <button
-            type="button"
-            onClick={() => {
-              setBuyerFilter(null);
-              setPage(1);
-            }}
-            className="text-sm text-slate-400 hover:text-slate-200"
-          >
-            Clear client filter
-          </button>
-        ) : null}
+        <div className="flex flex-wrap items-center gap-3">
+          {buyerFilter != null ? (
+            <button
+              type="button"
+              onClick={() => {
+                setBuyerFilter(null);
+                setPage(1);
+              }}
+              className="text-sm text-slate-400 hover:text-slate-200"
+            >
+              Clear client filter
+            </button>
+          ) : null}
+          <ColumnVisibilityMenu
+            columns={columnsUi.columns}
+            isVisible={columnsUi.isVisible}
+            toggle={columnsUi.toggle}
+            showAll={columnsUi.showAll}
+            resetDefaults={columnsUi.resetDefaults}
+            hiddenCount={columnsUi.hiddenCount}
+          />
+        </div>
       </div>
 
       <div className="rounded-xl border border-slate-800 overflow-hidden">
         <div className="overflow-x-auto">
+          {columnsUi.css ? <style>{columnsUi.css}</style> : null}
           <table className="min-w-full text-sm">
             <thead className="bg-slate-900/80 text-left text-xs uppercase tracking-wide text-slate-500">
               <tr>
-                <th className="px-4 py-3 min-w-[160px]">Date & time</th>
-                <th className="px-4 py-3 min-w-[180px]">Client</th>
-                <th className="px-4 py-3 min-w-[120px]">Source</th>
-                <th className="px-4 py-3 min-w-[100px]">Added by</th>
-                <th className="px-4 py-3 min-w-[280px]">Remark</th>
+                <th data-col="when" className="px-4 py-3 min-w-[160px]">Date & time</th>
+                <th data-col="client" className="px-4 py-3 min-w-[180px]">Client</th>
+                <th data-col="source" className="px-4 py-3 min-w-[120px]">Source</th>
+                <th data-col="added_by" className="px-4 py-3 min-w-[100px]">Added by</th>
+                <th data-col="remark" className="px-4 py-3 min-w-[280px]">Remark</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">
@@ -134,10 +165,10 @@ export function ClientHistoryPage({
               ) : null}
               {(data?.rows || []).map((row) => (
                 <tr key={row.id} className="hover:bg-slate-900/40 align-top">
-                  <td className="px-4 py-3 text-slate-400 whitespace-nowrap">
+                  <td data-col="when" className="px-4 py-3 text-slate-400 whitespace-nowrap">
                     {formatWhen(row.at)}
                   </td>
-                  <td className="px-4 py-3">
+                  <td data-col="client" className="px-4 py-3">
                     <button
                       type="button"
                       onClick={() => {
@@ -156,13 +187,13 @@ export function ClientHistoryPage({
                       <p className="text-xs text-slate-500 mt-0.5">{row.country}</p>
                     ) : null}
                   </td>
-                  <td className="px-4 py-3">
+                  <td data-col="source" className="px-4 py-3">
                     <span className="inline-flex rounded-full border border-slate-700 px-2 py-0.5 text-[11px] uppercase tracking-wide text-slate-400">
                       {sourceLabelForHistory(row.source)}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-slate-400">{row.by || "—"}</td>
-                  <td className="px-4 py-3 text-slate-200 whitespace-pre-wrap break-words min-w-[280px]">
+                  <td data-col="added_by" className="px-4 py-3 text-slate-400">{row.by || "—"}</td>
+                  <td data-col="remark" className="px-4 py-3 text-slate-200 whitespace-pre-wrap break-words min-w-[280px]">
                     {row.text}
                   </td>
                 </tr>

@@ -33,6 +33,7 @@ import { WhatsAppLeadButton } from "../components/WhatsAppLeadButton";
 import { DialpadPhoneText } from "../components/DialpadPhoneText";
 import { EmailComposeButton } from "../components/EmailComposeLink";
 import { Pagination } from "../components/Pagination";
+import { ColumnVisibilityMenu } from "../components/ColumnVisibilityMenu";
 import { ActionButton } from "../components/ui/ActionButton";
 import {
   IconCheck,
@@ -52,6 +53,10 @@ import {
   IconXCircle,
 } from "../components/icons/AppIcons";
 import { BATCH_SIZE, useCallQueue, type QueueEntry } from "../hooks/useCallQueue";
+import {
+  useColumnVisibility,
+  type ColumnDef,
+} from "../hooks/useColumnVisibility";
 import { exportLeadsTableCsv } from "../utils/exportCsv";
 import { UNASSIGNED } from "../utils/leadAssignees";
 import {
@@ -114,6 +119,56 @@ const DEFAULT_TABLE_VIEW: StoredTableView = {
   sortBy: "created_at",
   sortDir: "desc",
 };
+
+const LEADS_WIDE_COLUMNS: ColumnDef[] = [
+  { id: "select", label: "Select", locked: true },
+  { id: "serial", label: "S. No" },
+  { id: "company", label: "Company Name", locked: true },
+  { id: "business_type", label: "Business Type" },
+  { id: "grading", label: "Companies Grading" },
+  { id: "designation", label: "Designation" },
+  { id: "contact_person", label: "Contact Person" },
+  { id: "primary_mobile", label: "Primary Mobile No." },
+  { id: "secondary_mobile", label: "Secondary Mobile No." },
+  { id: "primary_phone", label: "Primary Phone No." },
+  { id: "secondary_phone", label: "Secondary Phone No." },
+  { id: "primary_email", label: "Primary Email" },
+  { id: "secondary_email", label: "Secondary Email" },
+  { id: "country", label: "Country" },
+  { id: "product", label: "Product" },
+  { id: "website", label: "Website" },
+  { id: "city", label: "City" },
+  { id: "ai_grading", label: "AI grading" },
+  { id: "address", label: "Address" },
+  { id: "added", label: "Added" },
+  { id: "calling_time", label: "Calling time" },
+  { id: "remarks", label: "Remarks" },
+  { id: "assigned_to", label: "Assigned To" },
+  { id: "socials", label: "Socials" },
+  { id: "call_remarks", label: "Call remarks" },
+  { id: "follow_up", label: "Follow-up reminder" },
+  { id: "edit", label: "Edit" },
+  { id: "actions", label: "Actions", locked: true },
+];
+
+const LEADS_NARROW_COLUMNS: ColumnDef[] = [
+  { id: "select", label: "Select", locked: true },
+  { id: "serial", label: "#" },
+  { id: "company", label: "Company name", locked: true },
+  { id: "website", label: "Website" },
+  { id: "email", label: "Email" },
+  { id: "phone1", label: "Ph#1" },
+  { id: "phone2", label: "Ph#2" },
+  { id: "calling_time", label: "Calling time" },
+  { id: "role", label: "Role" },
+  { id: "ai_grading", label: "AI grading" },
+  { id: "socials", label: "Socials" },
+  { id: "added", label: "Added" },
+  { id: "country", label: "Country" },
+  { id: "assigned_to", label: "Assigned To" },
+  { id: "edit", label: "Edit" },
+  { id: "actions", label: "Actions", locked: true },
+];
 
 function formatAddedAt(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -816,6 +871,22 @@ export function LeadsTablePage({
     section !== "not_interested_clients" &&
     !isAssignedLeadsSection(section);
   const callOutcomeEmptyMessage = sectionEmptyMessage(section);
+
+  const isWideLayout = isOldClients || isCallOutcomeSection;
+  const columnDefs = useMemo(() => {
+    const base = isWideLayout ? LEADS_WIDE_COLUMNS : LEADS_NARROW_COLUMNS;
+    return base.filter((col) => {
+      if (col.id === "call_remarks" && !isCallOutcomeSection) return false;
+      if (col.id === "follow_up" && !canScheduleFollowUp) return false;
+      if (col.id === "edit" && !editMode) return false;
+      return true;
+    });
+  }, [isWideLayout, isCallOutcomeSection, canScheduleFollowUp, editMode]);
+  const columnsUi = useColumnVisibility(
+    isWideLayout ? "leads.wide" : "leads.narrow",
+    columnDefs,
+    user?.id,
+  );
 
   useEffect(() => {
     syncTopScrollWidth();
@@ -2714,50 +2785,60 @@ export function LeadsTablePage({
         </div>
       ) : (
         <div className={tableOuterClass}>
-          <div className="flex items-center justify-end gap-1 px-2 py-1 border-b border-slate-800/80 bg-slate-950 shrink-0">
-            <button
-              type="button"
-              onClick={zoomOut}
-              disabled={tableZoom <= TABLE_ZOOM_MIN}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:text-slate-200 hover:bg-slate-800 transition-colors disabled:opacity-40 disabled:pointer-events-none"
-              title="Zoom out"
-              aria-label="Zoom out table"
-            >
-              <ZoomOutIcon />
-            </button>
-            <button
-              type="button"
-              onClick={resetZoom}
-              className="min-w-[2.75rem] h-7 px-1.5 rounded-md text-[11px] tabular-nums text-slate-500 hover:text-slate-200 hover:bg-slate-800 transition-colors"
-              title="Reset zoom to 100%"
-              aria-label={`Table zoom ${Math.round(tableZoom * 100)} percent. Click to reset`}
-            >
-              {Math.round(tableZoom * 100)}%
-            </button>
-            <button
-              type="button"
-              onClick={zoomIn}
-              disabled={tableZoom >= TABLE_ZOOM_MAX}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:text-slate-200 hover:bg-slate-800 transition-colors disabled:opacity-40 disabled:pointer-events-none"
-              title="Zoom in"
-              aria-label="Zoom in table"
-            >
-              <ZoomInIcon />
-            </button>
-            <span className="mx-1 h-4 w-px bg-slate-800" aria-hidden="true" />
-            <button
-              type="button"
-              onClick={() => setIsFullscreen((prev) => !prev)}
-              className={`inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
-                isFullscreen
-                  ? "text-amber-400 hover:text-amber-300 hover:bg-amber-500/10"
-                  : "text-slate-500 hover:text-slate-200 hover:bg-slate-800"
-              }`}
-              title={isFullscreen ? "Exit full screen (Esc)" : "Expand table"}
-              aria-label={isFullscreen ? "Exit full screen" : "Expand table to full screen"}
-            >
-              {isFullscreen ? <FullscreenCollapseIcon /> : <FullscreenExpandIcon />}
-            </button>
+          <div className="flex items-center justify-between gap-2 px-2 py-1 border-b border-slate-800/80 bg-slate-950 shrink-0">
+            <ColumnVisibilityMenu
+              columns={columnsUi.columns}
+              isVisible={columnsUi.isVisible}
+              toggle={columnsUi.toggle}
+              showAll={columnsUi.showAll}
+              resetDefaults={columnsUi.resetDefaults}
+              hiddenCount={columnsUi.hiddenCount}
+            />
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={zoomOut}
+                disabled={tableZoom <= TABLE_ZOOM_MIN}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:text-slate-200 hover:bg-slate-800 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                title="Zoom out"
+                aria-label="Zoom out table"
+              >
+                <ZoomOutIcon />
+              </button>
+              <button
+                type="button"
+                onClick={resetZoom}
+                className="min-w-[2.75rem] h-7 px-1.5 rounded-md text-[11px] tabular-nums text-slate-500 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+                title="Reset zoom to 100%"
+                aria-label={`Table zoom ${Math.round(tableZoom * 100)} percent. Click to reset`}
+              >
+                {Math.round(tableZoom * 100)}%
+              </button>
+              <button
+                type="button"
+                onClick={zoomIn}
+                disabled={tableZoom >= TABLE_ZOOM_MAX}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:text-slate-200 hover:bg-slate-800 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                title="Zoom in"
+                aria-label="Zoom in table"
+              >
+                <ZoomInIcon />
+              </button>
+              <span className="mx-1 h-4 w-px bg-slate-800" aria-hidden="true" />
+              <button
+                type="button"
+                onClick={() => setIsFullscreen((prev) => !prev)}
+                className={`inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
+                  isFullscreen
+                    ? "text-amber-400 hover:text-amber-300 hover:bg-amber-500/10"
+                    : "text-slate-500 hover:text-slate-200 hover:bg-slate-800"
+                }`}
+                title={isFullscreen ? "Exit full screen (Esc)" : "Expand table"}
+                aria-label={isFullscreen ? "Exit full screen" : "Expand table to full screen"}
+              >
+                {isFullscreen ? <FullscreenCollapseIcon /> : <FullscreenExpandIcon />}
+              </button>
+            </div>
           </div>
           <div
             ref={topScrollRef}
@@ -2780,6 +2861,7 @@ export function LeadsTablePage({
             style={{ zoom: tableZoom }}
             className="origin-top-left"
           >
+          {columnsUi.css ? <style>{columnsUi.css}</style> : null}
           {isOldClients || isCallOutcomeSection ? (
             <table
               className={`w-full text-sm border-collapse ${
@@ -2789,6 +2871,7 @@ export function LeadsTablePage({
               <thead>
                 <tr className={`text-slate-500 border-b border-slate-800 bg-slate-950 ${theadStickyClass}`}>
                   <th
+                    data-col="select"
                     className={`${TH} w-12 sticky left-0 bg-slate-950 z-[1] ${
                       isFullscreen ? "top-0 z-[3]" : ""
                     }`}
@@ -2804,49 +2887,49 @@ export function LeadsTablePage({
                       className="rounded border-slate-600 bg-slate-950"
                     />
                   </th>
-                  <th className={`${TH} ${COL_SERIAL}`}>S. No</th>
-                  <th className={`${TH} ${COL_COMPANY_OLD}`}>
+                  <th data-col="serial" className={`${TH} ${COL_SERIAL}`}>S. No</th>
+                  <th data-col="company" className={`${TH} ${COL_COMPANY_OLD}`}>
                     <button type="button" onClick={() => toggleSort("company_name")} className="hover:text-slate-300">
                       Company Name{sortIndicator("company_name")}
                     </button>
                   </th>
-                  <th className={`${TH} min-w-[140px]`}>Business Type</th>
-                  <th className={`${TH} min-w-[140px]`}>Companies Grading</th>
-                  <th className={`${TH} min-w-[130px]`}>Designation</th>
-                  <th className={`${TH} min-w-[150px]`}>Contact Person</th>
-                  <th className={`${TH} min-w-[160px]`}>Primary Mobile No.</th>
-                  <th className={`${TH} min-w-[160px]`}>Secondary Mobile No.</th>
-                  <th className={`${TH} min-w-[160px]`}>Primary Phone No.</th>
-                  <th className={`${TH} min-w-[160px]`}>Secondary Phone No.</th>
-                  <th className={`${TH} ${COL_EMAIL}`}>Primary Email</th>
-                  <th className={`${TH} ${COL_EMAIL2}`}>Secondary Email</th>
-                  <th className={`${TH} min-w-[130px]`}>
+                  <th data-col="business_type" className={`${TH} min-w-[140px]`}>Business Type</th>
+                  <th data-col="grading" className={`${TH} min-w-[140px]`}>Companies Grading</th>
+                  <th data-col="designation" className={`${TH} min-w-[130px]`}>Designation</th>
+                  <th data-col="contact_person" className={`${TH} min-w-[150px]`}>Contact Person</th>
+                  <th data-col="primary_mobile" className={`${TH} min-w-[160px]`}>Primary Mobile No.</th>
+                  <th data-col="secondary_mobile" className={`${TH} min-w-[160px]`}>Secondary Mobile No.</th>
+                  <th data-col="primary_phone" className={`${TH} min-w-[160px]`}>Primary Phone No.</th>
+                  <th data-col="secondary_phone" className={`${TH} min-w-[160px]`}>Secondary Phone No.</th>
+                  <th data-col="primary_email" className={`${TH} ${COL_EMAIL}`}>Primary Email</th>
+                  <th data-col="secondary_email" className={`${TH} ${COL_EMAIL2}`}>Secondary Email</th>
+                  <th data-col="country" className={`${TH} min-w-[130px]`}>
                     <button type="button" onClick={() => toggleSort("country")} className="hover:text-slate-300">
                       Country{sortIndicator("country")}
                     </button>
                   </th>
-                  <th className={`${TH} min-w-[140px]`}>Product</th>
-                  <th className={`${TH} ${COL_WEBSITE}`}>Website</th>
-                  <th className={`${TH} min-w-[120px]`}>City</th>
-                  <th className={`${TH} min-w-[120px]`}>AI grading</th>
-                  <th className={`${TH} min-w-[200px]`}>Address</th>
-                  <th className={`${TH} min-w-[120px]`}>
+                  <th data-col="product" className={`${TH} min-w-[140px]`}>Product</th>
+                  <th data-col="website" className={`${TH} ${COL_WEBSITE}`}>Website</th>
+                  <th data-col="city" className={`${TH} min-w-[120px]`}>City</th>
+                  <th data-col="ai_grading" className={`${TH} min-w-[120px]`}>AI grading</th>
+                  <th data-col="address" className={`${TH} min-w-[200px]`}>Address</th>
+                  <th data-col="added" className={`${TH} min-w-[120px]`}>
                     <button type="button" onClick={() => toggleSort("created_at")} className="hover:text-slate-300">
                       Added{sortIndicator("created_at")}
                     </button>
                   </th>
-                  <th className={`${TH} ${COL_CALLING}`}>Calling time</th>
-                  <th className={`${TH} min-w-[180px]`}>Remarks</th>
-                  <th className={`${TH} min-w-[150px]`}>Assigned To</th>
-                  <th className={`${TH} min-w-[120px]`}>Socials</th>
+                  <th data-col="calling_time" className={`${TH} ${COL_CALLING}`}>Calling time</th>
+                  <th data-col="remarks" className={`${TH} min-w-[180px]`}>Remarks</th>
+                  <th data-col="assigned_to" className={`${TH} min-w-[150px]`}>Assigned To</th>
+                  <th data-col="socials" className={`${TH} min-w-[120px]`}>Socials</th>
                   {isCallOutcomeSection && (
-                    <th className={`${TH} min-w-[220px]`}>Call remarks</th>
+                    <th data-col="call_remarks" className={`${TH} min-w-[220px]`}>Call remarks</th>
                   )}
                   {canScheduleFollowUp && (
-                    <th className={`${TH} min-w-[190px]`}>Follow-up reminder</th>
+                    <th data-col="follow_up" className={`${TH} min-w-[190px]`}>Follow-up reminder</th>
                   )}
-                  {editMode && <th className={`${TH} min-w-[120px]`}>Edit</th>}
-                  <th className={`${TH} min-w-[100px]`}>Actions</th>
+                  {editMode && <th data-col="edit" className={`${TH} min-w-[120px]`}>Edit</th>}
+                  <th data-col="actions" className={`${TH} min-w-[100px]`}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -2889,6 +2972,7 @@ export function LeadsTablePage({
                       } ${dirty ? "bg-amber-500/5" : ""} ${selected.has(row.id) ? "bg-slate-900/40" : ""}`}
                     >
                       <td
+                        data-col="select"
                         className={`${TD} sticky left-0 bg-slate-900 z-[1]`}
                         onClick={(e) => e.stopPropagation()}
                       >
@@ -2900,7 +2984,7 @@ export function LeadsTablePage({
                           className="rounded border-slate-600 bg-slate-950"
                         />
                       </td>
-                      <td className={`${TD_MUTED} ${COL_SERIAL} ${COL_FIXED}`}>
+                      <td data-col="serial" className={`${TD_MUTED} ${COL_SERIAL} ${COL_FIXED}`}>
                         {editMode ? (
                           cell("legacy_serial_no", row.legacy_serial_no != null ? String(row.legacy_serial_no) : "")
                         ) : (
@@ -2912,7 +2996,7 @@ export function LeadsTablePage({
                           />
                         )}
                       </td>
-                      <td className={`${TD_PRIMARY} ${COL_COMPANY_OLD} ${COL_FIXED}`}>
+                      <td data-col="company" className={`${TD_PRIMARY} ${COL_COMPANY_OLD} ${COL_FIXED}`}>
                         {editMode ? (
                           cell("company_name", row.company_name)
                         ) : (
@@ -2923,17 +3007,17 @@ export function LeadsTablePage({
                           />
                         )}
                       </td>
-                      <td className={TD_MUTED}>{cell("industry", row.industry ?? "")}</td>
-                      <td className={TD_MUTED}>
+                      <td data-col="business_type" className={TD_MUTED}>{cell("industry", row.industry ?? "")}</td>
+                      <td data-col="grading" className={TD_MUTED}>
                         {cell("company_grading", row.company_grading ?? "")}
                       </td>
-                      <td className={TD_MUTED}>
+                      <td data-col="designation" className={TD_MUTED}>
                         {cell("contact_designation", row.contact_designation ?? "")}
                       </td>
-                      <td className={TD_MUTED}>
+                      <td data-col="contact_person" className={TD_MUTED}>
                         {cell("contact_name", row.contact_name ?? "")}
                       </td>
-                      <td className={TD_MUTED}>
+                      <td data-col="primary_mobile" className={TD_MUTED}>
                         {editMode ? (
                           cell("contact_phone", row.contact_phone ?? "")
                         ) : row.contact_phone ? (
@@ -2959,7 +3043,7 @@ export function LeadsTablePage({
                           "—"
                         )}
                       </td>
-                      <td className={TD_MUTED}>
+                      <td data-col="secondary_mobile" className={TD_MUTED}>
                         {editMode ? (
                           cell("contact_secondary_mobile", row.contact_secondary_mobile ?? "")
                         ) : row.contact_secondary_mobile ? (
@@ -2987,7 +3071,7 @@ export function LeadsTablePage({
                           "—"
                         )}
                       </td>
-                      <td className={TD_MUTED}>
+                      <td data-col="primary_phone" className={TD_MUTED}>
                         {editMode ? (
                           cell("contact_primary_phone", row.contact_primary_phone ?? "")
                         ) : row.contact_primary_phone ? (
@@ -3015,7 +3099,7 @@ export function LeadsTablePage({
                           "—"
                         )}
                       </td>
-                      <td className={TD_MUTED}>
+                      <td data-col="secondary_phone" className={TD_MUTED}>
                         {editMode ? (
                           cell("contact_secondary_phone", row.contact_secondary_phone ?? "")
                         ) : row.contact_secondary_phone ? (
@@ -3044,6 +3128,7 @@ export function LeadsTablePage({
                         )}
                       </td>
                       <td
+                        data-col="primary_email"
                         className={`${TD_MUTED} ${COL_EMAIL} ${COL_FIXED}`}
                         onClick={(e) => e.stopPropagation()}
                       >
@@ -3068,7 +3153,7 @@ export function LeadsTablePage({
                           "—"
                         )}
                       </td>
-                      <td className={`${TD_MUTED} ${COL_EMAIL2} ${COL_FIXED}`}>
+                      <td data-col="secondary_email" className={`${TD_MUTED} ${COL_EMAIL2} ${COL_FIXED}`}>
                         {editMode ? (
                           cell("contact_secondary_email", row.contact_secondary_email ?? "", {
                             type: "email",
@@ -3080,7 +3165,7 @@ export function LeadsTablePage({
                           />
                         )}
                       </td>
-                      <td className={TD_MUTED}>
+                      <td data-col="country" className={TD_MUTED}>
                         {editMode ? (
                           <div onClick={(e) => e.stopPropagation()}>
                             <CountrySelect
@@ -3092,10 +3177,10 @@ export function LeadsTablePage({
                           <span className="truncate block">{formatCountryLabel(row.country)}</span>
                         )}
                       </td>
-                      <td className={TD_MUTED}>
+                      <td data-col="product" className={TD_MUTED}>
                         {cell("product_interest", row.product_interest ?? "")}
                       </td>
-                      <td className={`${TD_MUTED} ${COL_WEBSITE} ${COL_FIXED}`}>
+                      <td data-col="website" className={`${TD_MUTED} ${COL_WEBSITE} ${COL_FIXED}`}>
                         {editMode ? (
                           cell("website_url", row.website_url ?? "")
                         ) : row.website_url ? (
@@ -3118,19 +3203,19 @@ export function LeadsTablePage({
                           "—"
                         )}
                       </td>
-                      <td className={TD_MUTED}>{cell("city", row.city ?? "")}</td>
-                      <td className={TD}>
+                      <td data-col="city" className={TD_MUTED}>{cell("city", row.city ?? "")}</td>
+                      <td data-col="ai_grading" className={TD}>
                         {row.latest_score ? (
                           <ScoreBadge score={scoreLabel(row.latest_score)} />
                         ) : (
                           <span className="text-slate-500 text-sm">Not scored</span>
                         )}
                       </td>
-                      <td className={TD_MUTED}>{cell("address", row.address ?? "")}</td>
-                      <td className={TD_MUTED} title={row.created_at || undefined}>
+                      <td data-col="address" className={TD_MUTED}>{cell("address", row.address ?? "")}</td>
+                      <td data-col="added" className={TD_MUTED} title={row.created_at || undefined}>
                         {formatAddedAt(row.created_at)}
                       </td>
-                      <td className={`${TD} ${COL_CALLING}`}>
+                      <td data-col="calling_time" className={`${TD} ${COL_CALLING}`}>
                         <CallRecommendationBadge
                           recommended={row.call_recommended}
                           localTime={row.call_local_time}
@@ -3138,7 +3223,7 @@ export function LeadsTablePage({
                           wrap
                         />
                       </td>
-                      <td className={TD_MUTED}>
+                      <td data-col="remarks" className={TD_MUTED}>
                         {editMode ? (
                           cell("remarks", row.remarks ?? "")
                         ) : (
@@ -3184,10 +3269,10 @@ export function LeadsTablePage({
                           />
                         )}
                       </td>
-                      <td className={TD_MUTED} onClick={(e) => e.stopPropagation()}>
+                      <td data-col="assigned_to" className={TD_MUTED} onClick={(e) => e.stopPropagation()}>
                         {renderAssignedToCell(row, draft)}
                       </td>
-                      <td className={TD} onClick={(e) => e.stopPropagation()}>
+                      <td data-col="socials" className={TD} onClick={(e) => e.stopPropagation()}>
                         {editMode ? (
                           <div className="space-y-1">
                             <input
@@ -3222,7 +3307,7 @@ export function LeadsTablePage({
                         )}
                       </td>
                       {isCallOutcomeSection && (
-                        <td className={TD_MUTED}>
+                        <td data-col="call_remarks" className={TD_MUTED}>
                           {row.call_remarks ? (
                             <span
                               className="block whitespace-pre-wrap text-slate-300 text-xs leading-relaxed max-w-[280px]"
@@ -3236,7 +3321,7 @@ export function LeadsTablePage({
                         </td>
                       )}
                       {canScheduleFollowUp && (
-                        <td className={TD_MUTED} onClick={(e) => e.stopPropagation()}>
+                        <td data-col="follow_up" className={TD_MUTED} onClick={(e) => e.stopPropagation()}>
                           <FollowUpScheduleControl
                             value={row.follow_up_at}
                             onChange={(next) => saveFollowUpAt(row.id, next)}
@@ -3244,7 +3329,7 @@ export function LeadsTablePage({
                         </td>
                       )}
                       {editMode && (
-                        <td className={`${TD} whitespace-nowrap`}>
+                        <td data-col="edit" className={`${TD} whitespace-nowrap`}>
                           <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
                             <button
                               type="button"
@@ -3264,7 +3349,7 @@ export function LeadsTablePage({
                           </div>
                         </td>
                       )}
-                      <td className={`${TD} whitespace-nowrap`}>
+                      <td data-col="actions" className={`${TD} whitespace-nowrap`}>
                         <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
                           <button
                             type="button"
@@ -3285,7 +3370,7 @@ export function LeadsTablePage({
           <table className="w-full text-sm border-collapse min-w-[1400px]">
             <thead>
               <tr className={`text-slate-500 border-b border-slate-800 bg-slate-950 ${theadStickyClass}`}>
-                <th className={`${TH} w-12`}>
+                <th data-col="select" className={`${TH} w-12`}>
                   <input
                     type="checkbox"
                     checked={allOnPageSelected}
@@ -3297,41 +3382,41 @@ export function LeadsTablePage({
                     className="rounded border-slate-600 bg-slate-950"
                   />
                 </th>
-                <th className={`${TH} ${COL_SERIAL}`}>#</th>
-                <th className={`${TH} ${COL_COMPANY}`}>
+                <th data-col="serial" className={`${TH} ${COL_SERIAL}`}>#</th>
+                <th data-col="company" className={`${TH} ${COL_COMPANY}`}>
                   <button type="button" onClick={() => toggleSort("company_name")} className="hover:text-slate-300">
                     Company name{sortIndicator("company_name")}
                   </button>
                 </th>
-                <th className={`${TH} ${COL_WEBSITE}`}>Website</th>
-                <th className={`${TH} ${COL_EMAIL}`}>Email</th>
-                <th className={`${TH} min-w-[160px]`}>Ph#1</th>
-                <th className={`${TH} min-w-[160px]`}>Ph#2</th>
-                <th className={`${TH} ${COL_CALLING}`}>Calling time</th>
-                <th className={`${TH} ${COL_ROLE}`}>
+                <th data-col="website" className={`${TH} ${COL_WEBSITE}`}>Website</th>
+                <th data-col="email" className={`${TH} ${COL_EMAIL}`}>Email</th>
+                <th data-col="phone1" className={`${TH} min-w-[160px]`}>Ph#1</th>
+                <th data-col="phone2" className={`${TH} min-w-[160px]`}>Ph#2</th>
+                <th data-col="calling_time" className={`${TH} ${COL_CALLING}`}>Calling time</th>
+                <th data-col="role" className={`${TH} ${COL_ROLE}`}>
                   <button type="button" onClick={() => toggleSort("market_role")} className="hover:text-slate-300">
                     Role{sortIndicator("market_role")}
                   </button>
                 </th>
-                <th className={`${TH} min-w-[110px]`}>
+                <th data-col="ai_grading" className={`${TH} min-w-[110px]`}>
                   <button type="button" onClick={() => toggleSort("latest_score")} className="hover:text-slate-300">
                     AI grading{sortIndicator("latest_score")}
                   </button>
                 </th>
-                <th className={`${TH} min-w-[120px]`}>Socials</th>
-                <th className={`${TH} min-w-[120px]`}>
+                <th data-col="socials" className={`${TH} min-w-[120px]`}>Socials</th>
+                <th data-col="added" className={`${TH} min-w-[120px]`}>
                   <button type="button" onClick={() => toggleSort("created_at")} className="hover:text-slate-300">
                     Added{sortIndicator("created_at")}
                   </button>
                 </th>
-                <th className={`${TH} min-w-[130px]`}>
+                <th data-col="country" className={`${TH} min-w-[130px]`}>
                   <button type="button" onClick={() => toggleSort("country")} className="hover:text-slate-300">
                     Country{sortIndicator("country")}
                   </button>
                 </th>
-                <th className={`${TH} min-w-[150px]`}>Assigned To</th>
-                {editMode && <th className={`${TH} min-w-[120px]`}>Edit</th>}
-                <th className={`${TH} min-w-[100px]`}>Actions</th>
+                <th data-col="assigned_to" className={`${TH} min-w-[150px]`}>Assigned To</th>
+                {editMode && <th data-col="edit" className={`${TH} min-w-[120px]`}>Edit</th>}
+                <th data-col="actions" className={`${TH} min-w-[100px]`}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -3349,7 +3434,7 @@ export function LeadsTablePage({
                       editMode ? "" : "cursor-pointer hover:bg-slate-900/80"
                     } ${dirty ? "bg-amber-500/5" : ""} ${selected.has(row.id) ? "bg-slate-900/40" : ""}`}
                   >
-                    <td className={TD} onClick={(e) => e.stopPropagation()}>
+                    <td data-col="select" className={TD} onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
                         checked={selected.has(row.id)}
@@ -3358,7 +3443,7 @@ export function LeadsTablePage({
                         className="rounded border-slate-600 bg-slate-950"
                       />
                     </td>
-                    <td className={`${TD_MUTED} ${COL_SERIAL} ${COL_FIXED}`}>
+                    <td data-col="serial" className={`${TD_MUTED} ${COL_SERIAL} ${COL_FIXED}`}>
                       {editMode ? (
                         <input
                           value={
@@ -3378,7 +3463,7 @@ export function LeadsTablePage({
                         />
                       )}
                     </td>
-                    <td className={`${TD_PRIMARY} ${COL_COMPANY} ${COL_FIXED}`}>
+                    <td data-col="company" className={`${TD_PRIMARY} ${COL_COMPANY} ${COL_FIXED}`}>
                       {editMode ? (
                         <input
                           value={draft.company_name}
@@ -3405,7 +3490,7 @@ export function LeadsTablePage({
                         />
                       )}
                     </td>
-                    <td className={`${TD_MUTED} ${COL_WEBSITE} ${COL_FIXED}`}>
+                    <td data-col="website" className={`${TD_MUTED} ${COL_WEBSITE} ${COL_FIXED}`}>
                       {editMode ? (
                         <input
                           value={draft.website_url ?? ""}
@@ -3436,6 +3521,7 @@ export function LeadsTablePage({
                       )}
                     </td>
                     <td
+                      data-col="email"
                       className={`${TD_MUTED} ${COL_EMAIL} ${COL_FIXED}`}
                       onClick={(e) => e.stopPropagation()}
                     >
@@ -3467,7 +3553,7 @@ export function LeadsTablePage({
                         "—"
                       )}
                     </td>
-                    <td className={TD_MUTED}>
+                    <td data-col="phone1" className={TD_MUTED}>
                       {editMode ? (
                         <input
                           value={draft.contact_phone ?? ""}
@@ -3499,7 +3585,7 @@ export function LeadsTablePage({
                         "—"
                       )}
                     </td>
-                    <td className={TD_MUTED}>
+                    <td data-col="phone2" className={TD_MUTED}>
                       {editMode ? (
                         <input
                           value={draft.contact_secondary_mobile ?? draft.contact_secondary_phone ?? ""}
@@ -3548,7 +3634,7 @@ export function LeadsTablePage({
                         "—"
                       )}
                     </td>
-                    <td className={`${TD} ${COL_CALLING}`}>
+                    <td data-col="calling_time" className={`${TD} ${COL_CALLING}`}>
                       <CallRecommendationBadge
                         recommended={row.call_recommended}
                         localTime={row.call_local_time}
@@ -3556,7 +3642,7 @@ export function LeadsTablePage({
                         wrap
                       />
                     </td>
-                    <td className={`${TD} ${COL_ROLE} ${COL_FIXED}`}>
+                    <td data-col="role" className={`${TD} ${COL_ROLE} ${COL_FIXED}`}>
                       <div className="flex flex-col gap-1 min-w-0">
                         <MarketRoleBadge role={row.market_role ?? "unknown"} />
                         {(row.market_role === "producer" || row.market_role === "hybrid") && (
@@ -3573,14 +3659,14 @@ export function LeadsTablePage({
                         </p>
                       )}
                     </td>
-                    <td className={TD}>
+                    <td data-col="ai_grading" className={TD}>
                       {row.latest_score ? (
                         <ScoreBadge score={scoreLabel(row.latest_score)} />
                       ) : (
                         <span className="text-slate-500 text-sm">Not scored</span>
                       )}
                     </td>
-                    <td className={TD}>
+                    <td data-col="socials" className={TD}>
                       <SocialLinksCell
                         companyName={draft.company_name}
                         facebookUrl={draft.facebook_company_url}
@@ -3590,10 +3676,10 @@ export function LeadsTablePage({
                         onFieldChange={(field, value) => updateDraft(row.id, field, value)}
                       />
                     </td>
-                    <td className={TD_MUTED} title={row.created_at || undefined}>
+                    <td data-col="added" className={TD_MUTED} title={row.created_at || undefined}>
                       {formatAddedAt(row.created_at)}
                     </td>
-                    <td className={TD_MUTED}>
+                    <td data-col="country" className={TD_MUTED}>
                       {editMode ? (
                         <div onClick={(e) => e.stopPropagation()}>
                           <CountrySelect
@@ -3605,11 +3691,11 @@ export function LeadsTablePage({
                         <span className="truncate block">{formatCountryLabel(row.country)}</span>
                       )}
                     </td>
-                    <td className={TD_MUTED} onClick={(e) => e.stopPropagation()}>
+                    <td data-col="assigned_to" className={TD_MUTED} onClick={(e) => e.stopPropagation()}>
                       {renderAssignedToCell(row, draft)}
                     </td>
                     {editMode && (
-                      <td className={`${TD} whitespace-nowrap`}>
+                      <td data-col="edit" className={`${TD} whitespace-nowrap`}>
                         <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
                           <button
                             type="button"
@@ -3629,7 +3715,7 @@ export function LeadsTablePage({
                         </div>
                       </td>
                     )}
-                    <td className={`${TD} whitespace-nowrap`}>
+                    <td data-col="actions" className={`${TD} whitespace-nowrap`}>
                       <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
                         <button
                           type="button"

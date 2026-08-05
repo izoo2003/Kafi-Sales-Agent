@@ -6,7 +6,13 @@ import {
   type DiscoveryRegion,
   type Lead,
 } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
 import { findIndustry, MAX_DISCOVERY_INDUSTRIES } from "../data/industries";
+import {
+  useColumnVisibility,
+  type ColumnDef,
+} from "../hooks/useColumnVisibility";
+import { ColumnVisibilityMenu } from "./ColumnVisibilityMenu";
 import { IndustryMultiSelect } from "./IndustryMultiSelect";
 
 interface DiscoverLeadsPanelProps {
@@ -33,6 +39,18 @@ function sourceLabel(source: string): string {
 function isFound(value: string | null | undefined): value is string {
   return Boolean(value && value !== "Not found");
 }
+
+const DISCOVER_LEADS_COLUMNS: ColumnDef[] = [
+  { id: "select", label: "Select", locked: true },
+  { id: "company", label: "Company", locked: true },
+  { id: "website", label: "Website" },
+  { id: "email", label: "Email" },
+  { id: "phone", label: "Phone" },
+  { id: "socials", label: "Socials" },
+  { id: "market", label: "Market" },
+  { id: "source", label: "Source" },
+  { id: "status", label: "Status" },
+];
 
 function matchSeedRegion(
   seedCountry: string | null | undefined,
@@ -93,6 +111,12 @@ export function DiscoverLeadsPanel({
   onError,
   onCancel,
 }: DiscoverLeadsPanelProps) {
+  const { user } = useAuth();
+  const columnsUi = useColumnVisibility(
+    "discover_leads",
+    DISCOVER_LEADS_COLUMNS,
+    user?.id,
+  );
   const [selectedRegions, setSelectedRegions] = useState<Set<string>>(new Set());
   const [regionOptions, setRegionOptions] = useState<DiscoveryRegion[]>([]);
   const [maxRegions, setMaxRegions] = useState(3);
@@ -623,11 +647,22 @@ export function DiscoverLeadsPanel({
 
       {candidates.length > 0 && (
         <>
+          <div className="flex items-center justify-end">
+            <ColumnVisibilityMenu
+              columns={columnsUi.columns}
+              isVisible={columnsUi.isVisible}
+              toggle={columnsUi.toggle}
+              showAll={columnsUi.showAll}
+              resetDefaults={columnsUi.resetDefaults}
+              hiddenCount={columnsUi.hiddenCount}
+            />
+          </div>
           <div className="overflow-x-auto rounded-lg border border-slate-800">
+            {columnsUi.css ? <style>{columnsUi.css}</style> : null}
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-slate-500 border-b border-slate-800 bg-slate-950">
-                  <th className="py-2 px-3 w-10">
+                  <th data-col="select" className="py-2 px-3 w-10">
                     <input
                       type="checkbox"
                       checked={importable.length > 0 && selected.size === importable.length}
@@ -635,20 +670,20 @@ export function DiscoverLeadsPanel({
                       aria-label="Select all"
                     />
                   </th>
-                  <th className="py-2 pr-4">Company</th>
-                  <th className="py-2 pr-4">Website</th>
-                  <th className="py-2 pr-4">Email</th>
-                  <th className="py-2 pr-4">Phone</th>
-                  <th className="py-2 pr-4">Socials</th>
-                  <th className="py-2 pr-4">Market</th>
-                  <th className="py-2 pr-4">Source</th>
-                  <th className="py-2">Status</th>
+                  <th data-col="company" className="py-2 pr-4">Company</th>
+                  <th data-col="website" className="py-2 pr-4">Website</th>
+                  <th data-col="email" className="py-2 pr-4">Email</th>
+                  <th data-col="phone" className="py-2 pr-4">Phone</th>
+                  <th data-col="socials" className="py-2 pr-4">Socials</th>
+                  <th data-col="market" className="py-2 pr-4">Market</th>
+                  <th data-col="source" className="py-2 pr-4">Source</th>
+                  <th data-col="status" className="py-2">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {candidates.map((candidate) => (
                   <tr key={candidate.candidate_id} className="border-b border-slate-800/60">
-                    <td className="py-2 px-3">
+                    <td data-col="select" className="py-2 px-3">
                       <input
                         type="checkbox"
                         checked={selected.has(candidate.candidate_id)}
@@ -656,8 +691,8 @@ export function DiscoverLeadsPanel({
                         onChange={(e) => toggleOne(candidate.candidate_id, e.target.checked)}
                       />
                     </td>
-                    <td className="py-2 pr-4 text-slate-200">{candidate.company_name}</td>
-                    <td className="py-2 pr-4 text-slate-400 max-w-[200px] truncate">
+                    <td data-col="company" className="py-2 pr-4 text-slate-200">{candidate.company_name}</td>
+                    <td data-col="website" className="py-2 pr-4 text-slate-400 max-w-[200px] truncate">
                       {candidate.website_url ? (
                         <a
                           href={candidate.website_url}
@@ -672,7 +707,7 @@ export function DiscoverLeadsPanel({
                         "—"
                       )}
                     </td>
-                    <td className="py-2 pr-4 text-slate-400 max-w-[180px] truncate">
+                    <td data-col="email" className="py-2 pr-4 text-slate-400 max-w-[180px] truncate">
                       {isFound(candidate.email) ? (
                         <a
                           href={`mailto:${candidate.email}`}
@@ -685,10 +720,10 @@ export function DiscoverLeadsPanel({
                         "Not found"
                       )}
                     </td>
-                    <td className="py-2 pr-4 text-slate-400 whitespace-nowrap">
+                    <td data-col="phone" className="py-2 pr-4 text-slate-400 whitespace-nowrap">
                       {isFound(candidate.phone) ? candidate.phone : "Not found"}
                     </td>
-                    <td className="py-2 pr-4 text-xs">
+                    <td data-col="socials" className="py-2 pr-4 text-xs">
                       <div className="flex flex-wrap gap-1.5">
                         {isFound(candidate.facebook_url) ? (
                           <a
@@ -731,13 +766,13 @@ export function DiscoverLeadsPanel({
                         )}
                       </div>
                     </td>
-                    <td className="py-2 pr-4 text-slate-400">
+                    <td data-col="market" className="py-2 pr-4 text-slate-400">
                       {[candidate.country, candidate.industry].filter(Boolean).join(" · ") || "—"}
                     </td>
-                    <td className="py-2 pr-4 text-slate-500 text-xs">
+                    <td data-col="source" className="py-2 pr-4 text-slate-500 text-xs">
                       {sourceLabel(candidate.source)}
                     </td>
-                    <td className="py-2 text-xs">
+                    <td data-col="status" className="py-2 text-xs">
                       {candidate.already_exists ? (
                         <span className="text-amber-400/90">Already in leads or Old clients</span>
                       ) : (

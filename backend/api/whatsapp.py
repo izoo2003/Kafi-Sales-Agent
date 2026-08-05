@@ -274,7 +274,7 @@ def create_whatsapp_campaign_drafts(
         activity_module.log_activity(
             db,
             user_id=user.id,
-            activity_type="bulk_whatsapp_sent",
+            activity_type=activity_module.BULK_WHATSAPP_SENT,
             title="Bulk WhatsApp messages sent",
             summary=(
                 f"Sent {sent_count} WhatsApp message{'s' if sent_count != 1 else ''} "
@@ -283,7 +283,7 @@ def create_whatsapp_campaign_drafts(
             quantity=sent_count,
             entity_type="whatsapp_template",
             entity_id=payload.template_id,
-            details={"mode": "template", "sent_count": sent_count},
+            details={"mode": "template", "channel": "whatsapp", "sent_count": sent_count},
         )
     return WhatsAppCampaignDraftResponse(**result)
 
@@ -390,6 +390,21 @@ def reply_to_whatsapp_conversation(
         actor=user.username,
         details={"contact_id": contact_id, "send": payload.send},
     )
+
+    if draft.status == InteractionStatus.sent and payload.send:
+        from modules import activity as activity_module
+
+        activity_module.log_activity(
+            db,
+            user_id=user.id,
+            activity_type=activity_module.PERSONAL_WHATSAPP_SENT,
+            title="Personal WhatsApp sent",
+            summary=f"Sent WhatsApp reply (interaction #{draft.id})",
+            quantity=1,
+            entity_type="interaction",
+            entity_id=draft.id,
+            details={"mode": "reply", "channel": "whatsapp", "contact_id": contact_id},
+        )
 
     return WhatsAppReplyResponse(
         interaction=_interaction_read(db, draft),
