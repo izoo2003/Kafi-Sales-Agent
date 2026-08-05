@@ -475,6 +475,7 @@ def reply(
     to: str | None = None,
     subject: str | None = None,
     cc: str | None = None,
+    bcc: str | None = None,
     include_quote: bool = True,
 ) -> dict[str, Any]:
     account = resolve_user_mailbox(user)
@@ -512,6 +513,7 @@ def reply(
             subject=reply_subject,
             body=send_body,
             cc=cc,
+            bcc=bcc,
         )
 
         if result.get("status") == "sent":
@@ -544,6 +546,7 @@ def reply_to_thread(
     to: str | None = None,
     subject: str | None = None,
     cc: str | None = None,
+    bcc: str | None = None,
 ) -> dict[str, Any]:
     thread = get_thread(user, thread_id, mark_seen=False)
     if not thread or not thread.get("messages"):
@@ -566,6 +569,7 @@ def reply_to_thread(
         to=to,
         subject=subject or _reply_subject(thread.get("subject")),
         cc=cc,
+        bcc=bcc,
         include_quote=True,
     )
 

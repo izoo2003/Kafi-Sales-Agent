@@ -8,6 +8,12 @@ export type ReplyAddressMessage = {
   direction?: string | null;
 };
 
+export type ReplyRecipients = {
+  to: string;
+  cc: string;
+  bcc: string;
+};
+
 export function extractEmail(raw?: string | null): string {
   if (!raw) return "";
   const trimmed = raw.trim();
@@ -31,7 +37,7 @@ function uniqueEmails(values: Array<string | null | undefined>): string[] {
 
 /**
  * Reply → only the From address (or first To if this is our outbound message).
- * Reply All → From in To, plus every other To/Cc/Bcc (except our mailbox) in Cc.
+ * Reply All → From in To; other To/Cc in Cc; original Bcc stays in Bcc.
  *
  * Note: BCC on *received* mail is usually stripped by servers, so Reply All can
  * only include BCC when the header is still present (e.g. Sent items).
@@ -40,7 +46,7 @@ export function buildReplyRecipients(
   message: ReplyAddressMessage,
   mailboxEmail: string | null | undefined,
   mode: "reply" | "reply_all",
-): { to: string; cc: string } {
+): ReplyRecipients {
   const self = extractEmail(mailboxEmail);
   const from = extractEmail(message.from_email);
   const toList = uniqueEmails(message.to || []);
@@ -50,27 +56,34 @@ export function buildReplyRecipients(
   if ((message.direction || "").toLowerCase() === "outbound") {
     const primary = toList[0] || "";
     if (mode === "reply" || !primary) {
-      return { to: primary, cc: "" };
+      return { to: primary, cc: "", bcc: "" };
     }
-    const rest = uniqueEmails([...toList.slice(1), ...ccList, ...bccList]).filter(
+    const cc = uniqueEmails([...toList.slice(1), ...ccList]).filter(
       (email) => email !== self && email !== primary,
     );
-    return { to: primary, cc: rest.join(", ") };
+    const bcc = bccList.filter(
+      (email) => email !== self && email !== primary && !cc.includes(email),
+    );
+    return { to: primary, cc: cc.join(", "), bcc: bcc.join(", ") };
   }
 
   if (mode === "reply") {
-    return { to: from, cc: "" };
+    return { to: from, cc: "", bcc: "" };
   }
 
-  const others = uniqueEmails([...toList, ...ccList, ...bccList]).filter(
+  const cc = uniqueEmails([...toList, ...ccList]).filter(
     (email) => email !== self && email !== from,
   );
-  return { to: from, cc: others.join(", ") };
+  const bcc = bccList.filter(
+    (email) => email !== self && email !== from && !cc.includes(email),
+  );
+  return { to: from, cc: cc.join(", "), bcc: bcc.join(", ") };
 }
 
 export function hasReplyAllTargets(
   message: ReplyAddressMessage,
   mailboxEmail: string | null | undefined,
 ): boolean {
-  return Boolean(buildReplyRecipients(message, mailboxEmail, "reply_all").cc.trim());
+  const recipients = buildReplyRecipients(message, mailboxEmail, "reply_all");
+  return Boolean(recipients.cc.trim() || recipients.bcc.trim());
 }

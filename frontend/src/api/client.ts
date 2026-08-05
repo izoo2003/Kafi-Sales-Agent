@@ -1226,6 +1226,8 @@ export interface ClientHistoryDetailResponse {
   buyer_id: number;
   company_name: string;
   remarks?: string | null;
+  remarks_updated_at?: string | null;
+  remarks_updated_by?: string | null;
   entries: ClientHistoryDetailEntry[];
 }
 
@@ -1940,7 +1942,7 @@ export const client = {
     request<InboxThreadDetail>(`/inbox/threads/${encodeURIComponent(threadId)}`),
   replyInboxThread: (
     threadId: string,
-    payload: { body: string; to?: string; subject?: string; cc?: string },
+    payload: { body: string; to?: string; subject?: string; cc?: string; bcc?: string },
   ) =>
     request<InboxReplyResponse>(`/inbox/threads/${encodeURIComponent(threadId)}/reply`, {
       method: "POST",
@@ -1995,7 +1997,14 @@ export const client = {
     request<InboxEmptyTrashResponse>("/inbox/trash/empty", { method: "POST" }),
   replyInboxMessage: (
     uid: string,
-    payload: { body: string; to?: string; subject?: string; cc?: string; folder?: string },
+    payload: {
+      body: string;
+      to?: string;
+      subject?: string;
+      cc?: string;
+      bcc?: string;
+      folder?: string;
+    },
   ) =>
     request<InboxReplyResponse>(`/inbox/messages/${encodeURIComponent(uid)}/reply`, {
       method: "POST",

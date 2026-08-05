@@ -8,6 +8,9 @@ interface CreateLeadFormProps {
   onSuccess: (leadId: number) => void;
   onCancel: () => void;
   onError: (message: string) => void;
+  /** Buyer source so the lead appears in the right table section (e.g. old_clients). */
+  source?: string;
+  title?: string;
 }
 
 const emptyForm = {
@@ -21,7 +24,13 @@ const emptyForm = {
   contact_designation: "",
 };
 
-export function CreateLeadForm({ onSuccess, onCancel, onError }: CreateLeadFormProps) {
+export function CreateLeadForm({
+  onSuccess,
+  onCancel,
+  onError,
+  source = "manual",
+  title = "Add new lead",
+}: CreateLeadFormProps) {
   const [form, setForm] = useState(emptyForm);
   const [submitting, setSubmitting] = useState(false);
 
@@ -48,7 +57,7 @@ export function CreateLeadForm({ onSuccess, onCancel, onError }: CreateLeadFormP
         website_url: form.website_url.trim() || undefined,
         country: form.country.trim() || undefined,
         industry: industry || undefined,
-        source: "manual",
+        source,
       });
 
       if (contactName) {
@@ -76,7 +85,7 @@ export function CreateLeadForm({ onSuccess, onCancel, onError }: CreateLeadFormP
       className="rounded-xl border border-emerald-500/30 bg-slate-900 p-5 space-y-5"
     >
       <div className="flex items-center justify-between">
-        <h3 className="font-medium text-slate-200">Add new lead</h3>
+        <h3 className="font-medium text-slate-200">{title}</h3>
         <button
           type="button"
           onClick={onCancel}

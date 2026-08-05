@@ -25,6 +25,16 @@ def resend_configured() -> bool:
     return bool((settings.resend_api_key or "").strip())
 
 
+def _split_addrs(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [
+        part.strip()
+        for part in raw.replace(";", ",").split(",")
+        if part.strip() and "@" in part
+    ]
+
+
 def send_via_resend(
     *,
     from_email: str,
@@ -34,6 +44,7 @@ def send_via_resend(
     plain_body: str,
     html_body: str | None = None,
     cc: str | None = None,
+    bcc: str | None = None,
     attachments: list[dict] | None = None,
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -48,17 +59,22 @@ def send_via_resend(
         return {"status": "error", "message": "From and To addresses are required"}
 
     from_header = f"{from_name} <{from_email}>" if from_name else from_email
+    to_list = _split_addrs(to) or [to]
     payload: dict[str, Any] = {
         "from": from_header,
-        "to": [to],
+        "to": to_list,
         "subject": subject,
         "text": plain_body or "",
         "reply_to": [from_email],
     }
     if html_body:
         payload["html"] = html_body
-    if cc:
-        payload["cc"] = [cc]
+    cc_list = _split_addrs(cc)
+    if cc_list:
+        payload["cc"] = cc_list
+    bcc_list = _split_addrs(bcc)
+    if bcc_list:
+        payload["bcc"] = bcc_list
     if headers:
         payload["headers"] = headers
 

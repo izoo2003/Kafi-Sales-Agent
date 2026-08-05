@@ -172,6 +172,7 @@ def reply_inbox_thread(
             to=payload.to,
             subject=payload.subject,
             cc=payload.cc,
+            bcc=payload.bcc,
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"Could not send reply: {exc}") from exc
@@ -374,6 +375,7 @@ def reply_inbox_message(
             to=payload.to,
             subject=payload.subject,
             cc=payload.cc,
+            bcc=payload.bcc,
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"Could not send reply: {exc}") from exc

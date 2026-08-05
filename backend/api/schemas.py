@@ -549,11 +549,14 @@ class ClientHistoryDetailResponse(BaseModel):
     buyer_id: int
     company_name: str
     remarks: Optional[str] = None
+    remarks_updated_at: Optional[str] = None
+    remarks_updated_by: Optional[str] = None
     entries: list[ClientHistoryDetailEntryRead]
 
 
 class ClientHistoryAddRequest(BaseModel):
     text: str
+    # When True, replace buyers.remarks with this text (and log history).
     append_to_remarks: bool = True
 
 
@@ -1094,6 +1097,7 @@ class InboxReplyRequest(BaseModel):
     to: Optional[str] = None
     subject: Optional[str] = None
     cc: Optional[str] = None
+    bcc: Optional[str] = None
     folder: Optional[str] = "INBOX"
 
 

@@ -70,8 +70,8 @@ export function ClientHistoryPage({
       <div>
         <h1 className="text-xl font-semibold text-slate-100">Client history</h1>
         <p className="text-sm text-slate-400 mt-1">
-          Every remark saved for clients — from the clients table and post-call notes — with date,
-          time, and who added it.
+          Full change log of client remarks — updates from the clients table, buyer profile, and
+          post-call notes — with date, time, and who saved each version.
         </p>
       </div>
 

@@ -139,15 +139,32 @@ def list_client_history_feed(
     }
 
 
+def _current_remark_meta(buyer: Buyer) -> tuple[str | None, str | None]:
+    """Return (updated_at, updated_by) for the current remarks snapshot."""
+    current = (buyer.remarks or "").strip()
+    if not current:
+        return None, None
+    history = [e for e in (buyer.remarks_history or []) if isinstance(e, dict)]
+    for entry in reversed(history):
+        if (entry.get("text") or "").strip() == current:
+            return entry.get("at"), entry.get("by")
+    if buyer.updated_at:
+        return buyer.updated_at.isoformat(), None
+    return None, None
+
+
 def history_for_buyer(db: Session, buyer_id: int) -> dict[str, Any] | None:
     buyer = db.get(Buyer, buyer_id)
     if not buyer:
         return None
     entries = buyer_history_entries(buyer)
+    updated_at, updated_by = _current_remark_meta(buyer)
     return {
         "buyer_id": buyer.id,
         "company_name": buyer.company_name,
         "remarks": buyer.remarks,
+        "remarks_updated_at": updated_at,
+        "remarks_updated_by": updated_by,
         "entries": [
             {
                 "text": e.get("text"),
@@ -176,7 +193,12 @@ def add_client_remark(
     by_username: str | None = None,
     append_to_remarks: bool = True,
 ) -> dict[str, Any] | None:
-    """Add a remark entry and optionally append it to the buyer's remarks field."""
+    """Set the buyer's current remarks and append a history entry.
+
+    ``append_to_remarks`` is kept for API compatibility; when True (default) the
+    current ``buyers.remarks`` field is replaced with the new text (not concatenated).
+    When False, only the history log is updated.
+    """
     buyer = db.get(Buyer, buyer_id)
     if not buyer:
         return None
@@ -193,8 +215,7 @@ def add_client_remark(
     )
 
     if append_to_remarks:
-        existing = (buyer.remarks or "").strip()
-        buyer.remarks = f"{existing}\n{note}".strip() if existing else note
+        buyer.remarks = note
 
     db.commit()
     db.refresh(buyer)

@@ -15,6 +15,7 @@ import { CallRecommendationBadge } from "../components/CallRecommendationBadge";
 import { ProducerTierBadge } from "../components/ProducerTierBadge";
 import { AssignedToSelect, type AssigneeOption } from "../components/AssignedToSelect";
 import { FollowUpScheduleControl } from "../components/FollowUpScheduleControl";
+import { CreateLeadForm } from "../components/CreateLeadForm";
 import { LeadsTableCsvImport } from "../components/LeadsTableCsvImport";
 import { SocialLinksCell } from "../components/SocialLinksCell";
 import { BulkEmailModal } from "../components/BulkEmailModal";
@@ -40,6 +41,7 @@ import {
   IconEdit,
   IconHeart,
   IconMail,
+  IconPlus,
   IconRefresh,
   IconSearch,
   IconTrash,
@@ -192,12 +194,15 @@ function ExpandableCell({
   detail,
   empty = "—",
   title = "Details",
+  /** Allow opening the dialog when text is empty (e.g. view remarks history). */
+  openWhenEmpty = false,
 }: {
   text: string | null | undefined;
   className?: string;
   detail?: ReactNode;
   empty?: string;
   title?: string;
+  openWhenEmpty?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const value = (text ?? "").trim();
@@ -216,7 +221,7 @@ function ExpandableCell({
     };
   }, [open]);
 
-  if (!value) {
+  if (!value && !openWhenEmpty) {
     return <span className="text-slate-500">{empty}</span>;
   }
 
@@ -233,7 +238,7 @@ function ExpandableCell({
         }`}
         title="Click to view full"
       >
-        {value}
+        {value || empty}
       </button>
       {open &&
         createPortal(
@@ -263,9 +268,13 @@ function ExpandableCell({
                 </button>
               </div>
               <div className="px-4 py-4">
-                <p className="break-all whitespace-pre-wrap text-sm leading-relaxed text-slate-100">
-                  {value}
-                </p>
+                {value ? (
+                  <p className="break-all whitespace-pre-wrap text-sm leading-relaxed text-slate-100">
+                    {value}
+                  </p>
+                ) : (
+                  <p className="text-sm text-slate-500">No current remarks.</p>
+                )}
                 {detail ? <div className="mt-3">{detail}</div> : null}
               </div>
             </div>
@@ -593,6 +602,7 @@ export function LeadsTablePage({
     useState<WhatsAppComposeTarget | null>(null);
   const [bulkWhatsAppNotice, setBulkWhatsAppNotice] = useState<string | null>(null);
   const [showCsvImport, setShowCsvImport] = useState(false);
+  const [showCreateLead, setShowCreateLead] = useState(false);
   const [bulkEmailNotice, setBulkEmailNotice] = useState<string | null>(null);
   const [deduping, setDeduping] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -781,6 +791,11 @@ export function LeadsTablePage({
   /** Old-clients filter set (business type, grading, product, city, call timing) — also on admin Master. */
   const useClientsFilters = isOldClients || isMaster;
   const canImportSpreadsheet = section === "all" || section === "old_clients";
+  /** Every user can manually add leads on Clients / Master / Scrapped Leads. */
+  const canAddLead =
+    section === "old_clients" || section === "master" || section === "all";
+  const createLeadSource =
+    section === "all" && isAdmin ? "manual" : "old_clients";
   const canBulkAssign = isAdmin && (section === "all" || section === "old_clients" || isMaster);
   const importSource = isOldClients ? "old_clients" : "csv";
   const isCallOutcomeSection =
@@ -998,6 +1013,7 @@ export function LeadsTablePage({
     setBulkResults(null);
     setSaveNotice(null);
     setShowCsvImport(false);
+    setShowCreateLead(false);
     setBulkAssignValue("");
     clearSelection();
   }, [clearSelection, section]);
@@ -1856,6 +1872,20 @@ export function LeadsTablePage({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {canAddLead && !showCreateLead && (
+            <ActionButton
+              icon={IconPlus}
+              variant="emerald"
+              onClick={() => {
+                setShowCreateLead(true);
+                setShowCsvImport(false);
+              }}
+              disabled={bulkOnboarding || deletingSelected || deletingId !== null || editMode}
+              title="Add a new lead to this table"
+            >
+              Add lead
+            </ActionButton>
+          )}
           {canImportSpreadsheet && (
             <ActionButton
               icon={IconUpload}
@@ -2112,6 +2142,24 @@ export function LeadsTablePage({
           Social URLs can be edited in the Socials column.
           {dirtyCount > 0 ? ` ${dirtyCount} unsaved row${dirtyCount === 1 ? "" : "s"}.` : ""}
         </p>
+      )}
+
+      {showCreateLead && canAddLead && (
+        <CreateLeadForm
+          source={createLeadSource}
+          title={isOldClients && !isAdmin ? "Add new client" : "Add new lead"}
+          onCancel={() => setShowCreateLead(false)}
+          onError={onError}
+          onSuccess={async (leadId) => {
+            setShowCreateLead(false);
+            setSaveNotice("Lead added to your table.");
+            clearFilters();
+            setPage(1);
+            await loadTable();
+            await loadSectionCounts();
+            onSelectLead(leadId);
+          }}
+        />
       )}
 
       {saveNotice && (
@@ -2520,21 +2568,38 @@ export function LeadsTablePage({
               ? "No leads match these filters."
               : !isAdmin
                 ? isOldClients
-                  ? "No clients yet. Import a CSV or Excel file to add clients to this table."
+                  ? "No clients yet. Add a lead manually or import a CSV/Excel file."
                   : callOutcomeEmptyMessage ??
                     "No clients in this section yet. After a call, clients move here from Clients."
                 : isOldClients
-                  ? "No old clients yet. Import a CSV or Excel file to map past clients into this table."
-                  : callOutcomeEmptyMessage ?? "No leads in this section yet. Import a CSV or Excel file to get started."}
+                  ? "No old clients yet. Add a lead manually or import a CSV/Excel file."
+                  : callOutcomeEmptyMessage ??
+                    "No leads in this section yet. Add a lead manually or import a CSV/Excel file."}
           </p>
-          {canImportSpreadsheet && !hasActiveFilters && (
-            <button
-              type="button"
-              onClick={() => setShowCsvImport(true)}
-              className="px-3 py-1.5 rounded-lg bg-violet-700 hover:bg-violet-600 border border-violet-600/50 text-sm font-medium"
-            >
-              Import spreadsheet
-            </button>
+          {!hasActiveFilters && (canAddLead || canImportSpreadsheet) && (
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              {canAddLead && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowCreateLead(true);
+                    setShowCsvImport(false);
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium"
+                >
+                  Add lead
+                </button>
+              )}
+              {canImportSpreadsheet && (
+                <button
+                  type="button"
+                  onClick={() => setShowCsvImport(true)}
+                  className="px-3 py-1.5 rounded-lg bg-violet-700 hover:bg-violet-600 border border-violet-600/50 text-sm font-medium"
+                >
+                  Import spreadsheet
+                </button>
+              )}
+            </div>
           )}
         </div>
       ) : (
@@ -2966,15 +3031,17 @@ export function LeadsTablePage({
                         ) : (
                           <ExpandableCell
                             text={row.remarks}
-                            title="Remarks history"
+                            title="Client remarks"
+                            openWhenEmpty={(row.remarks_history?.length ?? 0) > 0}
                             detail={
                               (row.remarks_history?.length ?? 0) > 0 ? (
-                                <div className="mt-3 space-y-2 border-t border-slate-700 pt-3">
+                                <div className="space-y-2 border-t border-slate-700 pt-3">
                                   <p className="text-xs uppercase tracking-wide text-slate-500">
-                                    Client remarks (# 1 at top)
+                                    History (newest first)
                                   </p>
-                                  {(row.remarks_history || [])
+                                  {[...(row.remarks_history || [])]
                                     .filter((entry) => (entry.text || "").trim())
+                                    .reverse()
                                     .map((entry, idx) => (
                                       <div
                                         key={`${entry.at}-${idx}`}
@@ -2982,12 +3049,10 @@ export function LeadsTablePage({
                                       >
                                         <p className="text-[11px] text-slate-500 mb-1">
                                           <span className="font-medium text-slate-300">
-                                            Client Remarks # {idx + 1}
+                                            {entry.at
+                                              ? new Date(entry.at).toLocaleString()
+                                              : "—"}
                                           </span>
-                                          {" · "}
-                                          {entry.at
-                                            ? new Date(entry.at).toLocaleString()
-                                            : "—"}
                                           {entry.by ? ` · ${entry.by}` : ""}
                                           {entry.source === "call" ? " · From call" : ""}
                                         </p>
@@ -2999,7 +3064,7 @@ export function LeadsTablePage({
                                 </div>
                               ) : (
                                 <p className="mt-2 text-xs text-slate-500">
-                                  No earlier remarks yet. Edits are kept with timestamps.
+                                  No history yet. Edits from this table are saved with timestamps.
                                 </p>
                               )
                             }

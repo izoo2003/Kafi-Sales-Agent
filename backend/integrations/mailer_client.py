@@ -48,6 +48,8 @@ def send_via_mailer(
     mailbox_email: str | None = None,
     display_name: str | None = None,
     html: bool = True,
+    cc: str | None = None,
+    bcc: str | None = None,
 ) -> dict[str, Any]:
     """POST one message to the Vercel mailer /api/send endpoint."""
     secret = (settings.mailer_handoff_secret or "").strip()
@@ -104,6 +106,8 @@ def send_via_mailer(
                     "subject": subject,
                     "body": body,
                     "html": html,
+                    **({"cc": cc} if (cc or "").strip() else {}),
+                    **({"bcc": bcc} if (bcc or "").strip() else {}),
                 },
             )
     except httpx.HTTPError as exc:

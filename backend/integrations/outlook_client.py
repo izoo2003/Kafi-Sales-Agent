@@ -1035,6 +1035,7 @@ class OutlookClient:
         subject: str,
         body: str,
         cc: str | None = None,
+        bcc: str | None = None,
         attachments: list[dict] | None = None,
         interaction_id: int | None = None,
         send_mode: str = "individual",
@@ -1064,11 +1065,22 @@ class OutlookClient:
             send_mode=send_mode,
         )
 
+        def _split_addrs(raw: str | None) -> list[str]:
+            if not raw:
+                return []
+            return [
+                part.strip()
+                for part in raw.replace(";", ",").split(",")
+                if part.strip() and "@" in part
+            ]
+
         message = MIMEMultipart("mixed")
         message["From"] = f"{display_name} <{from_addr}>" if display_name else from_addr
         message["To"] = to
         if cc:
             message["Cc"] = cc
+        if bcc:
+            message["Bcc"] = bcc
         message["Subject"] = subject
         message["Date"] = email_utils.formatdate(localtime=True)
         message["Message-ID"] = email_utils.make_msgid(
@@ -1095,7 +1107,9 @@ class OutlookClient:
             part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
             message.attach(part)
 
-        recipients = [to] + ([cc] if cc else [])
+        recipients = _split_addrs(to) + _split_addrs(cc) + _split_addrs(bcc)
+        if not recipients:
+            recipients = [to]
         host = settings.mailbox_smtp_host
         port = settings.mailbox_smtp_port
         ssl_context, server_hostname = self._ssl_context(host)
@@ -1168,6 +1182,7 @@ class OutlookClient:
         subject: str,
         body: str,
         cc: str | None = None,
+        bcc: str | None = None,
         attachments: list[dict] | None = None,
         interaction_id: int | None = None,
         send_mode: str = "individual",
@@ -1213,6 +1228,7 @@ class OutlookClient:
             plain_body=plain_body,
             html_body=html_body,
             cc=cc,
+            bcc=bcc,
             attachments=attachments,
             headers=headers or None,
         )
@@ -1226,6 +1242,8 @@ class OutlookClient:
             message["To"] = to
             if cc:
                 message["Cc"] = cc
+            if bcc:
+                message["Bcc"] = bcc
             message["Subject"] = subject
             message["Date"] = email_utils.formatdate(localtime=True)
             message["Message-ID"] = email_utils.make_msgid(
@@ -1300,6 +1318,7 @@ class OutlookClient:
         in_reply_to: str | None = None,
         references: str | None = None,
         cc: str | None = None,
+        bcc: str | None = None,
         attachments: list[dict] | None = None,
         interaction_id: int | None = None,
         send_mode: str = "individual",
@@ -1330,6 +1349,8 @@ class OutlookClient:
                     subject=subject,
                     body=send_body,
                     html=bool(html_body),
+                    cc=cc,
+                    bcc=bcc,
                 )
             if self._use_resend():
                 return self._send_resend(
@@ -1337,6 +1358,7 @@ class OutlookClient:
                     subject=subject,
                     body=body,
                     cc=cc,
+                    bcc=bcc,
                     attachments=attachments,
                     interaction_id=interaction_id,
                     send_mode=send_mode,
@@ -1348,6 +1370,7 @@ class OutlookClient:
                 subject=subject,
                 body=body,
                 cc=cc,
+                bcc=bcc,
                 attachments=attachments,
                 interaction_id=interaction_id,
                 send_mode=send_mode,
@@ -1384,8 +1407,22 @@ class OutlookClient:
                     "name": self._cred_display_name(),
                 }
             }
-        if cc:
-            message["ccRecipients"] = [{"emailAddress": {"address": cc}}]
+        def _graph_addrs(raw: str | None) -> list[dict[str, Any]]:
+            if not raw:
+                return []
+            addrs = [
+                part.strip()
+                for part in raw.replace(";", ",").split(",")
+                if part.strip() and "@" in part
+            ]
+            return [{"emailAddress": {"address": addr}} for addr in addrs]
+
+        cc_recipients = _graph_addrs(cc)
+        bcc_recipients = _graph_addrs(bcc)
+        if cc_recipients:
+            message["ccRecipients"] = cc_recipients
+        if bcc_recipients:
+            message["bccRecipients"] = bcc_recipients
         if graph_attachments:
             message["attachments"] = graph_attachments
         # Graph rejects non-x- custom internetMessageHeaders (In-Reply-To/References).

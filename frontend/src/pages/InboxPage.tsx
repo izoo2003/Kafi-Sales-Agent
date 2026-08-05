@@ -342,6 +342,7 @@ export function InboxPage({
   const [replyBody, setReplyBody] = useState("");
   const [replyTo, setReplyTo] = useState("");
   const [replyCc, setReplyCc] = useState("");
+  const [replyBcc, setReplyBcc] = useState("");
   const [replySubjectLine, setReplySubjectLine] = useState("");
   const [showReplyForm, setShowReplyForm] = useState(false);
   const [sending, setSending] = useState(false);
@@ -423,6 +424,7 @@ export function InboxPage({
       setReplySubjectLine(analysis.suggested_subject.trim());
     }
     setReplyCc("");
+    setReplyBcc("");
     setReplyBody(analysis.draft_reply);
     setShowReplyForm(true);
     setNotice(null);
@@ -589,6 +591,7 @@ export function InboxPage({
       setShowReplyForm(false);
       setReplyBody("");
       setReplyCc("");
+      setReplyBcc("");
       setAiAnalysis(null);
       try {
         const detail = await client.getInboxThread(threadId);
@@ -714,6 +717,7 @@ export function InboxPage({
     const recipients = buildReplyRecipients(source, mailbox, mode);
     setReplyTo(recipients.to);
     setReplyCc(recipients.cc);
+    setReplyBcc(recipients.bcc);
     setShowReplyForm(true);
     setNotice(null);
 
@@ -748,10 +752,19 @@ export function InboxPage({
           to: replyTo.trim() || undefined,
           subject: replySubjectLine.trim() || undefined,
           cc: replyCc.trim() || undefined,
+          bcc: replyBcc.trim() || undefined,
         });
-        const ccNote = replyCc.trim() ? ` (Cc: ${replyCc.trim()})` : "";
-        setNotice(`Reply sent to ${result.to ?? replyTo}${ccNote}.`);
+        const extras = [
+          replyCc.trim() ? `Cc: ${replyCc.trim()}` : "",
+          replyBcc.trim() ? `Bcc: ${replyBcc.trim()}` : "",
+        ]
+          .filter(Boolean)
+          .join("; ");
+        setNotice(
+          `Reply sent to ${result.to ?? replyTo}${extras ? ` (${extras})` : ""}.`,
+        );
         setReplyBody("");
+        setReplyBcc("");
         setShowReplyForm(false);
         await openThread(selectedThreadId);
       } else if (messageDetail) {
@@ -760,11 +773,20 @@ export function InboxPage({
           to: replyTo.trim() || undefined,
           subject: replySubjectLine.trim() || undefined,
           cc: replyCc.trim() || undefined,
+          bcc: replyBcc.trim() || undefined,
           folder: messageDetail.folder || "INBOX",
         });
-        const ccNote = replyCc.trim() ? ` (Cc: ${replyCc.trim()})` : "";
-        setNotice(`Reply sent to ${result.to ?? replyTo}${ccNote}.`);
+        const extras = [
+          replyCc.trim() ? `Cc: ${replyCc.trim()}` : "",
+          replyBcc.trim() ? `Bcc: ${replyBcc.trim()}` : "",
+        ]
+          .filter(Boolean)
+          .join("; ");
+        setNotice(
+          `Reply sent to ${result.to ?? replyTo}${extras ? ` (${extras})` : ""}.`,
+        );
         setReplyBody("");
+        setReplyBcc("");
         setShowReplyForm(false);
         await openMessage(messageDetail);
       }
@@ -1573,6 +1595,16 @@ export function InboxPage({
                       />
                     </div>
                     <div className="flex items-center gap-2 text-sm">
+                      <span className="w-14 shrink-0 text-slate-500">Bcc</span>
+                      <input
+                        type="text"
+                        value={replyBcc}
+                        onChange={(e) => setReplyBcc(e.target.value)}
+                        placeholder="optional"
+                        className="flex-1 rounded-lg bg-slate-950 border border-slate-700 px-3 py-1.5 text-sm"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2 text-sm">
                       <span className="w-14 shrink-0 text-slate-500">Subject</span>
                       <input
                         type="text"
@@ -1594,6 +1626,7 @@ export function InboxPage({
                         onClick={() => {
                           setShowReplyForm(false);
                           setReplyBody("");
+                          setReplyBcc("");
                           setNotice(null);
                         }}
                         title="Cancel"
@@ -1907,6 +1940,16 @@ export function InboxPage({
                     />
                   </div>
                   <div className="flex items-center gap-2 text-sm">
+                    <span className="w-14 shrink-0 text-slate-500">Bcc</span>
+                    <input
+                      type="text"
+                      value={replyBcc}
+                      onChange={(e) => setReplyBcc(e.target.value)}
+                      placeholder="optional"
+                      className="flex-1 rounded-lg bg-slate-950 border border-slate-700 px-3 py-1.5 text-sm"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2 text-sm">
                     <span className="w-14 shrink-0 text-slate-500">Subject</span>
                     <input
                       type="text"
@@ -1928,6 +1971,7 @@ export function InboxPage({
                       onClick={() => {
                         setShowReplyForm(false);
                         setReplyBody("");
+                        setReplyBcc("");
                         setNotice(null);
                       }}
                       title="Cancel"

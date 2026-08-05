@@ -49,6 +49,7 @@ export function FolderView({ folder }: Props) {
   const [replyMode, setReplyMode] = useState<ReplyMode>("reply");
   const [replyTo, setReplyTo] = useState("");
   const [replyCc, setReplyCc] = useState("");
+  const [replyBcc, setReplyBcc] = useState("");
   const [replyBody, setReplyBody] = useState("");
   const [sending, setSending] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -89,6 +90,7 @@ export function FolderView({ folder }: Props) {
     setReplyMode(mode);
     setReplyTo(recipients.to);
     setReplyCc(recipients.cc);
+    setReplyBcc(recipients.bcc);
     setReplyOpen(true);
     setNotice(null);
   }
@@ -144,6 +146,7 @@ export function FolderView({ folder }: Props) {
           auth_token: token,
           to: replyTo.trim(),
           cc: replyCc.trim() || undefined,
+          bcc: replyBcc.trim() || undefined,
           subject: selected.subject?.startsWith("Re:")
             ? selected.subject
             : `Re: ${selected.subject || ""}`,
@@ -156,6 +159,7 @@ export function FolderView({ folder }: Props) {
       setReplyOpen(false);
       setReplyBody("");
       setReplyCc("");
+      setReplyBcc("");
       setNotice(
         replyMode === "reply_all"
           ? "Reply all sent via Vercel SMTP"
@@ -276,6 +280,12 @@ export function FolderView({ folder }: Props) {
                 <input
                   value={replyCc}
                   onChange={(e) => setReplyCc(e.target.value)}
+                  placeholder="optional — comma-separated"
+                />
+                <label className="small">Bcc</label>
+                <input
+                  value={replyBcc}
+                  onChange={(e) => setReplyBcc(e.target.value)}
                   placeholder="optional — comma-separated"
                 />
                 <label className="small">Message</label>
