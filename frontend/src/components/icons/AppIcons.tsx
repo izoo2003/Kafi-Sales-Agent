@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { IndexIconKey } from "../../data/indexSections";
+import { LogoOutlook, LogoTwilio, LogoWhatsApp } from "./BrandLogos";
 
 export type IconSize = "xs" | "sm" | "md" | "lg";
 
@@ -144,13 +145,8 @@ export function IconInbox({ size, className }: IconProps) {
 }
 
 export function IconMail({ size, className }: IconProps) {
-  /** Same envelope mark as Inbox for consistent mail branding. */
-  return (
-    <Svg size={size} className={className}>
-      <rect x="2" y="4" width="20" height="16" rx="2" />
-      <path d="M22 7l-10 7L2 7" />
-    </Svg>
-  );
+  /** Official Microsoft Outlook brand logo for Mail. */
+  return <LogoOutlook size={size} className={className} />;
 }
 
 export function IconMailStack({ size, className }: IconProps) {
@@ -239,7 +235,8 @@ export function IconExternal({ size, className }: IconProps) {
 }
 
 export function IconCall({ size, className }: IconProps) {
-  return <IconPhone size={size} className={className} />;
+  /** Official Twilio brand logo for Calls. */
+  return <LogoTwilio size={size} className={className} />;
 }
 
 export function IconQuote({ size, className }: IconProps) {
@@ -455,18 +452,19 @@ export function IconFilter({ size, className }: IconProps) {
   );
 }
 
+/** Official WhatsApp brand logo (colored). */
 export function IconWhatsApp({ size, className }: IconProps) {
-  return (
-    <svg
-      className={`${SIZE_CLASS[size ?? "sm"]} shrink-0 ${className}`}
-      viewBox="0 0 24 24"
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <path d="M17.47 14.3c-.3-.15-1.76-.87-2.03-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.95 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.08-.15-.67-1.61-.92-2.2-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.8.37-.27.3-1.05 1.02-1.05 2.49s1.08 2.89 1.23 3.09c.15.2 2.12 3.24 5.14 4.54.72.31 1.28.5 1.72.64.72.23 1.38.2 1.9.12.58-.09 1.76-.72 2.01-1.41.25-.7.25-1.29.17-1.41-.07-.12-.27-.2-.57-.35z" />
-      <path d="M12.04 2C6.58 2 2.15 6.42 2.15 11.87c0 1.94.51 3.83 1.48 5.5L2 22l4.78-1.55a9.86 9.86 0 0 0 5.26 1.43h.01c5.46 0 9.89-4.42 9.89-9.87C21.94 6.42 17.5 2 12.04 2zm0 18.05h-.01a8.2 8.2 0 0 1-4.18-1.15l-.3-.18-2.84.92.95-2.77-.2-.28a8.18 8.18 0 0 1-1.26-4.36c0-4.53 3.69-8.21 8.23-8.21 4.53 0 8.21 3.68 8.21 8.21 0 4.54-3.69 8.22-8.2 8.22z" />
-    </svg>
-  );
+  return <LogoWhatsApp size={size} className={className} />;
+}
+
+/** Official Microsoft Outlook brand logo (colored). */
+export function IconOutlook({ size, className }: IconProps) {
+  return <LogoOutlook size={size} className={className} />;
+}
+
+/** Official Twilio brand logo (colored). */
+export function IconTwilio({ size, className }: IconProps) {
+  return <LogoTwilio size={size} className={className} />;
 }
 
 export function NavIcon({
@@ -485,7 +483,7 @@ export function NavIcon({
   if (navId === "whatsapp-templates") return <IconTemplate {...props} />;
   if (navId === "whatsapp-activity") return <IconActivity {...props} />;
   if (navId === "whatsapp-inbox" || navId.startsWith("whatsapp"))
-    return <IconMessage {...props} className={`${className} text-emerald-400/90`} />;
+    return <LogoWhatsApp size={size} />;
   if (navId === "leads") return <IconSearch {...props} />;
   if (navId === "table" || navId === "master" || navId === "all")
     return <IconTable {...props} />;
@@ -495,7 +493,7 @@ export function NavIcon({
   if (navId === "not_interested_clients") return <IconXCircle {...props} />;
   if (navId === "not_received_call_clients") return <IconPhoneMissed {...props} />;
   if (navId.startsWith("assigned:")) return <IconUser {...props} />;
-  if (navId === "inbox") return <IconMail {...props} />;
+  if (navId === "inbox") return <LogoOutlook size={size} />;
   if (navId === "sent") return <IconSend {...props} />;
   if (navId === "drafts") return <IconDraft {...props} />;
   if (navId === "trash") return <IconTrash {...props} />;
@@ -504,8 +502,8 @@ export function NavIcon({
   if (navId === "email-templates") return <IconTemplate {...props} />;
   if (navId === "personalized-emails") return <IconSparkles {...props} />;
   if (navId.startsWith("label:")) return <IconTag {...props} />;
-  if (navId === "mail") return <IconExternal {...props} />;
-  if (navId === "calls") return <IconCall {...props} />;
+  if (navId === "mail") return <LogoOutlook size={size} />;
+  if (navId === "calls") return <LogoTwilio size={size} />;
   if (navId === "client-history") return <IconCalendar {...props} />;
   if (navId === "quotation-agent") return <IconQuote {...props} />;
   if (navId === "chatbot") return <IconRobot {...props} />;
@@ -513,7 +511,7 @@ export function NavIcon({
   if (navId === "kpi") return <IconChart {...props} />;
   if (navId === "users") return <IconUser {...props} />;
 
-  return <IconMail {...props} />;
+  return <LogoOutlook size={size} />;
 }
 
 export function IndexSectionIcon({
@@ -526,11 +524,11 @@ export function IndexSectionIcon({
   className?: string;
 }) {
   const map: Record<number, ReactNode> = {
-    1: <IconMessage size={size} className={className} />,
+    1: <LogoWhatsApp size={size} />,
     2: <IconTable size={size} className={className} />,
-    3: <IconMail size={size} className={className} />,
-    4: <IconExternal size={size} className={className} />,
-    5: <IconCall size={size} className={className} />,
+    3: <LogoOutlook size={size} />,
+    4: <LogoOutlook size={size} />,
+    5: <LogoTwilio size={size} />,
     6: <IconQuote size={size} className={className} />,
     7: <IconRobot size={size} className={className} />,
     8: <IconSparkles size={size} className={className} />,
@@ -566,21 +564,21 @@ export function IndexIcon({
     case "x-circle":
       return <IconXCircle {...props} />;
     case "message":
-      return <IconMessage {...props} />;
+      return <LogoWhatsApp size={size} />;
     case "template":
       return <IconTemplate {...props} />;
     case "inbox":
-      return <IconMail {...props} />;
+      return <LogoOutlook size={size} />;
     case "activity":
       return <IconActivity {...props} />;
     case "mail":
-      return <IconMail {...props} />;
+      return <LogoOutlook size={size} />;
     case "mail-stack":
       return <IconMailStack {...props} />;
     case "calendar":
       return <IconCalendar {...props} />;
     case "call":
-      return <IconCall {...props} />;
+      return <LogoTwilio size={size} />;
     case "robot":
       return <IconRobot {...props} />;
     case "sparkles":
