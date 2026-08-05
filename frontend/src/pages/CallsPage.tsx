@@ -11,7 +11,6 @@ import { CallManualDialer } from "../components/CallManualDialer";
 import { CallRemarksForm } from "../components/CallRemarksForm";
 import { CallRecordingPanel } from "../components/CallRecordingPanel";
 import { CallRecommendationBadge } from "../components/CallRecommendationBadge";
-import { BulkCallQueuePanel } from "../components/BulkCallQueuePanel";
 import { CountrySelect } from "../components/CountrySelect";
 import { Pagination } from "../components/Pagination";
 import { ActionButton } from "../components/ui/ActionButton";
@@ -81,7 +80,6 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
   const [countryFilter, setCountryFilter] = useState<string>("");
   const [validNowFilter, setValidNowFilter] = useState<ValidNowFilter>("");
   const [selectedLeadIds, setSelectedLeadIds] = useState<Set<number>>(new Set());
-  const [showBulkQueue, setShowBulkQueue] = useState(false);
   const callQueue = useCallQueue();
   const pollRef = useRef<number | null>(null);
 
@@ -258,7 +256,6 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
       }));
     if (!leads.length) return;
     clearSelection();
-    setShowBulkQueue(true);
     callQueue.start(leads);
   }
 
@@ -352,16 +349,6 @@ TWILIO_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app`}
         <p className="text-sm text-emerald-300/90 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3">
           {notice}
         </p>
-      )}
-
-      {showBulkQueue && callQueue.status !== "idle" && (
-        <BulkCallQueuePanel
-          queue={callQueue}
-          onClose={() => {
-            callQueue.stop();
-            setShowBulkQueue(false);
-          }}
-        />
       )}
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 items-start">

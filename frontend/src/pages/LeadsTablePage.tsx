@@ -28,7 +28,6 @@ import {
   BulkActionProgressPanel,
   type BulkActionProgress,
 } from "../components/BulkActionProgressPanel";
-import { BulkCallQueuePanel } from "../components/BulkCallQueuePanel";
 import { CallLeadButton } from "../components/CallLeadButton";
 import { WhatsAppLeadButton } from "../components/WhatsAppLeadButton";
 import { DialpadPhoneText } from "../components/DialpadPhoneText";
@@ -604,7 +603,6 @@ export function LeadsTablePage({
   const [whatsappComposeTarget, setWhatsappComposeTarget] =
     useState<WhatsAppComposeTarget | null>(null);
   const [bulkWhatsAppNotice, setBulkWhatsAppNotice] = useState<string | null>(null);
-  const [showBulkQueue, setShowBulkQueue] = useState(false);
   const [startingBulkCall, setStartingBulkCall] = useState(false);
   const callQueue = useCallQueue();
   const [showCsvImport, setShowCsvImport] = useState(false);
@@ -1341,7 +1339,6 @@ export function LeadsTablePage({
       }
 
       clearSelection();
-      setShowBulkQueue(true);
       callQueue.start(leads);
       if (missingPhone > 0) {
         setSaveNotice(
@@ -2275,18 +2272,6 @@ export function LeadsTablePage({
         <p className="text-xs text-emerald-300 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 shrink-0">
           {saveNotice}
         </p>
-      )}
-
-      {showBulkQueue && callQueue.status !== "idle" && (
-        <div className="shrink-0">
-          <BulkCallQueuePanel
-            queue={callQueue}
-            onClose={() => {
-              callQueue.stop();
-              setShowBulkQueue(false);
-            }}
-          />
-        </div>
       )}
 
       {bulkEmailNotice && (

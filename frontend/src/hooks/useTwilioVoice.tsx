@@ -202,8 +202,15 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
   }, [initDevice]);
 
   const hangUp = useCallback(() => {
-    callRef.current?.disconnect();
-    callRef.current = null;
+    const call = callRef.current;
+    if (!call) {
+      setActive(false);
+      setActiveCall(null);
+      return;
+    }
+    // Do not null callRef here — finishCall must see the same Call instance
+    // so it can attribute the ended interaction correctly.
+    call.disconnect();
     setActive(false);
     setActiveCall(null);
   }, []);
@@ -228,24 +235,28 @@ export function TwilioVoiceProvider({ children }: { children: ReactNode }) {
           phone: prep.lead_phone ?? null,
         });
 
+        // Capture prep in closure so a later dial cannot steal this call's follow-up.
+        const prepForThisCall = prep;
+        let finished = false;
         const finishCall = () => {
+          if (finished) return;
+          finished = true;
           if (callRef.current === call) {
             callRef.current = null;
             setActive(false);
             setActiveCall(null);
           }
-          const endedPrep = activePrepRef.current;
-          activePrepRef.current = null;
-          if (endedPrep) {
-            setPendingFollowUp({
-              interactionId: endedPrep.id,
-              label:
-                endedPrep.company_name ||
-                endedPrep.contact_name ||
-                endedPrep.subject?.replace(/^Call to /, "") ||
-                "this call",
-            });
+          if (activePrepRef.current?.id === prepForThisCall.id) {
+            activePrepRef.current = null;
           }
+          setPendingFollowUp({
+            interactionId: prepForThisCall.id,
+            label:
+              prepForThisCall.company_name ||
+              prepForThisCall.contact_name ||
+              prepForThisCall.subject?.replace(/^Call to /, "") ||
+              "this call",
+          });
         };
         call.on("error", (err) => {
           console.error("Twilio call error:", err);

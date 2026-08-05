@@ -1,6 +1,12 @@
 ﻿import { useCallback, useEffect, useRef, useState } from "react";
 import type { IndexAction } from "./data/indexSections";
-import { client, QUOTATION_AGENT_URL, type AppUser, type LeadTableSectionCountsResponse } from "./api/client";
+import {
+  client,
+  QUOTATION_AGENT_URL,
+  sanitizeUserFacingError,
+  type AppUser,
+  type LeadTableSectionCountsResponse,
+} from "./api/client";
 import { useAuth } from "./auth/AuthContext";
 import {
   AppSidebar,
@@ -35,8 +41,10 @@ import { KpiPage } from "./pages/KpiPage";
 import { LoginPage } from "./pages/LoginPage";
 import { UsersPage } from "./pages/UsersPage";
 import { TwilioVoiceProvider, useTwilioVoiceOptional } from "./hooks/useTwilioVoice";
+import { CallQueueProvider } from "./hooks/useCallQueue";
 import { PostCallRemarksModal } from "./components/PostCallRemarksModal";
 import { CallingCardOverlay } from "./components/CallingCardOverlay";
+import { BulkCallQueueHost } from "./components/BulkCallQueueHost";
 import { FloatingDialpad } from "./components/FloatingDialpad";
 import {
   alertInterestedFollowUp,
@@ -137,7 +145,10 @@ function DashboardApp() {
   });
   const [leadsTableRefreshToken, setLeadsTableRefreshToken] = useState(0);
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setErrorState] = useState<string | null>(null);
+  const setError = useCallback((message: string | null) => {
+    setErrorState(message == null ? null : sanitizeUserFacingError(message));
+  }, []);
   const [emailActivityUnread, setEmailActivityUnread] = useState(0);
   const [whatsappActivityUnread, setWhatsappActivityUnread] = useState(0);
   const [emailTemplateCount, setEmailTemplateCount] = useState(0);
@@ -885,6 +896,7 @@ function DashboardApp() {
 
   return (
     <TwilioVoiceProvider>
+      <CallQueueProvider>
       <PostCallRemarksModal
         onError={setError}
         onSaved={(outcome) => {
@@ -892,6 +904,7 @@ function DashboardApp() {
         }}
       />
       <CallingCardOverlay />
+      <BulkCallQueueHost />
       <FloatingDialpad onError={setError} />
       <div className="min-h-dvh flex">
         <InboxAlertToasts
@@ -972,12 +985,7 @@ function DashboardApp() {
             <CallInitBanner />
             {error && (
               <div className="mb-7 p-4 rounded-lg bg-red-500/10 border border-red-500/30 text-red-200 text-sm">
-                {error}
-                <p className="mt-1 text-red-300/70">
-                  If this keeps appearing, hard-refresh the page or log in again. On localhost,
-                  make sure the backend is running (`cd backend && python run.py`) and restarted
-                  after code changes.
-                </p>
+                {sanitizeUserFacingError(error)}
               </div>
             )}
 
@@ -1118,6 +1126,7 @@ function DashboardApp() {
           </main>
         </div>
       </div>
+      </CallQueueProvider>
     </TwilioVoiceProvider>
   );
 }

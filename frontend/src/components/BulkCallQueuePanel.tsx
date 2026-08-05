@@ -3,6 +3,7 @@ import { type CallQueueState, BATCH_SIZE } from "../hooks/useCallQueue";
 import { CALL_OUTCOMES } from "../utils/callOutcomes";
 import { autocorrectText, spellingInputProps } from "../utils/spelling";
 import { CallingCard } from "./CallingCard";
+import { DraggableFloat } from "./DraggableFloat";
 
 interface BulkCallQueuePanelProps {
   queue: CallQueueState;
@@ -96,7 +97,7 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
   return (
     <>
     {showCallingCard && currentEntry && (
-      <div className="fixed bottom-4 right-4 z-[60] w-[min(100vw-2rem,22rem)] pointer-events-auto">
+      <DraggableFloat storageKey="kafi_calling_card_pos">
         <CallingCard
           leadId={currentEntry.leadId}
           fallback={{
@@ -107,7 +108,7 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
           }}
           onDismiss={() => setDismissedLeadId(currentEntry.leadId)}
         />
-      </div>
+      </DraggableFloat>
     )}
     <div className="rounded-xl border border-sky-800/50 bg-slate-900 overflow-hidden shadow-xl">
       <div className="px-4 py-3 bg-sky-950/60 border-b border-sky-800/40 flex items-center justify-between gap-3">
@@ -135,11 +136,13 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
                     : `Calling ${currentEntry?.companyName ?? "…"}`}
             </p>
             <p className="text-xs text-slate-400 mt-0.5">
-              {totalBatches > 1
-                ? `Batch ${batchNumber} / ${totalBatches} · `
-                : ""}
-              {Math.min(currentIndex + 1, totalCalls)} / {totalCalls} calls
-              {totalBatches > 1 ? ` · #${indexInBatch + 1} in batch` : ""}
+              {status === "completed"
+                ? `Finished all ${totalCalls} call${totalCalls === 1 ? "" : "s"}`
+                : `Call ${Math.min(currentIndex + 1, totalCalls)} of ${totalCalls}${
+                    currentIndex < totalCalls - 1
+                      ? ` · ${totalCalls - currentIndex - 1} still waiting`
+                      : " · last in queue"
+                  }`}
             </p>
           </div>
         </div>
@@ -151,8 +154,9 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
                 type="button"
                 onClick={skipCurrent}
                 className="px-2.5 py-1.5 rounded-lg bg-amber-900/50 hover:bg-amber-900/70 border border-amber-700/40 text-amber-200 text-xs"
+                title="End this call only, then add remarks. Does not stop the bulk queue."
               >
-                Skip
+                End call
               </button>
               <button
                 type="button"
@@ -188,8 +192,9 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
               onClick={stop}
               disabled={savingRemarks}
               className="px-2.5 py-1.5 rounded-lg bg-red-900/50 hover:bg-red-900/70 border border-red-700/40 text-red-200 text-xs disabled:opacity-60"
+              title="Stop the entire bulk queue"
             >
-              Stop
+              Stop all
             </button>
           )}
           {status === "completed" && (
@@ -274,16 +279,16 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
               )}
               <p className="text-xs text-slate-500">{currentEntry.phone}</p>
               <p className="text-xs text-slate-500 mt-3 leading-relaxed">
-                When you are done, click <span className="text-amber-200">Skip</span> to end this
-                call. You will then add an outcome and remarks for this client before the next
-                dial starts.
+                Click <span className="text-amber-200">End call</span> when finished with this
+                client. That only ends this call — the rest of the bulk queue stays waiting. Then
+                add outcome + remarks and click Save & next to dial the next client.
               </p>
               <button
                 type="button"
                 onClick={skipCurrent}
                 className="px-3 py-1.5 rounded-lg bg-amber-900/50 hover:bg-amber-900/70 border border-amber-700/40 text-amber-200 text-xs"
               >
-                Skip — end call & add remarks
+                End call — then add remarks
               </button>
             </div>
           )}

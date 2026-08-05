@@ -102,18 +102,35 @@ export function CallingCard({ leadId, fallback, onDismiss, className = "" }: Cal
       role="dialog"
       aria-label={`Calling card for ${companyName}`}
     >
-      <div className="flex items-start justify-between gap-3 px-4 py-3 border-b border-slate-800/80 bg-sky-950/40 rounded-t-2xl">
-        <div className="min-w-0">
-          <p className="text-[11px] uppercase tracking-[0.14em] text-sky-300/80">
-            Calling card
-          </p>
-          <h3 className="mt-1 text-base font-semibold text-slate-50 truncate">
-            {companyName}
-          </h3>
-          <p className="mt-0.5 text-sm text-slate-300 truncate">
-            {ownerName}
-            {designation ? ` · ${designation}` : ""}
-          </p>
+      <div
+        data-drag-handle
+        className="flex items-start justify-between gap-3 px-4 py-3 border-b border-slate-800/80 bg-sky-950/40 rounded-t-2xl cursor-grab active:cursor-grabbing"
+        title="Drag to move"
+      >
+        <div className="min-w-0 flex items-start gap-2">
+          <span
+            className="mt-2 shrink-0 grid grid-cols-2 gap-0.5 opacity-50"
+            aria-hidden
+          >
+            <span className="w-1 h-1 rounded-full bg-slate-400" />
+            <span className="w-1 h-1 rounded-full bg-slate-400" />
+            <span className="w-1 h-1 rounded-full bg-slate-400" />
+            <span className="w-1 h-1 rounded-full bg-slate-400" />
+            <span className="w-1 h-1 rounded-full bg-slate-400" />
+            <span className="w-1 h-1 rounded-full bg-slate-400" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-[11px] uppercase tracking-[0.14em] text-sky-300/80">
+              Calling card · drag to move
+            </p>
+            <h3 className="mt-1 text-base font-semibold text-slate-50 truncate">
+              {companyName}
+            </h3>
+            <p className="mt-0.5 text-sm text-slate-300 truncate">
+              {ownerName}
+              {designation ? ` · ${designation}` : ""}
+            </p>
+          </div>
         </div>
         {onDismiss && (
           <button

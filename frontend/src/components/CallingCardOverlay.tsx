@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTwilioVoiceOptional } from "../hooks/useTwilioVoice";
 import { CallingCard } from "./CallingCard";
+import { DraggableFloat } from "./DraggableFloat";
 
 /**
  * Floating calling card for one-off (non-bulk) browser calls.
@@ -22,12 +23,12 @@ export function CallingCardOverlay() {
   if (!active || !leadId || dismissedLeadId === leadId) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-[60] w-[min(100vw-2rem,22rem)] pointer-events-auto">
+    <DraggableFloat storageKey="kafi_calling_card_pos">
       <CallingCard
         leadId={leadId}
         fallback={{ phone: voice?.activeCall?.phone }}
         onDismiss={() => setDismissedLeadId(leadId)}
       />
-    </div>
+    </DraggableFloat>
   );
 }

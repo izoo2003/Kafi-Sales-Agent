@@ -67,6 +67,32 @@ function parseErrorDetail(text: string, fallback: string): string {
   return text;
 }
 
+/** Shown instead of raw 500 / "Internal Server Error" copy. */
+export const HARD_RESTART_MESSAGE =
+  "Please hard restart the screen (Ctrl + Shift + R) and wait 10 seconds before trying again.";
+
+function looksLikeInternalServerError(message: string): boolean {
+  return /internal\s*server\s*error/i.test(message);
+}
+
+/** Rewrite server-fault copy for UI — never surface "Internal Server Error". */
+export function sanitizeUserFacingError(message: string): string {
+  const trimmed = (message || "").trim();
+  if (!trimmed) return HARD_RESTART_MESSAGE;
+  if (looksLikeInternalServerError(trimmed)) return HARD_RESTART_MESSAGE;
+  // Bare upstream labels from retries / proxies
+  if (/^upstream\s*500\b/i.test(trimmed) || /^error\s*500\b/i.test(trimmed)) {
+    return HARD_RESTART_MESSAGE;
+  }
+  return trimmed;
+}
+
+function messageForHttpError(status: number, text: string, statusText: string): string {
+  if (status === 500) return HARD_RESTART_MESSAGE;
+  const parsed = parseErrorDetail(text, statusText || `Request failed (${status})`);
+  return sanitizeUserFacingError(parsed);
+}
+
 /**
  * Timeouts must stay above Railway pool waits + Vercel→Railway hop.
  * A 12s abort used to fire while Postgres pool_timeout (15s) was still waiting,
@@ -154,7 +180,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       }
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(parseErrorDetail(text, res.statusText));
+        throw new Error(messageForHttpError(res.status, text, res.statusText));
       }
       if (res.status === 204) {
         return undefined as T;
@@ -1685,19 +1711,8 @@ export const client = {
       credentials: "include",
     });
     if (!res.ok) {
-      let message = res.statusText;
       const text = await res.text();
-      if (text) {
-        try {
-          const body = JSON.parse(text) as { detail?: string | string[] };
-          if (typeof body.detail === "string") message = body.detail;
-          else if (Array.isArray(body.detail)) message = body.detail.join("; ");
-          else message = text;
-        } catch {
-          message = text;
-        }
-      }
-      throw new Error(message);
+      throw new Error(messageForHttpError(res.status, text, res.statusText));
     }
     return res.json() as Promise<DiscoverLeadsResponse>;
   },
@@ -2145,7 +2160,14 @@ export const client = {
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error((err as { detail?: string }).detail || res.statusText);
+      const detail = (err as { detail?: string }).detail;
+      throw new Error(
+        messageForHttpError(
+          res.status,
+          detail ? JSON.stringify({ detail }) : "",
+          res.statusText,
+        ),
+      );
     }
     return res.json() as Promise<EmailAttachment>;
   },
@@ -2200,7 +2222,7 @@ export const client = {
     });
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(text || res.statusText);
+      throw new Error(messageForHttpError(res.status, text, res.statusText));
     }
     return res.json() as Promise<ChatResponse>;
   },
@@ -2285,7 +2307,7 @@ export const client = {
     }
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(parseErrorDetail(text, res.statusText || "Failed to load recording"));
+      throw new Error(messageForHttpError(res.status, text, res.statusText || "Failed to load recording"));
     }
     const blob = await res.blob();
     const disposition = res.headers.get("Content-Disposition") || "";
