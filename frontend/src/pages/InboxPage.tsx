@@ -1384,16 +1384,13 @@ export function InboxPage({
                       {!showReplyForm && (
                         <>
                           <ActionButton
-                            icon={aiAnalysis?.draft_reply ? IconSparkles : IconReply}
+                            icon={IconReply}
                             variant="primary"
                             onClick={() => startReply("reply")}
-                            title={
-                              aiAnalysis?.draft_reply
-                                ? "Use AI draft (reply to sender only)"
-                                : "Reply to sender only"
-                            }
+                            disabled={!replyTarget}
+                            title="Reply to sender only"
                           >
-                            {aiAnalysis?.draft_reply ? "AI draft" : "Reply"}
+                            Reply
                           </ActionButton>
                           {canReplyAll && (
                             <ActionButton
@@ -1404,6 +1401,16 @@ export function InboxPage({
                               Reply all
                             </ActionButton>
                           )}
+                          {aiAnalysis?.draft_reply ? (
+                            <ActionButton
+                              icon={IconSparkles}
+                              variant="sky"
+                              onClick={() => applyAiDraftToReplyForm(aiAnalysis)}
+                              title="Use AI draft reply"
+                            >
+                              AI draft
+                            </ActionButton>
+                          ) : null}
                         </>
                       )}
                     </div>
@@ -1511,6 +1518,34 @@ export function InboxPage({
                   <div ref={conversationEndRef} />
                 </div>
 
+                {!showReplyForm && (
+                  <div className="px-5 py-3 border-t border-slate-800 bg-slate-950/70 flex flex-wrap items-center gap-2 shrink-0">
+                    <ActionButton
+                      icon={IconReply}
+                      variant="primary"
+                      size="md"
+                      onClick={() => startReply("reply")}
+                      disabled={!replyTarget}
+                      title="Reply to sender only"
+                    >
+                      Reply
+                    </ActionButton>
+                    {canReplyAll && (
+                      <ActionButton
+                        icon={IconReply}
+                        size="md"
+                        onClick={() => startReply("reply_all")}
+                        title="Reply all — sender plus To/Cc/Bcc"
+                      >
+                        Reply all
+                      </ActionButton>
+                    )}
+                    <span className="text-xs text-slate-500">
+                      Write a reply and send from your mailbox
+                    </span>
+                  </div>
+                )}
+
                 {showReplyForm && (
                   <div className="px-5 py-4 border-t border-slate-800 space-y-2 bg-slate-950/50">
                     {notice && (
@@ -1549,7 +1584,7 @@ export function InboxPage({
                     <EmailBodyEditor
                       value={replyBody}
                       onChange={setReplyBody}
-                      placeholder="Edit the AI draft or write your reply…"
+                      placeholder="Write your reply…"
                       rows={7}
                     />
                     <div className="flex justify-end gap-2">
@@ -1705,19 +1740,18 @@ export function InboxPage({
                         </ActionButton>
                       </>
                     )}
-                    {section !== "sent" && !showReplyForm && (
+                    {section !== "sent" &&
+                      section !== "drafts" &&
+                      !showReplyForm && (
                       <>
                         <ActionButton
-                          icon={aiAnalysis?.draft_reply ? IconSparkles : IconReply}
+                          icon={IconReply}
                           variant="primary"
                           onClick={() => startReply("reply")}
-                          title={
-                            aiAnalysis?.draft_reply
-                              ? "Use AI draft (reply to sender only)"
-                              : "Reply to sender only"
-                          }
+                          disabled={!messageDetail}
+                          title="Reply to sender only"
                         >
-                          {aiAnalysis?.draft_reply ? "AI draft" : "Reply"}
+                          Reply
                         </ActionButton>
                         {canReplyAll && (
                           <ActionButton
@@ -1728,6 +1762,16 @@ export function InboxPage({
                             Reply all
                           </ActionButton>
                         )}
+                        {aiAnalysis?.draft_reply ? (
+                          <ActionButton
+                            icon={IconSparkles}
+                            variant="sky"
+                            onClick={() => applyAiDraftToReplyForm(aiAnalysis)}
+                            title="Use AI draft reply"
+                          >
+                            AI draft
+                          </ActionButton>
+                        ) : null}
                       </>
                     )}
                   </div>
@@ -1808,7 +1852,35 @@ export function InboxPage({
                 </div>
               </div>
 
-              {showReplyForm && section !== "sent" && (
+              {!showReplyForm && section !== "sent" && section !== "drafts" && (
+                <div className="px-5 py-3 border-t border-slate-800 bg-slate-950/70 flex flex-wrap items-center gap-2 shrink-0">
+                  <ActionButton
+                    icon={IconReply}
+                    variant="primary"
+                    size="md"
+                    onClick={() => startReply("reply")}
+                    disabled={!messageDetail}
+                    title="Reply to sender only"
+                  >
+                    Reply
+                  </ActionButton>
+                  {canReplyAll && (
+                    <ActionButton
+                      icon={IconReply}
+                      size="md"
+                      onClick={() => startReply("reply_all")}
+                      title="Reply all — sender plus To/Cc/Bcc"
+                    >
+                      Reply all
+                    </ActionButton>
+                  )}
+                  <span className="text-xs text-slate-500">
+                    Write a reply and send from your mailbox
+                  </span>
+                </div>
+              )}
+
+              {showReplyForm && section !== "sent" && section !== "drafts" && (
                 <div className="px-5 py-4 border-t border-slate-800 space-y-2 bg-slate-950/50">
                   {notice && (
                     <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-200 text-sm">
@@ -1846,7 +1918,7 @@ export function InboxPage({
                   <EmailBodyEditor
                     value={replyBody}
                     onChange={setReplyBody}
-                    placeholder="Edit the AI draft, then send…"
+                    placeholder="Write your reply…"
                     rows={7}
                   />
                   <div className="flex justify-end gap-2">
