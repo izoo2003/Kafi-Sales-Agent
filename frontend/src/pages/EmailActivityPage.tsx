@@ -374,8 +374,9 @@ export function EmailActivityPage({
                 </p>
               ) : (
                 <p className="text-xs text-slate-500">
-                  Opens are counted when recipients load the tracking pixel (HTML clients). Some
-                  clients block images, so open rate is a lower bound.
+                  Opens count when the recipient loads the tracking pixel in an HTML email. If
+                  images stay blocked (common in Gmail until “Display images”), the open will not
+                  register. New sends inject a pixel when the API public URL is configured.
                 </p>
               )}
             </>

@@ -411,7 +411,28 @@ def insights_stats(
         since = datetime.now(timezone.utc) - timedelta(days=days)
         query = query.filter(EmailActivityEvent.created_at >= since)
 
-    rows = query.all()
+    rows = list(query.all())
+
+    # Include opens that were stored without user_id but belong to this user's sends
+    # (older bulk/mailer paths). Admins already see all rows via _scoped_query.
+    if user_id is not None and not is_admin:
+        sent_interaction_ids = {
+            e.interaction_id
+            for e in rows
+            if e.event_type == "sent" and e.interaction_id is not None
+        }
+        if sent_interaction_ids:
+            seen_open_ids = {e.id for e in rows if e.event_type == "opened"}
+            orphan_q = db.query(EmailActivityEvent).filter(
+                EmailActivityEvent.event_type == "opened",
+                EmailActivityEvent.interaction_id.in_(sent_interaction_ids),
+                EmailActivityEvent.user_id.is_(None),
+            )
+            if since is not None:
+                orphan_q = orphan_q.filter(EmailActivityEvent.created_at >= since)
+            for orphan in orphan_q.all():
+                if orphan.id not in seen_open_ids:
+                    rows.append(orphan)
 
     individual_sent = 0
     individual_failed = 0

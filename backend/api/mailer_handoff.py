@@ -79,6 +79,7 @@ class MailerActivityReportRequest(BaseModel):
     subject: Optional[str] = None
     company_name: Optional[str] = None
     buyer_id: Optional[int] = None
+    interaction_id: Optional[int] = None
     error_message: Optional[str] = None
     send_mode: Literal["individual", "bulk"] = "individual"
     # When False, skip per-message rows (bulk summary events only).
@@ -87,6 +88,25 @@ class MailerActivityReportRequest(BaseModel):
     sent_count: Optional[int] = None
     failed_count: Optional[int] = None
     skipped_count: Optional[int] = None
+
+
+class MailerPrepareTrackedRequest(BaseModel):
+    """Wrap a mailer body with an open-tracking pixel before SMTP send."""
+
+    token: Optional[str] = Field(default=None, description="Bulk handoff JWT")
+    to: str = Field(min_length=3)
+    subject: str = Field(min_length=1)
+    body: str = Field(min_length=1)
+    buyer_id: Optional[int] = None
+    send_mode: Literal["individual", "bulk"] = "individual"
+
+
+class MailerPrepareTrackedResponse(BaseModel):
+    body: str
+    html: bool = True
+    interaction_id: Optional[int] = None
+    tracking_enabled: bool = False
+    pixel_url: Optional[str] = None
 
 
 class MailerActivityReportResponse(BaseModel):
@@ -312,6 +332,58 @@ def create_mailer_handoff(
     )
 
 
+@router.post("/prepare-tracked-body", response_model=MailerPrepareTrackedResponse)
+def prepare_mailer_tracked_body(
+    payload: MailerPrepareTrackedRequest,
+    db: Session = Depends(get_db),
+    authorization: str | None = Header(default=None),
+):
+    """Create a tracking interaction and return HTML with an open pixel embedded."""
+    from modules import email_tracking
+
+    user = _resolve_report_user(
+        db,
+        authorization=authorization,
+        handoff_token=payload.token,
+    )
+    to_email = (payload.to or "").strip()
+    subject = (payload.subject or "").strip()
+    body = payload.body or ""
+    mode = "bulk" if payload.send_mode == "bulk" else "individual"
+
+    interaction = email_tracking.ensure_outbound_tracking_interaction(
+        db,
+        user_id=user.id,
+        to_email=to_email,
+        subject=subject,
+        body=body,
+        buyer_id=payload.buyer_id,
+        approved_by=user.username,
+    )
+    if not interaction:
+        return MailerPrepareTrackedResponse(
+            body=body,
+            html=False,
+            tracking_enabled=bool(email_tracking.public_api_base()),
+        )
+
+    plain, html_body = email_tracking.build_tracked_bodies(
+        body,
+        interaction_id=interaction.id,
+        send_mode=mode,
+    )
+    pixel = email_tracking.open_pixel_url(
+        interaction_id=interaction.id, send_mode=mode
+    )
+    return MailerPrepareTrackedResponse(
+        body=html_body or plain or body,
+        html=bool(html_body),
+        interaction_id=interaction.id,
+        tracking_enabled=bool(pixel),
+        pixel_url=pixel,
+    )
+
+
 @router.post("/report-activity", response_model=MailerActivityReportResponse)
 def report_mailer_activity(
     payload: MailerActivityReportRequest,
@@ -319,6 +391,8 @@ def report_mailer_activity(
     authorization: str | None = Header(default=None),
 ):
     """Record mailer SMTP sends into Sales Agent Email Activity / Insights."""
+    from modules import email_tracking
+
     user = _resolve_report_user(
         db,
         authorization=authorization,
@@ -433,6 +507,7 @@ def report_mailer_activity(
             "provider": "mailer",
         }
 
+    interaction_id = payload.interaction_id
     event = email_activity.record_send_result(
         db,
         send_result=send_result,
@@ -440,6 +515,7 @@ def report_mailer_activity(
         to_email=to_email,
         buyer_id=payload.buyer_id,
         contact_id=contact_id,
+        interaction_id=interaction_id,
         subject=subject,
         send_mode=mode,
         mailbox_user=user,
@@ -448,9 +524,13 @@ def report_mailer_activity(
     details = dict(event.details or {})
     details.update(source_details)
     details["send_mode"] = mode
+    if interaction_id:
+        details["interaction_id"] = interaction_id
     event.details = details
     db.commit()
     db.refresh(event)
+    if payload.ok and interaction_id:
+        email_tracking.mark_tracking_interaction_sent(db, interaction_id)
     if payload.ok and mode == "individual":
         activity_module.log_activity(
             db,
@@ -461,7 +541,12 @@ def report_mailer_activity(
             quantity=1,
             entity_type="email_activity",
             entity_id=event.id,
-            details={"mode": "mailer", "to_email": to_email, "send_mode": "individual"},
+            details={
+                "mode": "mailer",
+                "to_email": to_email,
+                "send_mode": "individual",
+                "interaction_id": interaction_id,
+            },
         )
     return MailerActivityReportResponse(
         recorded=True, event_id=event.id, event_type=event.event_type

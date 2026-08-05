@@ -103,13 +103,23 @@ export async function POST(req: NextRequest) {
       try {
         const subject = renderTemplate(subjectTpl, lead);
         const text = renderTemplate(bodyTpl, lead);
+        const { prepareTrackedBody } = await import("@/lib/prepareTrackedBody");
+        const tracked = await prepareTrackedBody({
+          token,
+          to: lead.contact_email,
+          subject,
+          body: text,
+          buyer_id: lead.buyer_id,
+          send_mode: isBulk ? "bulk" : "individual",
+        });
+        const sendBody = tracked.body || text;
         const sent = await sendSmtp({
           username: handoff.username,
           mailboxEmail: handoff.mailbox_email,
           to: lead.contact_email,
           subject,
-          body: text,
-          html: true,
+          body: sendBody,
+          html: tracked.html !== false,
         });
         results.push({
           buyer_id: lead.buyer_id,
@@ -126,6 +136,7 @@ export async function POST(req: NextRequest) {
           subject,
           company_name: lead.company_name,
           buyer_id: lead.buyer_id,
+          interaction_id: tracked.interaction_id || undefined,
           error_message: sent.ok ? undefined : sent.message,
           send_mode: isBulk ? "bulk" : "individual",
           record_send: !isBulk,
@@ -135,8 +146,8 @@ export async function POST(req: NextRequest) {
             token,
             to: lead.contact_email,
             subject,
-            body: text,
-            html: true,
+            body: sendBody,
+            html: tracked.html !== false,
           });
         }
       } catch (err) {

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyHandoff } from "@/lib/handoff";
+import { prepareTrackedBody } from "@/lib/prepareTrackedBody";
 import { reportMailerActivity } from "@/lib/reportActivity";
 import { sendSmtp, smtpBodyHasContent } from "@/lib/smtp";
 import { appendMailerSentCopy } from "@/lib/syncSent";
@@ -117,7 +118,19 @@ export async function POST(req: NextRequest) {
 
     const cc = (body.cc || "").trim() || undefined;
     const bcc = (body.bcc || "").trim() || undefined;
-    const asHtml = body.html !== false;
+
+    // Inject open-tracking pixel (needs PUBLIC_API_BASE_URL / Railway domain on API).
+    const tracked = await prepareTrackedBody({
+      token: handoffToken || undefined,
+      authToken: authToken || undefined,
+      to,
+      subject,
+      body: text,
+      buyer_id: buyerId,
+      send_mode: sendMode,
+    });
+    const sendBody = tracked.body || text;
+    const asHtml = tracked.html || body.html !== false;
 
     const sent = await sendSmtp({
       username,
@@ -126,7 +139,7 @@ export async function POST(req: NextRequest) {
       cc,
       bcc,
       subject,
-      body: text,
+      body: sendBody,
       html: asHtml,
     });
 
@@ -140,6 +153,7 @@ export async function POST(req: NextRequest) {
         subject,
         company_name: companyName,
         buyer_id: buyerId,
+        interaction_id: tracked.interaction_id || undefined,
         error_message: sent.ok ? undefined : sent.message,
         send_mode: sendMode,
         record_send: true,

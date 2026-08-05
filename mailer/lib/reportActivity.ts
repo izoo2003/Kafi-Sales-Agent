@@ -9,6 +9,7 @@ export type ActivityReport = {
   subject?: string;
   company_name?: string;
   buyer_id?: number;
+  interaction_id?: number;
   error_message?: string;
   send_mode?: "individual" | "bulk";
   /** When false, skip per-message rows (bulk uses summary events only). */
@@ -57,6 +58,7 @@ export async function reportMailerActivity(
     subject: report.subject,
     company_name: report.company_name,
     buyer_id: report.buyer_id,
+    interaction_id: report.interaction_id,
     error_message: report.error_message,
     send_mode: report.send_mode || "individual",
     record_send: report.record_send !== false,

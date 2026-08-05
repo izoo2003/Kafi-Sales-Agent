@@ -6,12 +6,16 @@ import base64
 import hashlib
 import hmac
 import html
+import logging
+import os
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from config import settings
 from db.models import Contact, Interaction
+
+logger = logging.getLogger(__name__)
 
 # 1x1 transparent GIF
 _PIXEL_GIF = base64.b64decode(
@@ -29,11 +33,25 @@ def _track_secret() -> bytes:
 
 
 def public_api_base() -> str | None:
-    base = (
-        (settings.public_api_base_url or "").strip()
-        or (settings.twilio_webhook_base_url or "").strip()
-    )
-    return base.rstrip("/") if base else None
+    """Public HTTPS origin of this API — required for open-tracking pixels.
+
+    Order: PUBLIC_API_BASE_URL → TWILIO_WEBHOOK_BASE_URL → Railway public domain.
+    """
+    candidates = [
+        (settings.public_api_base_url or "").strip(),
+        (settings.twilio_webhook_base_url or "").strip(),
+        (os.environ.get("RAILWAY_PUBLIC_DOMAIN") or "").strip(),
+        (os.environ.get("RAILWAY_STATIC_URL") or "").strip(),
+    ]
+    for raw in candidates:
+        if not raw:
+            continue
+        base = raw.rstrip("/")
+        if base.startswith("http://") or base.startswith("https://"):
+            return base
+        # Railway often provides host only (xxx.up.railway.app)
+        return f"https://{base}"
+    return None
 
 
 def make_open_token(*, interaction_id: int, send_mode: str = "individual") -> str:
@@ -97,9 +115,10 @@ def _wrap_email_html(content: str, *, pixel_url: str | None) -> str:
     pixel = ""
     if pixel_url:
         safe = html.escape(pixel_url, quote=True)
+        # Use attributes that survive Gmail/Outlook clipping and image proxies.
         pixel = (
-            f'<img src="{safe}" width="1" height="1" alt="" '
-            f'style="display:block;width:1px;height:1px;border:0" />'
+            f'<img src="{safe}" width="1" height="1" alt="" border="0" '
+            f'style="display:block;width:1px;height:1px;border:0;opacity:0;" />'
         )
     return (
         "<!DOCTYPE html><html><body "
@@ -140,21 +159,155 @@ def build_tracked_bodies(
     raw = body or ""
     is_html = _looks_like_html(raw)
     plain = _html_to_plain(raw) if is_html else raw
-    if not interaction_id:
-        # Still return HTML alternative when body is rich HTML (mail clients prefer it).
-        if is_html:
-            return plain, rich_html_to_tracked_html(raw, pixel_url=None)
-        return plain, None
-    pixel = open_pixel_url(interaction_id=interaction_id, send_mode=send_mode)
+    pixel = (
+        open_pixel_url(interaction_id=interaction_id, send_mode=send_mode)
+        if interaction_id
+        else None
+    )
     if is_html:
         return plain, rich_html_to_tracked_html(raw, pixel_url=pixel)
-    if not pixel:
-        return plain, None
-    return plain, plain_to_tracked_html(plain, pixel_url=pixel)
+    # Always prefer an HTML part when we can track — many clients only load pixels from HTML.
+    if pixel:
+        return plain, plain_to_tracked_html(plain, pixel_url=pixel)
+    return plain, None
 
 
 def pixel_gif_bytes() -> bytes:
     return _PIXEL_GIF
+
+
+def ensure_outbound_tracking_interaction(
+    db: Session,
+    *,
+    user_id: int | None,
+    to_email: str,
+    subject: str,
+    body: str,
+    buyer_id: int | None = None,
+    contact_id: int | None = None,
+    approved_by: str | None = None,
+) -> Interaction | None:
+    """Create a lightweight outbound Interaction so open pixels can be attached.
+
+    Used for inbox compose/reply and Vercel mailer sends that otherwise have no draft id.
+    """
+    from db.models import (
+        AppUser,
+        Buyer,
+        Channel,
+        Direction,
+        HandledBy,
+        InteractionStatus,
+    )
+
+    email = (to_email or "").strip().lower()
+    if not email or "@" not in email:
+        return None
+
+    contact: Contact | None = None
+    if contact_id is not None:
+        contact = db.get(Contact, contact_id)
+    if contact is None and buyer_id is not None:
+        contact = (
+            db.query(Contact)
+            .filter(Contact.buyer_id == buyer_id, Contact.email.isnot(None))
+            .order_by(Contact.id.asc())
+            .first()
+        )
+    if contact is None:
+        contact = (
+            db.query(Contact)
+            .filter(Contact.email.ilike(email))
+            .order_by(Contact.id.asc())
+            .first()
+        )
+
+    if contact is None:
+        local = email.split("@")[0] or "Contact"
+        company = email.split("@")[-1] or email
+        buyer = Buyer(
+            company_name=f"Email · {company}",
+            source="email_tracking",
+            assigned_to_user_id=user_id,
+        )
+        db.add(buyer)
+        db.flush()
+        contact = Contact(
+            buyer_id=buyer.id,
+            full_name=local.replace(".", " ").replace("_", " ").title() or "Contact",
+            email=email,
+        )
+        db.add(contact)
+        db.flush()
+
+    actor = (approved_by or "").strip() or None
+    if not actor and user_id:
+        user = db.get(AppUser, user_id)
+        if user:
+            actor = user.username
+
+    draft = Interaction(
+        contact_id=contact.id,
+        channel=Channel.email,
+        direction=Direction.outbound,
+        subject=(subject or "").strip() or "(no subject)",
+        content=(body or "").strip() or "(empty)",
+        language="en",
+        handled_by=HandledBy.human,
+        status=InteractionStatus.draft,
+        approved_by=actor,
+        attachments=[],
+    )
+    db.add(draft)
+    db.commit()
+    db.refresh(draft)
+    return draft
+
+
+def mark_tracking_interaction_sent(db: Session, interaction_id: int | None) -> None:
+    if not interaction_id:
+        return
+    from db.models import InteractionStatus
+
+    interaction = db.get(Interaction, interaction_id)
+    if not interaction:
+        return
+    interaction.status = InteractionStatus.sent
+    db.commit()
+
+
+def _resolve_sender_user_id(db: Session, interaction: Interaction) -> int | None:
+    """Best-effort sender attribution for Insights scoping."""
+    from db.models import AppUser, Buyer, EmailActivityEvent
+
+    prior = (
+        db.query(EmailActivityEvent)
+        .filter(
+            EmailActivityEvent.interaction_id == interaction.id,
+            EmailActivityEvent.user_id.isnot(None),
+        )
+        .order_by(EmailActivityEvent.created_at.desc())
+        .first()
+    )
+    if prior and prior.user_id:
+        return prior.user_id
+
+    if interaction.approved_by:
+        user = (
+            db.query(AppUser)
+            .filter(AppUser.username == interaction.approved_by)
+            .first()
+        )
+        if user:
+            return user.id
+
+    contact = db.get(Contact, interaction.contact_id)
+    if contact:
+        buyer = db.get(Buyer, contact.buyer_id)
+        if buyer and buyer.assigned_to_user_id:
+            return buyer.assigned_to_user_id
+
+    return None
 
 
 def record_open(
@@ -169,6 +322,7 @@ def record_open(
 
     interaction = db.get(Interaction, interaction_id)
     if not interaction:
+        logger.info("Open ignored: unknown interaction_id=%s", interaction_id)
         return {"status": "ignored", "reason": "unknown_interaction"}
 
     already = (
@@ -180,6 +334,12 @@ def record_open(
         .first()
     )
     if already:
+        # Backfill user_id if an earlier open was stored without attribution.
+        if already.user_id is None:
+            sender_user_id = _resolve_sender_user_id(db, interaction)
+            if sender_user_id:
+                already.user_id = sender_user_id
+                db.commit()
         return {"status": "already_opened", "event_id": already.id}
 
     contact = db.get(Contact, interaction.contact_id)
@@ -192,18 +352,7 @@ def record_open(
             company = buyer.company_name
 
     mode = "bulk" if send_mode == "bulk" else "individual"
-    sender_user_id = None
-    prior = (
-        db.query(EmailActivityEvent)
-        .filter(
-            EmailActivityEvent.interaction_id == interaction_id,
-            EmailActivityEvent.user_id.isnot(None),
-        )
-        .order_by(EmailActivityEvent.created_at.desc())
-        .first()
-    )
-    if prior:
-        sender_user_id = prior.user_id
+    sender_user_id = _resolve_sender_user_id(db, interaction)
 
     event = email_activity.record_event(
         db,
@@ -223,5 +372,11 @@ def record_open(
             "subject": interaction.subject,
             "company_name": company,
         },
+    )
+    logger.info(
+        "Open recorded interaction_id=%s user_id=%s mode=%s",
+        interaction_id,
+        sender_user_id,
+        mode,
     )
     return {"status": "recorded", "event_id": event.id, "send_mode": mode}

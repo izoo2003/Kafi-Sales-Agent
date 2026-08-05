@@ -433,6 +433,7 @@ def _log_email_activity(
     subject: str | None,
     send_mode: str = "individual",
     source: str = "inbox",
+    interaction_id: int | None = None,
 ) -> None:
     """Write Email Activity for Sales Agent Mail (compose / reply). Best-effort."""
     from modules import email_activity
@@ -451,17 +452,63 @@ def _log_email_activity(
             subject=(subject or "").strip() or None,
             send_mode=send_mode,
             mailbox_user=user,
+            interaction_id=interaction_id,
         )
         details = dict(event.details or {})
         details["channel"] = "email"
         details["source"] = source
+        if interaction_id:
+            details["interaction_id"] = interaction_id
         event.details = details
         db.commit()
+        if (send_result or {}).get("status") == "sent" and interaction_id:
+            from modules import email_tracking
+
+            email_tracking.mark_tracking_interaction_sent(db, interaction_id)
     except Exception:  # noqa: BLE001
         try:
             db.rollback()
         except Exception:  # noqa: BLE001
             pass
+    finally:
+        db.close()
+
+
+def _prepare_tracked_send(
+    user: AppUser,
+    *,
+    to_email: str,
+    subject: str,
+    body: str,
+) -> tuple[str, int | None]:
+    """Attach an open-tracking pixel when PUBLIC_API_BASE_URL (or Railway domain) is set."""
+    from db.session import SessionLocal
+    from modules import email_tracking
+
+    db = SessionLocal()
+    try:
+        interaction = email_tracking.ensure_outbound_tracking_interaction(
+            db,
+            user_id=user.id,
+            to_email=to_email,
+            subject=subject,
+            body=body,
+            approved_by=user.username,
+        )
+        if not interaction:
+            return body, None
+        _plain, html_body = email_tracking.build_tracked_bodies(
+            body,
+            interaction_id=interaction.id,
+            send_mode="individual",
+        )
+        return (html_body or body), interaction.id
+    except Exception:  # noqa: BLE001
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return body, None
     finally:
         db.close()
 
@@ -508,12 +555,20 @@ def reply(
             if quote and not already_quoted:
                 send_body = f"{send_body}\n\n{quote}" if send_body else quote
 
+        tracked_body, track_interaction_id = _prepare_tracked_send(
+            user,
+            to_email=str(recipient or ""),
+            subject=reply_subject,
+            body=send_body,
+        )
         result = outlook_client.send_reply(
             to=recipient,
             subject=reply_subject,
-            body=send_body,
+            body=tracked_body,
             cc=cc,
             bcc=bcc,
+            interaction_id=track_interaction_id,
+            send_mode="individual",
         )
 
         if result.get("status") == "sent":
@@ -534,6 +589,7 @@ def reply(
             to_email=str(recipient or ""),
             subject=reply_subject,
             source="inbox_reply",
+            interaction_id=track_interaction_id,
         )
         return result
 
@@ -599,11 +655,19 @@ def compose(
         return {"status": "error", "message": "Email body cannot be empty"}
 
     with use_mailbox(account, user_id=user.id):
+        tracked_body, track_interaction_id = _prepare_tracked_send(
+            user,
+            to_email=recipient,
+            subject=subject_clean,
+            body=body_clean,
+        )
         result = outlook_client.send_reply(
             to=recipient,
             subject=subject_clean,
-            body=body_clean,
+            body=tracked_body,
             cc=(cc or "").strip() or None,
+            interaction_id=track_interaction_id,
+            send_mode="individual",
         )
         if result.get("status") == "sent":
             result = {
@@ -625,6 +689,7 @@ def compose(
             to_email=recipient,
             subject=subject_clean,
             source="inbox_compose",
+            interaction_id=track_interaction_id,
         )
         return result
 
