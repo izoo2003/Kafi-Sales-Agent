@@ -948,18 +948,16 @@ export function AiModePage({
           <section className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
             <h3 className="text-sm font-medium text-slate-200">Channels</h3>
             <p className="text-xs text-slate-500">
-              Auto-reply sends your{" "}
-              <span className="text-slate-400">static template</span> only — never an AI draft.
-              It fires for{" "}
-              <span className="text-slate-400">new</span> person-to-person mail after you turn
-              AI Mode on
+              When AI Mode is on,{" "}
+              <span className="text-slate-400">New Lead queries</span> get a brief{" "}
+              <span className="text-slate-400">AI-generated</span> auto-reply tailored to what
+              the client asked. Other person-to-person mail uses your{" "}
+              <span className="text-slate-400">static template</span>. Only messages received
+              after you turn AI Mode on
               {settings.enabled_at
                 ? ` (${new Date(settings.enabled_at).toLocaleString()})`
-                : ""}
-              . Buyer{" "}
-              <span className="text-slate-400">queries / inquiries</span> are skipped here and
-              go to Company lifecycle → New Lead for AI replies. Older unread messages are
-              skipped.
+                : ""}{" "}
+              are eligible. Older unread messages are skipped.
             </p>
             <label className="flex items-center justify-between gap-3 text-sm text-slate-300">
               <span>Email auto-reply (Inbox + Junk)</span>
@@ -1004,9 +1002,9 @@ export function AiModePage({
                 className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
               />
               <p className="mt-1 text-[11px] text-slate-500">
-                Inquiry keywords detect New Lead queries. Matching emails are never
-                auto-replied — answer them under Company lifecycle → New Lead with AI.
-                Static auto-reply only covers other person-to-person mail when AI Mode is on.
+                Inquiry keywords detect New Lead queries. When AI Mode is on, matching emails
+                are auto-replied with a short AI answer (and still listed under Company
+                lifecycle → New Lead). Other person-to-person mail uses the static template.
               </p>
             </div>
             <div className="flex flex-wrap gap-2 pt-1">
@@ -1344,8 +1342,8 @@ export function AiModePage({
                         </div>
                         <p className="text-[11px] text-slate-500">
                           Sends via your company mailbox (Vercel mailer when configured).
-                          Query replies use AI; after-hours auto-reply uses the static
-                          template only and never answers inquiry emails.
+                          With AI Mode on, new queries are also auto-replied with a brief AI
+                          answer; you can still review and send manually here.
                         </p>
                       </div>
                     ) : (

@@ -331,6 +331,7 @@ export interface KpiCounts {
   leads_imported: number;
   table_edits: number;
   email_templates_created: number;
+  personal_emails_sent?: number;
   bulk_emails_sent: number;
   inbox_replies: number;
   brand_assistant_sessions: number;

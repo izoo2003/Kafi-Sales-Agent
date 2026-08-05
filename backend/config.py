@@ -116,7 +116,7 @@ class Settings(BaseSettings):
     ai_mode_query_gemini_api_key: str | None = None
     ai_mode_query_gemini_model: str = "gemini-3.1-flash-lite"
     ai_mode_query_gemini_fallback_models: str | None = None
-    ai_mode_query_gemini_max_output_tokens: int = 1024
+    ai_mode_query_gemini_max_output_tokens: int = 512
 
     # AI Mode — after-hours auto-reply (email + WhatsApp)
     ai_mode_auto_reply_gemini_api_key: str | None = None

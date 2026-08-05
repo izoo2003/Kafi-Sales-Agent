@@ -156,7 +156,7 @@ def draft_query_email_reply(
     template_hint: str,
     fallback_body: str,
 ) -> dict[str, Any]:
-    """LLM draft for Company lifecycle → New Lead manual reply."""
+    """LLM draft for New Lead query replies (manual UI + AI Mode auto-reply)."""
     if not query_llm_enabled():
         return {
             "body": fallback_body,
@@ -167,7 +167,8 @@ def draft_query_email_reply(
     template = _load_prompt("ai_mode_query_reply_prompt.md")
     if not template:
         template = (
-            "Reply professionally to this inquiry from {greeting_name} ({sender_email}). "
+            "Write a brief professional reply to this inquiry from {greeting_name} "
+            "({sender_email}). Max 80 words. Answer only what they asked.\n"
             "Subject: {subject}\n\n{inbound_body}"
         )
 
@@ -185,17 +186,22 @@ def draft_query_email_reply(
         )
     )
     system = (
-        "You write B2B export sales emails for Kafi Commodities. "
-        "Keep replies short and to the point (about 80–120 words). "
-        "Answer only what the buyer asked — no long product primers, catalogs, or filler. "
+        "You write brief B2B export sales emails for Kafi Commodities. "
+        "Hard limit: about 60–80 words, concise and to the point. "
+        "Answer only what the buyer asked — no long primers, catalogs, or filler. "
         "Output plain text email body only."
     )
 
     try:
+        # Cap tokens so replies stay short even if env is set high.
+        max_tokens = min(
+            512,
+            max(256, int(settings.ai_mode_query_gemini_max_output_tokens or 512)),
+        )
         body = _generate(
             api_key=_query_api_key(),
             model_chain=_query_model_chain(),
-            max_output_tokens=int(settings.ai_mode_query_gemini_max_output_tokens or 1024),
+            max_output_tokens=max_tokens,
             system=system,
             prompt=prompt,
         )

@@ -1,10 +1,9 @@
 """AI Mode — after-hours auto-reply + company lifecycle (AISOS Module 3).
 
-When an employee enables AI Mode, inbound person-to-person emails (inbox / junk)
-and WhatsApp messages can receive a static template auto-reply from this module.
-
-Buyer inquiries / queries (keyword matches) are NOT auto-replied — they are logged
-under Company lifecycle → New Lead for a human to answer with an AI-generated draft.
+When AI Mode is enabled:
+- Buyer inquiries / queries (keyword matches) are logged under Company lifecycle →
+  New Lead and auto-replied with a brief AI-generated answer tailored to the ask.
+- Other person-to-person mail gets the static template auto-reply.
 """
 
 from __future__ import annotations
@@ -892,7 +891,7 @@ def _compose_auto_reply_email_body(
     inbound_preview: str,
     inbound_body: str | None = None,
 ) -> dict[str, Any]:
-    """Static template only — inquiries are answered manually with AI under New Lead."""
+    """Static template for non-inquiry after-hours auto-replies."""
     from modules.ai_mode_sender import resolve_sender_context
 
     body_text = inbound_body or inbound_preview
@@ -915,6 +914,60 @@ def _compose_auto_reply_email_body(
         "llm_enabled": False,
         "greeting_name": greeting_name,
     }
+
+
+def _compose_query_auto_reply_email_body(
+    *,
+    settings: AiModeSettings,
+    sender_name: str,
+    sender_email: str,
+    subject: str,
+    inbound_body: str,
+) -> dict[str, Any]:
+    """Brief AI reply for New Lead (Queries) auto-send when AI Mode is on."""
+    from modules.ai_mode_sender import resolve_sender_context
+
+    body_text = (inbound_body or subject or "").strip()
+    sender_ctx = resolve_sender_context(
+        from_name=sender_name or None,
+        from_email=sender_email or None,
+        subject=subject,
+        inbound_body=body_text,
+    )
+    greeting_name = sender_ctx["greeting_name"]
+    display_name = (sender_name or "").strip() or greeting_name
+    fallback = render_template(
+        settings.email_body_template,
+        name=greeting_name,
+        form_url=settings.form_url,
+        subject=subject,
+    )
+
+    from modules import ai_mode_llm as ai_mode_llm_module
+
+    draft = ai_mode_llm_module.draft_query_email_reply(
+        sender_name=display_name,
+        sender_email=sender_email,
+        greeting_name=greeting_name,
+        subject=subject,
+        inbound_body=body_text,
+        form_url=settings.form_url,
+        template_hint=settings.email_body_template or DEFAULT_EMAIL_BODY.strip(),
+        fallback_body=fallback,
+    )
+    return {
+        "body": draft.get("body") or fallback,
+        "source": draft.get("source") or "template",
+        "llm_enabled": draft.get("llm_enabled", False),
+        "model": draft.get("model"),
+        "error": draft.get("error"),
+        "fallback_reason": draft.get("fallback_reason"),
+        "greeting_name": greeting_name,
+    }
+
+
+# Cap how many New Lead query emails we auto-reply per scheduler tick / process call.
+_MAX_QUERY_AUTO_REPLIES_PER_RUN = 5
 
 
 def _compose_auto_reply_whatsapp_body(
@@ -1166,20 +1219,180 @@ def scan_queries_for_all_mailbox_users(db: Session | None = None) -> dict[str, A
     return totals
 
 
+def _send_one_email_auto_reply(
+    db: Session,
+    user: AppUser,
+    settings: AiModeSettings,
+    *,
+    folder: str,
+    msg: dict[str, Any],
+    is_query: bool,
+) -> dict[str, Any]:
+    """Claim, compose, and send one auto-reply. Returns status/detail dict."""
+    from modules import inbox as inbox_module
+
+    subject = (msg.get("subject") or "").strip()
+    preview = (msg.get("preview") or msg.get("body") or "").strip()
+    from_email = (msg.get("from_email") or "").strip()
+    uid = str(msg.get("uid") or "")
+    key = str(msg.get("_ai_key") or "")
+    display_name = (msg.get("from_name") or "").strip()
+    folder_name = msg.get("folder") or ("INBOX" if folder == "inbox" else folder)
+
+    reply_subject = render_template(
+        settings.email_subject_template or DEFAULT_EMAIL_SUBJECT,
+        name=display_name or from_email.split("@")[0],
+        form_url=settings.form_url,
+        subject=subject,
+    )
+    if subject and not reply_subject.lower().startswith("re:"):
+        if "{subject}" not in (settings.email_subject_template or ""):
+            reply_subject = f"Re: {subject}" if subject else reply_subject
+
+    if not _try_claim_auto_reply(
+        db,
+        user_id=user.id,
+        channel="email",
+        message_key=key,
+        recipient=from_email,
+        subject=reply_subject,
+        preview=preview[:400],
+    ):
+        return {
+            "status": "skipped",
+            "reason": "already_claimed",
+            "recipient": from_email,
+            "subject": reply_subject,
+        }
+
+    reply_detail = "source=unknown"
+    try:
+        inbound_body = preview
+        if is_query:
+            # Pull full body so the AI answers the actual question, not just the preview.
+            try:
+                detail = inbox_module.get_message(user, uid, folder=folder_name)
+                if detail:
+                    inbound_body = (
+                        (detail.get("body_text") or detail.get("body") or detail.get("preview") or "")
+                        .strip()
+                        or preview
+                    )
+                    if not display_name:
+                        display_name = (detail.get("from_name") or "").strip()
+            except Exception:  # noqa: BLE001
+                inbound_body = preview
+
+            draft_result = _compose_query_auto_reply_email_body(
+                settings=settings,
+                sender_name=display_name,
+                sender_email=from_email,
+                subject=subject,
+                inbound_body=inbound_body,
+            )
+            reply_detail = "kind=query_ai"
+        else:
+            draft_result = _compose_auto_reply_email_body(
+                settings=settings,
+                sender_name=display_name,
+                sender_email=from_email,
+                subject=subject,
+                inbound_preview=preview,
+                inbound_body=preview,
+            )
+            reply_detail = "kind=template"
+
+        greeting_name = (
+            draft_result.get("greeting_name") or display_name or from_email.split("@")[0]
+        )
+        body = draft_result.get("body") or render_template(
+            settings.email_body_template,
+            name=greeting_name,
+            form_url=settings.form_url,
+            subject=subject,
+        )
+        reply_source = draft_result.get("source") or "template"
+        reply_detail += f"; source={reply_source}"
+        if draft_result.get("fallback_reason"):
+            reply_detail += f"; fallback={draft_result['fallback_reason']}"
+        if draft_result.get("error"):
+            reply_detail += f"; error={str(draft_result['error'])[:200]}"
+
+        if greeting_name:
+            reply_subject = render_template(
+                settings.email_subject_template or DEFAULT_EMAIL_SUBJECT,
+                name=greeting_name,
+                form_url=settings.form_url,
+                subject=subject,
+            )
+            if subject and not reply_subject.lower().startswith("re:"):
+                if "{subject}" not in (settings.email_subject_template or ""):
+                    reply_subject = f"Re: {subject}" if subject else reply_subject
+
+        result = inbox_module.reply(
+            user,
+            uid,
+            body,
+            folder=folder_name,
+            to=from_email,
+            subject=reply_subject,
+            include_quote=False,
+        )
+        status = result.get("status") or "error"
+        detail = result.get("message")
+        _log_reply(
+            db,
+            user_id=user.id,
+            channel="email",
+            message_key=key,
+            recipient=from_email,
+            subject=reply_subject,
+            preview=preview[:400],
+            status="sent" if status == "sent" else status,
+            detail=f"{detail or ''}; {reply_detail}".strip("; "),
+        )
+        return {
+            "status": status,
+            "recipient": from_email,
+            "subject": reply_subject,
+            "detail": detail,
+            "is_query": is_query,
+            "reply_source": reply_source,
+        }
+    except Exception as exc:  # noqa: BLE001
+        _log_reply(
+            db,
+            user_id=user.id,
+            channel="email",
+            message_key=key,
+            recipient=from_email,
+            subject=reply_subject,
+            preview=preview[:400],
+            status="error",
+            detail=f"{exc}; {reply_detail}".strip("; "),
+        )
+        return {
+            "status": "error",
+            "recipient": from_email,
+            "subject": reply_subject,
+            "detail": str(exc),
+            "is_query": is_query,
+        }
+
+
 def process_email_auto_replies_for_user(
     db: Session,
     user: AppUser,
     *,
     scan_queries: bool = True,
 ) -> dict[str, Any]:
-    """Auto-reply to the latest eligible unread inbound email (one per run).
+    """Auto-reply to eligible unread inbound mail when AI Mode is on.
 
-    Scans inbox + junk, picks the newest inbound unread from a real person
-    (not promotional/newsletter/system mail) that has not already been sent
-    successfully, then sends a single reply via the configured outbound path.
+    New Lead (query) emails get a brief AI-generated reply (up to
+    ``_MAX_QUERY_AUTO_REPLIES_PER_RUN`` per tick). Other person-to-person mail
+    gets one static template reply per run.
 
     Admin only. Only messages received after AI Mode was enabled are eligible.
-    Query keywords are not required — they only drive New Lead detection.
     """
     if not _is_admin_user(user):
         return {
@@ -1223,13 +1436,13 @@ def process_email_auto_replies_for_user(
         }
 
     folders = ["inbox", "junk"]
-    candidates: list[tuple[str, dict[str, Any]]] = []
+    query_candidates: list[tuple[str, dict[str, Any]]] = []
+    other_candidates: list[tuple[str, dict[str, Any]]] = []
     errors: list[str] = []
     skip_reasons: dict[str, int] = {
         "outbound": 0,
         "missing_fields": 0,
         "promotional_or_noise": 0,
-        "inquiry_for_manual_ai": 0,
         "already_sent": 0,
         "before_enabled_at": 0,
     }
@@ -1272,200 +1485,98 @@ def process_email_auto_replies_for_user(
                 skip_reasons["promotional_or_noise"] += 1
                 continue
 
-            # Buyer inquiries / queries → New Lead (AI draft). Never auto-reply.
-            if looks_like_query(blob, query_keywords, from_email=from_email):
-                skip_reasons["inquiry_for_manual_ai"] += 1
-                continue
-
             key = _message_key("email", folder, uid, from_email, subject)
             if _already_sent(db, user.id, key):
                 skip_reasons["already_sent"] += 1
                 continue
 
-            candidates.append((folder, {**msg, "_ai_key": key}))
+            entry = (folder, {**msg, "_ai_key": key})
+            if looks_like_query(blob, query_keywords, from_email=from_email):
+                query_candidates.append(entry)
+            else:
+                other_candidates.append(entry)
 
-    scanned = sum(skip_reasons.values()) + len(candidates)
-    # Newest first — one reply per process click / scheduled tick.
-    candidates.sort(
+    query_candidates.sort(
         key=lambda item: date_sort_key(item[1].get("date")),
         reverse=True,
+    )
+    other_candidates.sort(
+        key=lambda item: date_sort_key(item[1].get("date")),
+        reverse=True,
+    )
+    scanned = (
+        sum(skip_reasons.values()) + len(query_candidates) + len(other_candidates)
     )
 
     settings.last_email_processed_at = _utcnow()
     db.commit()
 
-    if not candidates:
-        return {
-            "processed": scanned,
-            "replied": 0,
-            "skipped": scanned,
-            "enabled": True,
-            "mode": "latest_one",
-            "message": (
-                "No matching unread non-inquiry emails for static auto-reply. "
-                "Buyer queries stay in Company lifecycle → New Lead for AI replies. "
-                f"Skipped: {skip_reasons}."
-            ),
-            "skip_reasons": skip_reasons,
-            "errors": errors[:5],
-            "queries": query_scan,
-        }
-
-    folder, msg = candidates[0]
-    subject = (msg.get("subject") or "").strip()
-    preview = (msg.get("preview") or msg.get("body") or "").strip()
-    from_email = (msg.get("from_email") or "").strip()
-    uid = str(msg.get("uid") or "")
-    key = str(msg.get("_ai_key") or "")
-    display_name = (msg.get("from_name") or "").strip()
-
-    reply_subject = render_template(
-        settings.email_subject_template or DEFAULT_EMAIL_SUBJECT,
-        name=display_name or from_email.split("@")[0],
-        form_url=settings.form_url,
-        subject=subject,
-    )
-    if subject and not reply_subject.lower().startswith("re:"):
-        if "{subject}" not in (settings.email_subject_template or ""):
-            reply_subject = f"Re: {subject}" if subject else reply_subject
-
-    if not _try_claim_auto_reply(
-        db,
-        user_id=user.id,
-        channel="email",
-        message_key=key,
-        recipient=from_email,
-        subject=reply_subject,
-        preview=preview[:400],
-    ):
-        return {
-            "processed": scanned,
-            "replied": 0,
-            "skipped": scanned,
-            "enabled": True,
-            "mode": "latest_one",
-            "message": "Another worker is already replying to this message.",
-            "skip_reasons": {**skip_reasons, "already_sent": skip_reasons["already_sent"] + 1},
-            "errors": errors[:5],
-            "queries": query_scan,
-        }
-
-    reply_detail = "source=unknown"
-    remaining_skipped = scanned - 1  # others in the scan pool not attempted this run
-    try:
-        draft_result = _compose_auto_reply_email_body(
-            settings=settings,
-            sender_name=display_name,
-            sender_email=from_email,
-            subject=subject,
-            inbound_preview=preview,
-            inbound_body=preview,
+    replied = 0
+    reply_notes: list[str] = []
+    # Prefer New Lead queries — brief AI answers for each (capped per tick).
+    for folder, msg in query_candidates[:_MAX_QUERY_AUTO_REPLIES_PER_RUN]:
+        outcome = _send_one_email_auto_reply(
+            db, user, settings, folder=folder, msg=msg, is_query=True
         )
-        greeting_name = (
-            draft_result.get("greeting_name") or display_name or from_email.split("@")[0]
-        )
-        body = draft_result.get("body") or render_template(
-            settings.email_body_template,
-            name=greeting_name,
-            form_url=settings.form_url,
-            subject=subject,
-        )
-        reply_source = draft_result.get("source") or "template"
-        reply_detail = f"source={reply_source}"
-        if draft_result.get("fallback_reason"):
-            reply_detail += f"; fallback={draft_result['fallback_reason']}"
-        if draft_result.get("error"):
-            reply_detail += f"; error={draft_result['error'][:200]}"
-
-        if greeting_name and reply_source == "template":
-            reply_subject = render_template(
-                settings.email_subject_template or DEFAULT_EMAIL_SUBJECT,
-                name=greeting_name,
-                form_url=settings.form_url,
-                subject=subject,
+        if outcome.get("status") == "sent":
+            replied += 1
+            reply_notes.append(
+                f"query→{outcome.get('recipient')} ({outcome.get('reply_source')})"
             )
-            if subject and not reply_subject.lower().startswith("re:"):
-                if "{subject}" not in (settings.email_subject_template or ""):
-                    reply_subject = f"Re: {subject}" if subject else reply_subject
+        elif outcome.get("status") not in {"skipped", "already_claimed"}:
+            detail = outcome.get("detail")
+            if detail:
+                errors.append(f"{outcome.get('recipient')}: {detail}")
 
-        result = inbox_module.reply(
-            user,
-            uid,
-            body,
-            folder=msg.get("folder") or ("INBOX" if folder == "inbox" else folder),
-            to=from_email,
-            subject=reply_subject,
-            include_quote=False,
+    # One static template reply for non-inquiry mail (after-hours courtesy).
+    if other_candidates:
+        folder, msg = other_candidates[0]
+        outcome = _send_one_email_auto_reply(
+            db, user, settings, folder=folder, msg=msg, is_query=False
         )
-        status = result.get("status") or "error"
-        detail = result.get("message")
-        _log_reply(
-            db,
-            user_id=user.id,
-            channel="email",
-            message_key=key,
-            recipient=from_email,
-            subject=reply_subject,
-            preview=preview[:400],
-            status="sent" if status == "sent" else status,
-            detail=f"{detail or ''}; {reply_detail}".strip("; "),
+        if outcome.get("status") == "sent":
+            replied += 1
+            reply_notes.append(f"template→{outcome.get('recipient')}")
+        elif outcome.get("status") not in {"skipped", "already_claimed"}:
+            detail = outcome.get("detail")
+            if detail:
+                errors.append(f"{outcome.get('recipient')}: {detail}")
+
+    remaining = max(
+        0,
+        len(query_candidates)
+        - min(len(query_candidates), _MAX_QUERY_AUTO_REPLIES_PER_RUN)
+        + max(0, len(other_candidates) - 1),
+    )
+
+    if replied == 0 and not query_candidates and not other_candidates:
+        message = (
+            "No matching unread emails for auto-reply. "
+            f"Skipped: {skip_reasons}."
         )
-        if status == "sent":
-            return {
-                "processed": scanned,
-                "replied": 1,
-                "skipped": remaining_skipped,
-                "enabled": True,
-                "mode": "latest_one",
-                "message": f"Replied to latest match: {from_email} — {reply_subject[:80]}",
-                "recipient": from_email,
-                "subject": reply_subject,
-                "skip_reasons": skip_reasons,
-                "remaining_candidates": max(0, len(candidates) - 1),
-                "errors": errors[:5],
-                "queries": query_scan,
-            }
-        return {
-            "processed": scanned,
-            "replied": 0,
-            "skipped": remaining_skipped + 1,
-            "enabled": True,
-            "mode": "latest_one",
-            "message": f"Latest match failed ({from_email}): {detail}",
-            "recipient": from_email,
-            "subject": reply_subject,
-            "skip_reasons": skip_reasons,
-            "remaining_candidates": max(0, len(candidates) - 1),
-            "errors": errors[:5] + ([str(detail)] if detail else []),
-            "queries": query_scan,
-        }
-    except Exception as exc:  # noqa: BLE001
-        errors.append(f"{from_email}: {exc}")
-        _log_reply(
-            db,
-            user_id=user.id,
-            channel="email",
-            message_key=key,
-            recipient=from_email,
-            subject=reply_subject,
-            preview=preview[:400],
-            status="error",
-            detail=f"{exc}; {reply_detail}".strip("; "),
+    elif replied == 0:
+        message = (
+            "Eligible emails found but none were sent this run "
+            f"(claims/errors). Remaining candidates≈{remaining}."
         )
-        return {
-            "processed": scanned,
-            "replied": 0,
-            "skipped": remaining_skipped + 1,
-            "enabled": True,
-            "mode": "latest_one",
-            "message": f"Latest match error ({from_email}): {exc}",
-            "recipient": from_email,
-            "subject": reply_subject,
-            "skip_reasons": skip_reasons,
-            "remaining_candidates": max(0, len(candidates) - 1),
-            "errors": errors[:5],
-            "queries": query_scan,
-        }
+    else:
+        message = (
+            f"Auto-replied to {replied} message(s): " + "; ".join(reply_notes[:8])
+        )
+
+    return {
+        "processed": scanned,
+        "replied": replied,
+        "skipped": max(0, scanned - replied),
+        "enabled": True,
+        "mode": "queries_ai_plus_one_template",
+        "message": message,
+        "skip_reasons": skip_reasons,
+        "remaining_candidates": remaining,
+        "query_candidates": len(query_candidates),
+        "errors": errors[:8],
+        "queries": query_scan,
+    }
 
 
 def process_all_enabled_email_users(db: Session | None = None) -> dict[str, Any]:
@@ -1598,12 +1709,10 @@ def maybe_auto_reply_whatsapp(
     if not looks_like_auto_reply_target(message_text):
         return {"status": "skipped", "reason": "promotional_or_noise"}
 
-    # Buyer inquiries / queries are answered manually with AI — not via auto-reply.
-    if looks_like_query(
+    is_query = looks_like_query(
         message_text,
         resolve_query_keywords(settings.query_keywords),
-    ):
-        return {"status": "skipped", "reason": "inquiry_for_manual_ai"}
+    )
 
     key = _message_key(
         "whatsapp",
@@ -1626,20 +1735,38 @@ def maybe_auto_reply_whatsapp(
     ):
         return {"status": "skipped", "reason": "already_replied"}
 
-    body_result = _compose_auto_reply_whatsapp_body(
-        settings=settings,
-        sender_name=sender_name,
-        inbound_text=message_text,
-        sender_email=contact.email,
-    )
-    greeting_name = body_result.get("greeting_name") or sender_name or "there"
-    body = body_result.get("body") or render_template(
-        settings.whatsapp_body_template,
-        name=greeting_name,
-        form_url=settings.form_url,
-    )
-    reply_source = body_result.get("source") or "template"
-    reply_detail = f"source={reply_source}"
+    if is_query:
+        # Brief AI answer for inquiry-style WhatsApp (same model as New Lead email).
+        email_draft = _compose_query_auto_reply_email_body(
+            settings=settings,
+            sender_name=sender_name,
+            sender_email=(contact.email or "").strip(),
+            subject="WhatsApp inquiry",
+            inbound_body=message_text,
+        )
+        greeting_name = email_draft.get("greeting_name") or sender_name or "there"
+        body = email_draft.get("body") or render_template(
+            settings.whatsapp_body_template,
+            name=greeting_name,
+            form_url=settings.form_url,
+        )
+        reply_source = email_draft.get("source") or "template"
+        reply_detail = f"kind=query_ai; source={reply_source}"
+    else:
+        body_result = _compose_auto_reply_whatsapp_body(
+            settings=settings,
+            sender_name=sender_name,
+            inbound_text=message_text,
+            sender_email=contact.email,
+        )
+        greeting_name = body_result.get("greeting_name") or sender_name or "there"
+        body = body_result.get("body") or render_template(
+            settings.whatsapp_body_template,
+            name=greeting_name,
+            form_url=settings.form_url,
+        )
+        reply_source = body_result.get("source") or "template"
+        reply_detail = f"source={reply_source}"
     phone = contact.phone or contact.wa_id
     if not phone:
         return {"status": "error", "reason": "no_phone"}

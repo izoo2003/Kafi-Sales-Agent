@@ -14,6 +14,7 @@ from api.auth import UserRead, _to_user_read
 from api.deps import get_current_user, get_db, get_session_token
 from config import settings
 from db.models import AppUser
+from modules import activity as activity_module
 from modules import auth as auth_module
 from modules import buyers as buyers_module
 from modules import email_activity
@@ -394,6 +395,18 @@ def report_mailer_activity(
                 "send_mode": "bulk",
             },
         )
+        if sent_count > 0:
+            activity_module.log_activity(
+                db,
+                user_id=user.id,
+                activity_type=activity_module.BULK_EMAILS_SENT,
+                title="Bulk emails sent",
+                summary=f"Sent {sent_count} bulk email{'s' if sent_count != 1 else ''} (mailer)",
+                quantity=sent_count,
+                entity_type="email_activity",
+                entity_id=event.id,
+                details={"mode": "mailer", "sent_count": sent_count},
+            )
         return MailerActivityReportResponse(
             recorded=True, event_id=event.id, event_type=event.event_type
         )
@@ -438,6 +451,18 @@ def report_mailer_activity(
     event.details = details
     db.commit()
     db.refresh(event)
+    if payload.ok and mode == "individual":
+        activity_module.log_activity(
+            db,
+            user_id=user.id,
+            activity_type=activity_module.PERSONAL_EMAILS_SENT,
+            title="Personal email sent",
+            summary=f"Sent personal email to {to_email or company_name}",
+            quantity=1,
+            entity_type="email_activity",
+            entity_id=event.id,
+            details={"mode": "mailer", "to_email": to_email, "send_mode": "individual"},
+        )
     return MailerActivityReportResponse(
         recorded=True, event_id=event.id, event_type=event.event_type
     )

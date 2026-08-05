@@ -52,6 +52,7 @@ const COUNT_CARDS: { key: keyof KpiCounts; label: string }[] = [
   { key: "leads_imported", label: "Leads imported" },
   { key: "table_edits", label: "Table edits" },
   { key: "email_templates_created", label: "Templates created" },
+  { key: "personal_emails_sent", label: "Personal emails sent" },
   { key: "bulk_emails_sent", label: "Bulk emails sent" },
   { key: "inbox_replies", label: "Inbox replies" },
   { key: "brand_assistant_sessions", label: "Brand assistant" },
@@ -333,7 +334,8 @@ export function KpiPage({ onError }: KpiPageProps) {
                       <th className="px-3 py-2 font-medium">Calls</th>
                       <th className="px-3 py-2 font-medium">Outcomes</th>
                       <th className="px-3 py-2 font-medium">Edits</th>
-                      <th className="px-3 py-2 font-medium">Emails</th>
+                      <th className="px-3 py-2 font-medium">Personal</th>
+                      <th className="px-3 py-2 font-medium">Bulk</th>
                       <th className="px-3 py-2 font-medium">Events</th>
                     </tr>
                   </thead>
@@ -352,6 +354,9 @@ export function KpiPage({ onError }: KpiPageProps) {
                           <td className="px-3 py-2 tabular-nums">{row.counts.calls_logged}</td>
                           <td className="px-3 py-2 tabular-nums">{outcomes}</td>
                           <td className="px-3 py-2 tabular-nums">{row.counts.table_edits}</td>
+                          <td className="px-3 py-2 tabular-nums">
+                            {row.counts.personal_emails_sent ?? 0}
+                          </td>
                           <td className="px-3 py-2 tabular-nums">{row.counts.bulk_emails_sent}</td>
                           <td className="px-3 py-2 tabular-nums">{row.activity_count}</td>
                         </tr>

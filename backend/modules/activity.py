@@ -19,6 +19,7 @@ CALL_REMARKS = "call_remarks"
 LEADS_IMPORTED = "leads_imported"
 TABLE_ROW_EDITED = "table_row_edited"
 EMAIL_TEMPLATE_CREATED = "email_template_created"
+PERSONAL_EMAILS_SENT = "personal_emails_sent"
 BULK_EMAILS_SENT = "bulk_emails_sent"
 INBOX_REPLIED = "inbox_replied"
 BRAND_ASSISTANT_SESSION = "brand_assistant_session"
@@ -40,6 +41,7 @@ _EMPTY_COUNTS = {
     "leads_imported": 0,
     "table_edits": 0,
     "email_templates_created": 0,
+    "personal_emails_sent": 0,
     "bulk_emails_sent": 0,
     "inbox_replies": 0,
     "brand_assistant_sessions": 0,
@@ -151,12 +153,75 @@ def _bump_counts(counts: dict[str, int], event: UserActivityEvent) -> None:
         counts["table_edits"] += qty
     elif kind == EMAIL_TEMPLATE_CREATED:
         counts["email_templates_created"] += qty
+    elif kind == PERSONAL_EMAILS_SENT:
+        counts["personal_emails_sent"] += qty
     elif kind == BULK_EMAILS_SENT:
         counts["bulk_emails_sent"] += qty
     elif kind == INBOX_REPLIED:
         counts["inbox_replies"] += qty
     elif kind == BRAND_ASSISTANT_SESSION:
         counts["brand_assistant_sessions"] += qty
+
+
+def _email_send_counts_by_user(
+    db: Session,
+    *,
+    start_utc: datetime,
+    end_utc: datetime,
+    user_id: int | None = None,
+) -> dict[int, dict[str, int]]:
+    """Count personal vs bulk sends from email_activity_events (Email Activity source of truth)."""
+    from db.models import EmailActivityEvent
+
+    query = db.query(EmailActivityEvent).filter(
+        EmailActivityEvent.created_at >= start_utc,
+        EmailActivityEvent.created_at < end_utc,
+        EmailActivityEvent.user_id.isnot(None),
+    )
+    if user_id is not None:
+        query = query.filter(EmailActivityEvent.user_id == user_id)
+
+    by_user: dict[int, dict[str, int]] = {}
+    for event in query.all():
+        uid = event.user_id
+        if uid is None:
+            continue
+        bucket = by_user.setdefault(
+            uid,
+            {"personal_emails_sent": 0, "bulk_emails_sent": 0},
+        )
+        details = event.details or {}
+        mode = str(details.get("send_mode") or "").lower()
+        et = event.event_type
+
+        if et in ("bulk_completed", "bulk_partial"):
+            try:
+                bucket["bulk_emails_sent"] += max(0, int(details.get("sent_count") or 0))
+            except (TypeError, ValueError):
+                pass
+            continue
+
+        if et == "sent":
+            # Per-message bulk rows are suppressed by the mailer; still ignore mode=bulk.
+            if mode == "bulk":
+                continue
+            bucket["personal_emails_sent"] += 1
+
+    return by_user
+
+
+def _apply_email_activity_counts(
+    counts: dict[str, int],
+    email_counts: dict[str, int] | None,
+) -> None:
+    """Prefer Email Activity totals for personal/bulk so KPI matches the activity feed."""
+    if not email_counts:
+        return
+    personal = int(email_counts.get("personal_emails_sent") or 0)
+    bulk = int(email_counts.get("bulk_emails_sent") or 0)
+    # Take the higher of logged KPI events vs Email Activity (covers both writers).
+    counts["personal_emails_sent"] = max(int(counts.get("personal_emails_sent") or 0), personal)
+    counts["bulk_emails_sent"] = max(int(counts.get("bulk_emails_sent") or 0), bulk)
 
 
 def _user_brief(user: AppUser | None) -> dict[str, Any] | None:
@@ -222,7 +287,13 @@ def get_kpi_report(
         query = query.filter(UserActivityEvent.user_id == target_user_id)
 
     events = query.all()
-    user_ids = {e.user_id for e in events}
+    email_by_user = _email_send_counts_by_user(
+        db,
+        start_utc=start_utc,
+        end_utc=end_utc,
+        user_id=target_user_id,
+    )
+    user_ids = {e.user_id for e in events} | set(email_by_user.keys())
     if target_user_id is not None:
         user_ids.add(target_user_id)
     users = {
@@ -233,6 +304,15 @@ def get_kpi_report(
     counts = _empty_counts()
     for event in events:
         _bump_counts(counts, event)
+    if target_user_id is not None:
+        _apply_email_activity_counts(counts, email_by_user.get(target_user_id))
+    else:
+        # Team rollup: sum Email Activity personal/bulk across users (then max with KPI logs).
+        email_totals = {"personal_emails_sent": 0, "bulk_emails_sent": 0}
+        for bucket in email_by_user.values():
+            email_totals["personal_emails_sent"] += int(bucket.get("personal_emails_sent") or 0)
+            email_totals["bulk_emails_sent"] += int(bucket.get("bulk_emails_sent") or 0)
+        _apply_email_activity_counts(counts, email_totals)
 
     activities = [_activity_dict(e, users.get(e.user_id)) for e in events]
 
@@ -255,6 +335,17 @@ def get_kpi_report(
                 by_user[event.user_id] = bucket
             _bump_counts(bucket["counts"], event)
             bucket["activity_count"] += 1
+        for uid, email_counts in email_by_user.items():
+            bucket = by_user.get(uid)
+            if bucket is None:
+                u = users.get(uid)
+                bucket = {
+                    "user": _user_brief(u),
+                    "counts": _empty_counts(),
+                    "activity_count": 0,
+                }
+                by_user[uid] = bucket
+            _apply_email_activity_counts(bucket["counts"], email_counts)
         per_user = sorted(
             by_user.values(),
             key=lambda row: ((row["user"] or {}).get("full_name") or "").lower(),
@@ -357,6 +448,7 @@ def _build_rule_based_summary(report: dict[str, Any]) -> str:
             f"- Leads imported: {counts.get('leads_imported', 0)}",
             f"- Lead table edits: {counts.get('table_edits', 0)}",
             f"- Email templates created: {counts.get('email_templates_created', 0)}",
+            f"- Personal emails sent: {counts.get('personal_emails_sent', 0)}",
             f"- Bulk emails sent: {counts.get('bulk_emails_sent', 0)}",
             f"- Inbox replies: {counts.get('inbox_replies', 0)}",
             f"- Brand assistant sessions: {counts.get('brand_assistant_sessions', 0)}",
@@ -369,6 +461,11 @@ def _build_rule_based_summary(report: dict[str, Any]) -> str:
         highlights.append(f"{interested} interested outcome{'s' if interested != 1 else ''}")
     if follow_up:
         highlights.append(f"{follow_up} follow-up outcome{'s' if follow_up != 1 else ''}")
+    if counts.get("personal_emails_sent"):
+        highlights.append(
+            f"{counts['personal_emails_sent']} personal email"
+            f"{'s' if counts['personal_emails_sent'] != 1 else ''} sent"
+        )
     if counts.get("bulk_emails_sent"):
         highlights.append(f"{counts['bulk_emails_sent']} bulk email{'s' if counts['bulk_emails_sent'] != 1 else ''} sent")
     if counts.get("leads_imported"):

@@ -1205,6 +1205,7 @@ class KpiCounts(BaseModel):
     leads_imported: int = 0
     table_edits: int = 0
     email_templates_created: int = 0
+    personal_emails_sent: int = 0
     bulk_emails_sent: int = 0
     inbox_replies: int = 0
     brand_assistant_sessions: int = 0

@@ -21,7 +21,8 @@ from api.schemas import (
     ManualEmailSendResponse,
 )
 from config import settings
-from db.models import AppUser, InteractionStatus
+from db.models import AppUser, Channel, InteractionStatus
+from modules import activity as activity_module
 from modules import bulk_email_guard
 from modules.audit import log_action
 from modules.comms_generator import get_comms
@@ -130,6 +131,18 @@ def create_manual_email_draft(
             "send_status": (send_result or {}).get("status"),
         },
     )
+    if (send_result or {}).get("status") == "sent":
+        activity_module.log_activity(
+            db,
+            user_id=user.id,
+            activity_type=activity_module.PERSONAL_EMAILS_SENT,
+            title="Personal email sent",
+            summary=f"Sent personal email (manual draft #{draft.id})",
+            quantity=1,
+            entity_type="interaction",
+            entity_id=draft.id,
+            details={"mode": "manual", "buyer_id": payload.buyer_id},
+        )
     return ManualEmailSendResponse(
         interaction=_interaction_read(db, draft),
         sent=(send_result or {}).get("status") == "sent",
@@ -376,6 +389,24 @@ def approve_interaction(
             actor=payload.approved_by,
             details=send_result,
         )
+        # Single email approve/send counts as personal for KPI (bulk uses bulk endpoints).
+        channel = (
+            approved.channel.value
+            if isinstance(approved.channel, Channel)
+            else str(approved.channel)
+        )
+        if payload.send and channel == Channel.email.value:
+            activity_module.log_activity(
+                db,
+                user_id=user.id,
+                activity_type=activity_module.PERSONAL_EMAILS_SENT,
+                title="Personal email sent",
+                summary=f"Approved and sent email (interaction #{approved.id})",
+                quantity=1,
+                entity_type="interaction",
+                entity_id=approved.id,
+                details={"mode": "approve", "channel": channel},
+            )
     elif send_result and payload.send:
         log_action(
             db,
