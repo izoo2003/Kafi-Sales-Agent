@@ -93,6 +93,7 @@ COUNTRY_TIMEZONES: dict[str, str] = {
     "Guyana": "America/Guyana",
     "Haiti": "America/Port-au-Prince",
     "Honduras": "America/Tegucigalpa",
+    "Hong Kong": "Asia/Hong_Kong",
     "Hungary": "Europe/Budapest",
     "Iceland": "Atlantic/Reykjavik",
     "India": "Asia/Kolkata",

@@ -27,6 +27,10 @@ import {
   QuotationMeetingControl,
   type QuotationMeetingStatus,
 } from "../components/QuotationMeetingControl";
+import {
+  EmailBodyEditor,
+  emailBodyHasContent,
+} from "../components/EmailBodyEditor";
 import { deriveWhatsAppFromEmail } from "../utils/channelSync";
 import { PersonalizedEmailsPage } from "./PersonalizedEmailsPage";
 
@@ -570,7 +574,7 @@ export function AiModePage({
 
   async function sendQueryReply() {
     if (!selectedQuery || !isAdmin) return;
-    const body = replyBody.trim();
+    const body = emailBodyHasContent(replyBody) ? replyBody : "";
     if (!body) {
       onError("Reply body cannot be empty");
       return;
@@ -1050,10 +1054,9 @@ export function AiModePage({
                 Email body (source of truth) — placeholders: {"{name}"}, {"{form_clause}"},{" "}
                 {"{form_url}"}
               </label>
-              <textarea
+              <EmailBodyEditor
                 value={draft.email_body_template}
-                onChange={(e) => {
-                  const email_body_template = e.target.value;
+                onChange={(email_body_template) => {
                   setDraft({
                     ...draft,
                     email_body_template,
@@ -1062,7 +1065,7 @@ export function AiModePage({
                   });
                 }}
                 rows={8}
-                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 font-mono"
+                placeholder="Write the email auto-reply body…"
               />
             </div>
             <div>
@@ -1313,17 +1316,16 @@ export function AiModePage({
                             {replyGenerating ? "Generating…" : "Generate with AI"}
                           </button>
                         </div>
-                        <textarea
+                        <EmailBodyEditor
                           value={replyBody}
-                          onChange={(e) => setReplyBody(e.target.value)}
+                          onChange={setReplyBody}
                           rows={8}
                           placeholder="Write your reply…"
-                          className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 font-mono"
                         />
                         <div className="flex flex-wrap items-center gap-2">
                           <button
                             type="button"
-                            disabled={replySending || !replyBody.trim()}
+                            disabled={replySending || !emailBodyHasContent(replyBody)}
                             onClick={() => void sendQueryReply()}
                             className="rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 px-3 py-2 text-sm font-medium"
                           >

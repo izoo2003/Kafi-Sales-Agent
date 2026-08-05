@@ -78,6 +78,7 @@ COUNTRY_DATA: list[tuple[str, str]] = [
     ("GY", "Guyana"),
     ("HT", "Haiti"),
     ("HN", "Honduras"),
+    ("HK", "Hong Kong"),
     ("HU", "Hungary"),
     ("IS", "Iceland"),
     ("IN", "India"),
@@ -213,6 +214,7 @@ ALIASES: dict[str, list[str]] = {
     "CZ": ["czech republic"],
     "CI": ["cote d'ivoire", "côte d'ivoire"],
     "CV": ["cape verde"],
+    "HK": ["hongkong", "h.k.", "hong kong sar"],
 }
 
 _BY_NAME = {name.lower(): (code, name) for code, name in COUNTRY_DATA}
@@ -242,6 +244,7 @@ _PHONE_COUNTRY_PREFIXES: list[tuple[str, str]] = [
     ("60", "Malaysia"),
     ("65", "Singapore"),
     ("62", "Indonesia"),
+    ("852", "Hong Kong"),
     ("86", "China"),
     ("81", "Japan"),
     ("61", "Australia"),
@@ -269,6 +272,7 @@ _TLD_COUNTRY_HINTS: dict[str, str] = {
     "pk": "Pakistan",
     "in": "India",
     "au": "Australia",
+    "hk": "Hong Kong",
     "uk": "United Kingdom",
     "de": "Germany",
     "fr": "France",

@@ -12,6 +12,7 @@ import {
   IconSparkles,
   IconX,
 } from "../components/icons/AppIcons";
+import { EmailBodyEditor } from "../components/EmailBodyEditor";
 import { deriveWhatsAppFromEmail } from "../utils/channelSync";
 
 interface PersonalizedEmailsPageProps {
@@ -311,18 +312,18 @@ export function PersonalizedEmailsPage({
                 />
               </label>
 
-              <label className="block space-y-1.5">
+              <div className="block space-y-1.5">
                 <span className="text-xs text-slate-400">
                   Message (email + WhatsApp — same information)
                 </span>
-                <textarea
+                <EmailBodyEditor
                   value={emailBody}
-                  onChange={(e) => setEmailBody(e.target.value)}
+                  onChange={setEmailBody}
                   disabled={selected.status === "sent"}
                   rows={10}
-                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 disabled:opacity-60 resize-y min-h-[10rem]"
+                  placeholder="Write the message…"
                 />
-              </label>
+              </div>
 
               <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 space-y-1.5">
                 <p className="text-xs text-emerald-300/90">

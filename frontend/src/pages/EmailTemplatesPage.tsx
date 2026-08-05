@@ -2,6 +2,11 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { client, type EmailTemplate } from "../api/client";
 import { EmailAttachmentsField } from "../components/EmailAttachmentsField";
 import {
+  appendEmailPlaceholder,
+  EmailBodyEditor,
+  emailBodyHasContent,
+} from "../components/EmailBodyEditor";
+import {
   emptyTemplateForm,
   PLACEHOLDER_HINTS,
 } from "../utils/emailTemplateDefaults";
@@ -117,6 +122,10 @@ export function EmailTemplatesPage({ onError, onCountChange }: EmailTemplatesPag
 
   async function handleSave(event: FormEvent) {
     event.preventDefault();
+    if (!emailBodyHasContent(templateForm.body)) {
+      onError("Template body cannot be empty");
+      return;
+    }
     setSaving(true);
     setNotice(null);
     try {
@@ -322,7 +331,7 @@ export function EmailTemplatesPage({ onError, onCountChange }: EmailTemplatesPag
                       onClick={() =>
                         setTemplateForm((p) => ({
                           ...p,
-                          body: `${p.body}${p.body.endsWith("\n") ? "" : "\n"}${token}`,
+                          body: appendEmailPlaceholder(p.body, token),
                         }))
                       }
                       className="px-2 py-0.5 rounded border border-slate-700 bg-slate-800 text-xs text-slate-300 hover:bg-slate-700"
@@ -331,12 +340,11 @@ export function EmailTemplatesPage({ onError, onCountChange }: EmailTemplatesPag
                     </button>
                   ))}
                 </div>
-                <textarea
-                  required
+                <EmailBodyEditor
                   rows={12}
                   value={templateForm.body}
-                  onChange={(e) => setTemplateForm((p) => ({ ...p, body: e.target.value }))}
-                  className="w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm font-mono"
+                  onChange={(body) => setTemplateForm((p) => ({ ...p, body }))}
+                  placeholder="Write the template body…"
                 />
               </div>
               <EmailAttachmentsField

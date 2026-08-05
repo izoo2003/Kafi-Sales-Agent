@@ -86,6 +86,7 @@ const COUNTRY_DATA: Array<{ code: string; name: string }> = [
   { code: "GY", name: "Guyana" },
   { code: "HT", name: "Haiti" },
   { code: "HN", name: "Honduras" },
+  { code: "HK", name: "Hong Kong" },
   { code: "HU", name: "Hungary" },
   { code: "IS", name: "Iceland" },
   { code: "IN", name: "India" },
@@ -229,6 +230,7 @@ const ALIASES: Record<string, string[]> = {
   CZ: ["czech republic"],
   CI: ["cote d'ivoire", "côte d'ivoire"],
   CV: ["cape verde"],
+  HK: ["hongkong", "h.k.", "hong kong sar"],
 };
 
 export function findCountry(value: string | null | undefined): Country | null {

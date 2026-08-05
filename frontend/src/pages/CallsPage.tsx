@@ -18,6 +18,7 @@ import { ActionButton } from "../components/ui/ActionButton";
 import { IconPhone, IconRefresh, IconX } from "../components/icons/AppIcons";
 import { type CallOutcome, callOutcomeBadge, callOutcomeLabel, callOutcomeListNotice } from "../utils/callOutcomes";
 import { pushNumberToFloatingDialpad } from "../utils/dialpadEvents";
+import { autocorrectText } from "../utils/spelling";
 import { useCallQueue, BATCH_SIZE } from "../hooks/useCallQueue";
 
 interface CallsPageProps {
@@ -174,7 +175,7 @@ export function CallsPage({ onError, onSelectLead, onCallFollowUpSaved }: CallsP
     setSavingFollowUp(true);
     try {
       const updated = await client.updateCallFollowUp(selectedCallId, {
-        notes: remarksDraft,
+        notes: autocorrectText(remarksDraft, "prose"),
         call_outcome: outcomeDraft || null,
       });
       setHistory((prev) => prev.map((c) => (c.id === selectedCallId ? updated : c)));

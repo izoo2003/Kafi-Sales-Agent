@@ -15,6 +15,7 @@ import {
   type NoAnswerVoiceOption,
   type NotInterestedReasonOption,
 } from "../utils/callOutcomes";
+import { autocorrectText, spellingInputProps } from "../utils/spelling";
 import { ActionButton } from "./ui/ActionButton";
 import { IconSave } from "./icons/AppIcons";
 
@@ -169,6 +170,9 @@ export function CallRemarksForm({
         <textarea
           value={remarks}
           onChange={(e) => onRemarksChange(e.target.value)}
+          onBlur={(e) =>
+            onRemarksChange(autocorrectText(e.target.value, "prose"))
+          }
           rows={compact ? 4 : 5}
           placeholder={
             showNoAnswerExtras
@@ -178,6 +182,7 @@ export function CallRemarksForm({
                 : "Products discussed, follow-up date, objections, next steps…"
           }
           className="w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200"
+          {...spellingInputProps("prose")}
         />
       </div>
       <ActionButton

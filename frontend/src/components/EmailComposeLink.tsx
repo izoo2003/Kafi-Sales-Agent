@@ -8,6 +8,7 @@ import {
   type LeadTableRow,
 } from "../api/client";
 import { EmailAttachmentsField } from "./EmailAttachmentsField";
+import { EmailBodyEditor, emailBodyHasContent } from "./EmailBodyEditor";
 
 type ComposeTab = "manual" | "template";
 
@@ -242,15 +243,17 @@ export function LeadEmailComposeModal({
                   className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm"
                 />
               </label>
-              <label className="block">
+              <div>
                 <span className="text-sm text-slate-400">Message</span>
-                <textarea
-                  rows={12}
-                  value={manualBody}
-                  onChange={(e) => setManualBody(e.target.value)}
-                  className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm"
-                />
-              </label>
+                <div className="mt-1">
+                  <EmailBodyEditor
+                    rows={12}
+                    value={manualBody}
+                    onChange={setManualBody}
+                    placeholder="Write your message…"
+                  />
+                </div>
+              </div>
               <EmailAttachmentsField
                 attachments={manualAttachments}
                 onChange={setManualAttachments}
@@ -315,9 +318,14 @@ export function LeadEmailComposeModal({
                       <p className="text-sm text-slate-400">
                         To: {preview.contact_email || toEmail}
                       </p>
-                      <pre className="text-sm text-slate-300 whitespace-pre-wrap font-sans">
-                        {preview.body}
-                      </pre>
+                      <div
+                        className="email-body-editor text-sm text-slate-300"
+                        dangerouslySetInnerHTML={{
+                          __html: /<\/?[a-z][\s\S]*>/i.test(preview.body || "")
+                            ? preview.body
+                            : (preview.body || "").replace(/\n/g, "<br>"),
+                        }}
+                      />
                     </>
                   ) : (
                     <p className="text-sm text-slate-500">Preview unavailable.</p>
@@ -347,7 +355,9 @@ export function LeadEmailComposeModal({
             <button
               type="button"
               onClick={() => void handleCreateManualDraft()}
-              disabled={sending || !manualSubject.trim() || !manualBody.trim()}
+              disabled={
+                sending || !manualSubject.trim() || !emailBodyHasContent(manualBody)
+              }
               className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium disabled:opacity-50"
             >
               {sending ? "Sending…" : "Send email"}

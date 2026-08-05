@@ -5,6 +5,10 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { apiFetch, getStoredToken } from "@/lib/api";
 import { useAuth } from "@/components/AuthProvider";
 import { TemplatePicker } from "@/components/TemplatePicker";
+import {
+  EmailBodyEditor,
+  emailBodyHasContent,
+} from "@/components/EmailBodyEditor";
 
 function ComposeInner() {
   const params = useSearchParams();
@@ -52,7 +56,7 @@ function ComposeInner() {
       setError("Not signed in");
       return;
     }
-    if (!to.includes("@") || !subject.trim() || !body.trim()) {
+    if (!to.includes("@") || !subject.trim() || !emailBodyHasContent(body)) {
       setError("To, subject, and body are required");
       return;
     }
@@ -153,7 +157,7 @@ function ComposeInner() {
       <label>Subject</label>
       <input value={subject} onChange={(e) => setSubject(e.target.value)} />
       <label>Body</label>
-      <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={14} />
+      <EmailBodyEditor value={body} onChange={setBody} rows={14} />
       <div className="detail-actions">
         <button type="button" className="btn" disabled={sending} onClick={() => void send()}>
           {sending ? "Sending…" : "Send"}

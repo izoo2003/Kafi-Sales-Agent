@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { client, type EmailTemplate, type MailComposeDraft } from "../api/client";
+import { EmailBodyEditor, emailBodyHasContent } from "./EmailBodyEditor";
 
 interface ComposeMailModalProps {
   fromEmail: string;
@@ -13,7 +14,7 @@ interface ComposeMailModalProps {
 }
 
 function hasDraftContent(to: string, cc: string, subject: string, body: string): boolean {
-  return Boolean(to.trim() || cc.trim() || subject.trim() || body.trim());
+  return Boolean(to.trim() || cc.trim() || subject.trim() || emailBodyHasContent(body));
 }
 
 export function ComposeMailModal({
@@ -155,7 +156,7 @@ export function ComposeMailModal({
       onError("Enter a valid To: email address");
       return;
     }
-    if (!body.trim()) {
+    if (!emailBodyHasContent(body)) {
       onError("Email body cannot be empty");
       return;
     }
@@ -291,16 +292,16 @@ export function ComposeMailModal({
             />
           </label>
 
-          <label className="block space-y-1">
+          <div className="block space-y-1">
             <span className="text-xs text-slate-500">Message</span>
-            <textarea
+            <EmailBodyEditor
               value={body}
-              onChange={(e) => setBody(e.target.value)}
-              rows={14}
+              onChange={setBody}
+              rows={12}
+              disabled={sending}
               placeholder="Write your email…"
-              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-emerald-600 resize-y min-h-[220px]"
             />
-          </label>
+          </div>
         </div>
 
         <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-slate-800 bg-slate-950/40">
@@ -330,7 +331,7 @@ export function ComposeMailModal({
             <button
               type="button"
               onClick={() => void handleSend()}
-              disabled={sending || discarding || !to.trim() || !body.trim()}
+              disabled={sending || discarding || !to.trim() || !emailBodyHasContent(body)}
               className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium text-white disabled:opacity-50"
             >
               {sending ? "Sending…" : "Send"}

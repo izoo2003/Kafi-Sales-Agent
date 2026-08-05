@@ -17,6 +17,10 @@ import {
   type MailSection,
 } from "../components/AppSidebar";
 import { ComposeMailModal } from "../components/ComposeMailModal";
+import {
+  EmailBodyEditor,
+  emailBodyHasContent,
+} from "../components/EmailBodyEditor";
 import { ActionButton } from "../components/ui/ActionButton";
 import {
   IconArchive,
@@ -88,18 +92,6 @@ function participantsLabel(thread: InboxThreadSummary, mailboxEmail?: string | n
   const others = thread.participants.filter((p) => p.toLowerCase() !== mailbox);
   if (others.length) return others.join(", ");
   return thread.latest_from_name || thread.latest_from_email || "Conversation";
-}
-
-function buildQuotedReply(message: InboxMessageDetail): string {
-  const when = formatDate(message.date) || "earlier";
-  const who = senderLabel(message.from_name, message.from_email);
-  const raw =
-    (message.body_text || "").trim() ||
-    (message.body_html ? stripHtml(message.body_html) : "") ||
-    (message.preview || "").trim();
-  const lines = raw ? raw.split(/\r?\n/) : [""];
-  const quoted = lines.map((line) => (line ? `> ${line}` : ">")).join("\n");
-  return `\n\nOn ${when}, ${who} wrote:\n${quoted}`;
 }
 
 function sectionTitle(section: MailSection, labels: MailLabel[] = []): string {
@@ -734,9 +726,8 @@ export function InboxPage({
       return;
     }
 
-    if (!replyBody.trim()) {
-      setReplyBody(buildQuotedReply(source));
-    }
+    // Clean empty compose box — do not quote the prior thread.
+    setReplyBody("");
   }
 
   const canReplyAll = useMemo(() => {
@@ -747,7 +738,7 @@ export function InboxPage({
   }, [isThreadView, replyTarget, messageDetail, status?.email, status?.emails]);
 
   async function sendReply() {
-    if (!replyBody.trim()) return;
+    if (!emailBodyHasContent(replyBody)) return;
     setSending(true);
     setNotice(null);
     try {
@@ -1555,13 +1546,11 @@ export function InboxPage({
                         className="flex-1 rounded-lg bg-slate-950 border border-slate-700 px-3 py-1.5 text-sm"
                       />
                     </div>
-                    <textarea
+                    <EmailBodyEditor
                       value={replyBody}
-                      onChange={(e) => setReplyBody(e.target.value)}
+                      onChange={setReplyBody}
                       placeholder="Edit the AI draft or write your reply…"
                       rows={7}
-                      className="w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm resize-y min-h-[140px]"
-                      autoFocus
                     />
                     <div className="flex justify-end gap-2">
                       <ActionButton
@@ -1581,7 +1570,9 @@ export function InboxPage({
                         variant="primary"
                         size="md"
                         onClick={() => void sendReply()}
-                        disabled={sending || !replyBody.trim() || !replyTo.trim()}
+                        disabled={
+                          sending || !emailBodyHasContent(replyBody) || !replyTo.trim()
+                        }
                         title="Send reply"
                       >
                         {sending ? "Sending…" : "Send reply"}
@@ -1852,13 +1843,11 @@ export function InboxPage({
                       className="flex-1 rounded-lg bg-slate-950 border border-slate-700 px-3 py-1.5 text-sm"
                     />
                   </div>
-                  <textarea
+                  <EmailBodyEditor
                     value={replyBody}
-                    onChange={(e) => setReplyBody(e.target.value)}
+                    onChange={setReplyBody}
                     placeholder="Edit the AI draft, then send…"
                     rows={7}
-                    className="w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm resize-y min-h-[140px]"
-                    autoFocus
                   />
                   <div className="flex justify-end gap-2">
                     <ActionButton
@@ -1878,7 +1867,9 @@ export function InboxPage({
                       variant="primary"
                       size="md"
                       onClick={() => void sendReply()}
-                      disabled={sending || !replyBody.trim() || !replyTo.trim()}
+                      disabled={
+                        sending || !emailBodyHasContent(replyBody) || !replyTo.trim()
+                      }
                       title="Send reply"
                     >
                       {sending ? "Sending…" : "Send reply"}

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyHandoff } from "@/lib/handoff";
 import { reportMailerActivity } from "@/lib/reportActivity";
-import { sendSmtp } from "@/lib/smtp";
+import { sendSmtp, smtpBodyHasContent } from "@/lib/smtp";
 import { appendMailerSentCopy } from "@/lib/syncSent";
 
 export const runtime = "nodejs";
@@ -64,8 +64,8 @@ export async function POST(req: NextRequest) {
 
     const to = (body.to || "").trim();
     const subject = (body.subject || "").trim();
-    const text = (body.body || "").trim();
-    if (!to.includes("@") || !subject || !text) {
+    const text = body.body || "";
+    if (!to.includes("@") || !subject || !smtpBodyHasContent(text)) {
       return NextResponse.json(
         { error: "to, subject, and body are required" },
         { status: 400 },

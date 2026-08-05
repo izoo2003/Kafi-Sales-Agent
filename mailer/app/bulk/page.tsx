@@ -6,6 +6,10 @@ import { useSearchParams } from "next/navigation";
 import { loginFromHandoff, clearSession, getStoredToken } from "@/lib/api";
 import { useAuth } from "@/components/AuthProvider";
 import { TemplatePicker } from "@/components/TemplatePicker";
+import {
+  EmailBodyEditor,
+  emailBodyHasContent,
+} from "@/components/EmailBodyEditor";
 
 type Lead = {
   buyer_id: number;
@@ -287,7 +291,7 @@ function BulkInner() {
         <input value={subject} onChange={(e) => setSubject(e.target.value)} />
 
         <label>Body</label>
-        <textarea value={body} onChange={(e) => setBody(e.target.value)} />
+        <EmailBodyEditor value={body} onChange={setBody} rows={12} />
 
         <div className="row">
           <div>
@@ -324,7 +328,7 @@ function BulkInner() {
         <button
           className="btn"
           type="button"
-          disabled={running || !leads.length}
+          disabled={running || !leads.length || !emailBodyHasContent(body)}
           onClick={() => void runSend()}
         >
           {running ? "Sending…" : `Send ${leads.length} email${leads.length === 1 ? "" : "s"}`}

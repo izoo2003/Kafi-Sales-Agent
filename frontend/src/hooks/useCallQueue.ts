@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { client } from "../api/client";
+import { autocorrectText } from "../utils/spelling";
 import { useTwilioVoice } from "./useTwilioVoice";
 
 export const BATCH_SIZE = 10;
@@ -182,7 +183,7 @@ export function useCallQueue(): CallQueueState {
 
     // Capture current pending values via closure — they may change during the gap
     const outcomeAtEnd = pendingOutcome;
-    const notesAtEnd = pendingNotes;
+    const notesAtEnd = autocorrectText(pendingNotes, "prose");
 
     gapTimerRef.current = window.setTimeout(() => {
       clearTimers();

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { client, type Contact, type ContactCreate, type ContactUpdate } from "../api/client";
 import { CallLeadButton } from "./CallLeadButton";
 import { DialpadPhoneText } from "./DialpadPhoneText";
+import { autocorrectText, spellingInputProps } from "../utils/spelling";
 
 interface ContactsPanelProps {
   leadId: number;
@@ -80,8 +81,8 @@ export function ContactsPanel({ leadId, onError, onContactsChange }: ContactsPan
     try {
       const payload: ContactCreate = {
         buyer_id: leadId,
-        full_name: addForm.full_name.trim(),
-        designation: addForm.designation.trim() || undefined,
+        full_name: autocorrectText(addForm.full_name, "name"),
+        designation: autocorrectText(addForm.designation, "prose") || undefined,
         email: addForm.email.trim() || undefined,
         phone: addForm.phone.trim() || undefined,
         consent_status: addForm.consent_status,
@@ -123,8 +124,8 @@ export function ContactsPanel({ leadId, onError, onContactsChange }: ContactsPan
     setSavingId(contactId);
     try {
       const payload: ContactUpdate = {
-        full_name: editForm.full_name.trim(),
-        designation: editForm.designation.trim() || undefined,
+        full_name: autocorrectText(editForm.full_name, "name"),
+        designation: autocorrectText(editForm.designation, "prose") || undefined,
         email: editForm.email.trim() || undefined,
         phone: editForm.phone.trim() || undefined,
         consent_status: editForm.consent_status,
@@ -336,8 +337,10 @@ function ContactFormFields({
           required
           value={form.full_name}
           onChange={(e) => onChange("full_name", e.target.value)}
+          onBlur={(e) => onChange("full_name", autocorrectText(e.target.value, "name"))}
           placeholder="e.g. Ahmed Al-Rashid"
           className={inputClass}
+          {...spellingInputProps("name")}
         />
       </label>
       <label className="block">
@@ -348,6 +351,7 @@ function ContactFormFields({
           onChange={(e) => onChange("email", e.target.value)}
           placeholder="name@company.com"
           className={inputClass}
+          {...spellingInputProps("off")}
         />
       </label>
       <label className="block">
@@ -358,6 +362,7 @@ function ContactFormFields({
           onChange={(e) => onChange("phone", e.target.value)}
           placeholder="+971..."
           className={inputClass}
+          {...spellingInputProps("off")}
         />
       </label>
       <label className="block sm:col-span-2">
@@ -366,8 +371,12 @@ function ContactFormFields({
           type="text"
           value={form.designation}
           onChange={(e) => onChange("designation", e.target.value)}
+          onBlur={(e) =>
+            onChange("designation", autocorrectText(e.target.value, "prose"))
+          }
           placeholder="e.g. Procurement Manager"
           className={inputClass}
+          {...spellingInputProps("prose")}
         />
       </label>
       <label className="block sm:col-span-2">

@@ -7,6 +7,7 @@ import {
   hasReplyAllTargets,
 } from "@/lib/replyRecipients";
 import { useAuth } from "./AuthProvider";
+import { EmailBodyEditor, emailBodyHasContent } from "./EmailBodyEditor";
 
 export type MessageSummary = {
   uid: string;
@@ -132,7 +133,7 @@ export function FolderView({ folder }: Props) {
   }
 
   async function sendReply() {
-    if (!selected || !token || !replyBody.trim() || !replyTo.trim()) return;
+    if (!selected || !token || !emailBodyHasContent(replyBody) || !replyTo.trim()) return;
     setSending(true);
     setError(null);
     try {
@@ -278,16 +279,19 @@ export function FolderView({ folder }: Props) {
                   placeholder="optional — comma-separated"
                 />
                 <label className="small">Message</label>
-                <textarea
+                <EmailBodyEditor
                   value={replyBody}
-                  onChange={(e) => setReplyBody(e.target.value)}
+                  onChange={setReplyBody}
                   placeholder="Write your reply…"
+                  rows={8}
                 />
                 <div className="detail-actions">
                   <button
                     type="button"
                     className="btn"
-                    disabled={sending || !replyBody.trim() || !replyTo.trim()}
+                    disabled={
+                      sending || !emailBodyHasContent(replyBody) || !replyTo.trim()
+                    }
                     onClick={() => void sendReply()}
                   >
                     {sending

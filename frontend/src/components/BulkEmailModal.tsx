@@ -9,6 +9,11 @@ import {
 } from "../api/client";
 import { EmailAttachmentsField } from "./EmailAttachmentsField";
 import {
+  appendEmailPlaceholder,
+  EmailBodyEditor,
+  emailBodyHasContent,
+} from "./EmailBodyEditor";
+import {
   DEFAULT_TEMPLATE_BODY,
   DEFAULT_TEMPLATE_SUBJECT,
   PLACEHOLDER_HINTS,
@@ -99,7 +104,7 @@ export function BulkEmailModal({
   }, [refreshTemplates]);
 
   useEffect(() => {
-    if (!sampleBuyerId || !manualSubject.trim() || !manualBody.trim()) {
+    if (!sampleBuyerId || !manualSubject.trim() || !emailBodyHasContent(manualBody)) {
       setManualPreview(null);
       return;
     }
@@ -125,7 +130,7 @@ export function BulkEmailModal({
   }, [templateId, sampleBuyerId]);
 
   async function handleSendManual() {
-    if (!manualSubject.trim() || !manualBody.trim()) {
+    if (!manualSubject.trim() || !emailBodyHasContent(manualBody)) {
       onError("Subject and message are required");
       return;
     }
@@ -282,7 +287,7 @@ export function BulkEmailModal({
                       key={token}
                       type="button"
                       onClick={() =>
-                        setManualBody((body) => `${body}${body.endsWith("\n") ? "" : "\n"}${token}`)
+                        setManualBody((body) => appendEmailPlaceholder(body, token))
                       }
                       className="px-2 py-0.5 rounded border border-slate-700 bg-slate-800 text-xs text-slate-300 hover:bg-slate-700"
                     >
@@ -290,11 +295,11 @@ export function BulkEmailModal({
                     </button>
                   ))}
                 </div>
-                <textarea
+                <EmailBodyEditor
                   rows={12}
                   value={manualBody}
-                  onChange={(e) => setManualBody(e.target.value)}
-                  className="w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm"
+                  onChange={setManualBody}
+                  placeholder="Write your message…"
                 />
               </div>
               <EmailAttachmentsField
@@ -319,9 +324,14 @@ export function BulkEmailModal({
                       <p className="text-sm text-slate-400">
                         To: {manualPreview.contact_email || "—"}
                       </p>
-                      <pre className="text-sm text-slate-300 whitespace-pre-wrap font-sans">
-                        {manualPreview.body}
-                      </pre>
+                      <div
+                        className="email-body-editor text-sm text-slate-300"
+                        dangerouslySetInnerHTML={{
+                          __html: /<\/?[a-z][\s\S]*>/i.test(manualPreview.body || "")
+                            ? manualPreview.body
+                            : (manualPreview.body || "").replace(/\n/g, "<br>"),
+                        }}
+                      />
                     </>
                   ) : (
                     <p className="text-sm text-slate-500">
@@ -423,7 +433,9 @@ export function BulkEmailModal({
             <button
               type="button"
               onClick={() => void handleSendManual()}
-              disabled={sending || !manualSubject.trim() || !manualBody.trim()}
+              disabled={
+                sending || !manualSubject.trim() || !emailBodyHasContent(manualBody)
+              }
               className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium disabled:opacity-50"
             >
               {sending ? "Sending…" : `Send ${buyerIds.length} email(s)`}

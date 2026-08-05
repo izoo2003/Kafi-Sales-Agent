@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { client } from "../api/client";
 import { useTwilioVoice } from "../hooks/useTwilioVoice";
 import { type CallOutcome, callOutcomeSectionHint } from "../utils/callOutcomes";
+import { autocorrectText } from "../utils/spelling";
 import { CallRemarksForm } from "./CallRemarksForm";
 import { ActionButton } from "./ui/ActionButton";
 import { IconX } from "./icons/AppIcons";
@@ -31,7 +32,7 @@ export function PostCallRemarksModal({ onError, onSaved }: PostCallRemarksModalP
     setSaving(true);
     try {
       await client.updateCallFollowUp(pendingFollowUp.interactionId, {
-        notes: remarks,
+        notes: autocorrectText(remarks, "prose"),
         call_outcome: outcome || null,
       });
       clearPendingFollowUp();

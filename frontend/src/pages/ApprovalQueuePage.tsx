@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { client, type DraftInteraction, type WhatsAppTemplate } from "../api/client";
+import { EmailBodyEditor } from "../components/EmailBodyEditor";
 import { Pagination } from "../components/Pagination";
 import { useDrafts } from "../hooks/useDrafts";
 
@@ -132,12 +133,21 @@ function DraftCard({
         </p>
       </div>
 
-      <textarea
-        value={content}
-        onChange={(e) => setContent(e.target.value)}
-        rows={5}
-        className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200"
-      />
+      {draft.channel === "email" ? (
+        <EmailBodyEditor
+          value={content}
+          onChange={setContent}
+          rows={5}
+          placeholder="Edit the email draft…"
+        />
+      ) : (
+        <textarea
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          rows={5}
+          className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200"
+        />
+      )}
 
       {needsTemplate && (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 space-y-2">

@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { CountrySelect } from "../components/CountrySelect";
 import { IndustrySelect } from "../components/IndustrySelect";
 import { client } from "../api/client";
+import { autocorrectText, spellingInputProps } from "../utils/spelling";
 
 interface CreateLeadFormProps {
   onSuccess: (leadId: number) => void;
@@ -37,21 +38,26 @@ export function CreateLeadForm({ onSuccess, onCancel, onError }: CreateLeadFormP
 
     setSubmitting(true);
     try {
+      const companyName = autocorrectText(form.company_name, "name");
+      const industry = autocorrectText(form.industry, "prose");
+      const contactName = autocorrectText(form.contact_name, "name");
+      const designation = autocorrectText(form.contact_designation, "prose");
+
       const lead = await client.createLead({
-        company_name: form.company_name.trim(),
+        company_name: companyName,
         website_url: form.website_url.trim() || undefined,
         country: form.country.trim() || undefined,
-        industry: form.industry.trim() || undefined,
+        industry: industry || undefined,
         source: "manual",
       });
 
-      if (form.contact_name.trim()) {
+      if (contactName) {
         await client.createContact({
           buyer_id: lead.id,
-          full_name: form.contact_name.trim(),
+          full_name: contactName,
           email: form.contact_email.trim() || undefined,
           phone: form.contact_phone.trim() || undefined,
-          designation: form.contact_designation.trim() || undefined,
+          designation: designation || undefined,
         });
       }
 
@@ -88,8 +94,12 @@ export function CreateLeadForm({ onSuccess, onCancel, onError }: CreateLeadFormP
             required
             value={form.company_name}
             onChange={(e) => updateField("company_name", e.target.value)}
+            onBlur={(e) =>
+              updateField("company_name", autocorrectText(e.target.value, "name"))
+            }
             placeholder="e.g. Al Noor Food Trading"
             className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600"
+            {...spellingInputProps("name")}
           />
         </label>
 
@@ -115,6 +125,7 @@ export function CreateLeadForm({ onSuccess, onCancel, onError }: CreateLeadFormP
             onChange={(e) => updateField("website_url", e.target.value)}
             placeholder="https://..."
             className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600"
+            {...spellingInputProps("off")}
           />
           <p className="text-xs text-slate-500 mt-1">
             Used for research — add a real company website for best results.
@@ -133,8 +144,12 @@ export function CreateLeadForm({ onSuccess, onCancel, onError }: CreateLeadFormP
               type="text"
               value={form.contact_name}
               onChange={(e) => updateField("contact_name", e.target.value)}
+              onBlur={(e) =>
+                updateField("contact_name", autocorrectText(e.target.value, "name"))
+              }
               placeholder="e.g. Ahmed Al-Rashid"
               className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600"
+              {...spellingInputProps("name")}
             />
           </label>
 
@@ -146,6 +161,7 @@ export function CreateLeadForm({ onSuccess, onCancel, onError }: CreateLeadFormP
               onChange={(e) => updateField("contact_email", e.target.value)}
               placeholder="name@company.com"
               className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600"
+              {...spellingInputProps("off")}
             />
           </label>
 
@@ -157,6 +173,7 @@ export function CreateLeadForm({ onSuccess, onCancel, onError }: CreateLeadFormP
               onChange={(e) => updateField("contact_phone", e.target.value)}
               placeholder="+971..."
               className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600"
+              {...spellingInputProps("off")}
             />
           </label>
 
@@ -166,8 +183,15 @@ export function CreateLeadForm({ onSuccess, onCancel, onError }: CreateLeadFormP
               type="text"
               value={form.contact_designation}
               onChange={(e) => updateField("contact_designation", e.target.value)}
+              onBlur={(e) =>
+                updateField(
+                  "contact_designation",
+                  autocorrectText(e.target.value, "prose"),
+                )
+              }
               placeholder="e.g. Procurement Manager"
               className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600"
+              {...spellingInputProps("prose")}
             />
           </label>
         </div>

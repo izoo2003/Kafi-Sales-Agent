@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { type CallQueueState, BATCH_SIZE, GAP_SECONDS } from "../hooks/useCallQueue";
 import { CALL_OUTCOMES } from "../utils/callOutcomes";
+import { autocorrectText, spellingInputProps } from "../utils/spelling";
 import { CallingCard } from "./CallingCard";
 
 interface BulkCallQueuePanelProps {
@@ -305,9 +306,11 @@ export function BulkCallQueuePanel({ queue, onClose }: BulkCallQueuePanelProps) 
               <textarea
                 value={pendingNotes}
                 onChange={(e) => setPendingNotes(e.target.value)}
+                onBlur={(e) => setPendingNotes(autocorrectText(e.target.value, "prose"))}
                 rows={2}
                 placeholder="Quick note… (auto-saved)"
                 className="w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-slate-200 placeholder-slate-600 resize-none"
+                {...spellingInputProps("prose")}
               />
               <p className="text-xs text-slate-500">
                 Next call starts in{" "}

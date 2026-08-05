@@ -67,6 +67,36 @@ function normalizeAddrList(value?: string | null): string | undefined {
   return cleaned.length ? cleaned.join(", ") : undefined;
 }
 
+function looksLikeHtml(body: string): boolean {
+  return /<\/?[a-z][\s\S]*>/i.test(body || "");
+}
+
+function htmlToPlain(body: string): string {
+  if (!looksLikeHtml(body)) return body || "";
+  return (body || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n\n")
+    .replace(/<\/div>/gi, "\n")
+    .replace(/<\/li>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function toHtmlBody(body: string): string {
+  if (looksLikeHtml(body)) return body;
+  return (body || "").replace(/\n/g, "<br/>");
+}
+
+export function smtpBodyHasContent(body: string): boolean {
+  return htmlToPlain(body || "").trim().length > 0;
+}
+
 export async function sendSmtp(options: {
   username: string;
   mailboxEmail?: string;
@@ -118,10 +148,8 @@ export async function sendSmtp(options: {
       ...(cc ? { cc } : {}),
       ...(bcc ? { bcc } : {}),
       subject: options.subject,
-      text: options.body,
-      html: options.html
-        ? options.body.replace(/\n/g, "<br/>")
-        : undefined,
+      text: htmlToPlain(options.body),
+      html: options.html ? toHtmlBody(options.body) : undefined,
       replyTo: creds.email,
     });
     return { ok: true, message: "sent" };

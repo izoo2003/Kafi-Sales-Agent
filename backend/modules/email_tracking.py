@@ -73,17 +73,27 @@ def open_pixel_url(*, interaction_id: int, send_mode: str = "individual") -> str
     return f"{base}/api/track/email-open/{token}.gif"
 
 
-def plain_to_tracked_html(body: str, *, pixel_url: str | None) -> str:
-    escaped = html.escape(body or "")
-    paragraphs = [
-        f"<p style=\"margin:0 0 12px;white-space:pre-wrap;font-family:Arial,sans-serif;"
-        f"font-size:14px;line-height:1.5;color:#111\">{p.replace(chr(10), '<br>')}</p>"
-        for p in escaped.split("\n\n")
-    ]
-    content = "".join(paragraphs) or (
-        f"<p style=\"margin:0;font-family:Arial,sans-serif;font-size:14px;color:#111\">"
-        f"{escaped.replace(chr(10), '<br>')}</p>"
-    )
+def _looks_like_html(body: str) -> bool:
+    import re
+
+    return bool(re.search(r"</?[a-zA-Z][^>]*>", body or ""))
+
+
+def _html_to_plain(body: str) -> str:
+    """Best-effort strip of tags for the text/plain part."""
+    import re
+
+    text = body or ""
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</p\s*>", "\n\n", text)
+    text = re.sub(r"(?i)</div\s*>", "\n", text)
+    text = re.sub(r"(?i)</li\s*>", "\n", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _wrap_email_html(content: str, *, pixel_url: str | None) -> str:
     pixel = ""
     if pixel_url:
         safe = html.escape(pixel_url, quote=True)
@@ -92,9 +102,32 @@ def plain_to_tracked_html(body: str, *, pixel_url: str | None) -> str:
             f'style="display:block;width:1px;height:1px;border:0" />'
         )
     return (
-        "<!DOCTYPE html><html><body style=\"margin:0;padding:16px;background:#fff\">"
+        "<!DOCTYPE html><html><body "
+        'style="margin:0;padding:16px;background:#fff;'
+        'font-family:Arial,sans-serif;font-size:14px;line-height:1.5;color:#111">'
         f"{content}{pixel}</body></html>"
     )
+
+
+def plain_to_tracked_html(body: str, *, pixel_url: str | None) -> str:
+    escaped = html.escape(body or "")
+    paragraphs = [
+        f"<p style=\"margin:0 0 12px;white-space:pre-wrap;\">"
+        f"{p.replace(chr(10), '<br>')}</p>"
+        for p in escaped.split("\n\n")
+    ]
+    content = "".join(paragraphs) or (
+        f"<p style=\"margin:0\">{escaped.replace(chr(10), '<br>')}</p>"
+    )
+    return _wrap_email_html(content, pixel_url=pixel_url)
+
+
+def rich_html_to_tracked_html(body: str, *, pixel_url: str | None) -> str:
+    """Wrap editor HTML (already tagged) and append open pixel."""
+    content = (body or "").strip()
+    if not content:
+        content = "<p></p>"
+    return _wrap_email_html(content, pixel_url=pixel_url)
 
 
 def build_tracked_bodies(
@@ -104,10 +137,17 @@ def build_tracked_bodies(
     send_mode: str = "individual",
 ) -> tuple[str, str | None]:
     """Return (plain_text, html_or_none). HTML includes open pixel when public base URL is set."""
-    plain = body or ""
+    raw = body or ""
+    is_html = _looks_like_html(raw)
+    plain = _html_to_plain(raw) if is_html else raw
     if not interaction_id:
+        # Still return HTML alternative when body is rich HTML (mail clients prefer it).
+        if is_html:
+            return plain, rich_html_to_tracked_html(raw, pixel_url=None)
         return plain, None
     pixel = open_pixel_url(interaction_id=interaction_id, send_mode=send_mode)
+    if is_html:
+        return plain, rich_html_to_tracked_html(raw, pixel_url=pixel)
     if not pixel:
         return plain, None
     return plain, plain_to_tracked_html(plain, pixel_url=pixel)

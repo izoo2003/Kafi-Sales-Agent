@@ -51,6 +51,12 @@ import {
 import { exportLeadsTableCsv } from "../utils/exportCsv";
 import { UNASSIGNED } from "../utils/leadAssignees";
 import {
+  autocorrectLeadDraft,
+  autocorrectText,
+  leadFieldSpellingMode,
+  spellingPropsForLeadField,
+} from "../utils/spelling";
+import {
   client,
   type LeadTableFilters,
   type LeadTableRow,
@@ -772,6 +778,8 @@ export function LeadsTablePage({
 
   const isOldClients = section === "old_clients";
   const isMaster = section === "master";
+  /** Old-clients filter set (business type, grading, product, city, call timing) — also on admin Master. */
+  const useClientsFilters = isOldClients || isMaster;
   const canImportSpreadsheet = section === "all" || section === "old_clients";
   const canBulkAssign = isAdmin && (section === "all" || section === "old_clients" || isMaster);
   const importSource = isOldClients ? "old_clients" : "csv";
@@ -818,14 +826,14 @@ export function LeadsTablePage({
 
   const tableQueryParams = useMemo(
     () => ({
-      score: isOldClients ? undefined : score || undefined,
-      market_role: isOldClients ? undefined : marketRole || undefined,
+      score: useClientsFilters ? undefined : score || undefined,
+      market_role: useClientsFilters ? undefined : marketRole || undefined,
       country: country || undefined,
-      industry: isOldClients ? industry || undefined : undefined,
-      company_grading: isOldClients ? companyGrading || undefined : undefined,
-      product_interest: isOldClients ? productInterest || undefined : undefined,
-      city: isOldClients ? city || undefined : undefined,
-      call_recommended: isOldClients ? callRecommended || undefined : undefined,
+      industry: useClientsFilters ? industry || undefined : undefined,
+      company_grading: useClientsFilters ? companyGrading || undefined : undefined,
+      product_interest: useClientsFilters ? productInterest || undefined : undefined,
+      city: useClientsFilters ? city || undefined : undefined,
+      call_recommended: useClientsFilters ? callRecommended || undefined : undefined,
       q: debouncedSearch.trim() || undefined,
       sort_by: sortBy,
       sort_dir: sortDir,
@@ -837,7 +845,7 @@ export function LeadsTablePage({
       companyGrading,
       country,
       industry,
-      isOldClients,
+      useClientsFilters,
       marketRole,
       productInterest,
       score,
@@ -970,7 +978,7 @@ export function LeadsTablePage({
       .then(setFilters)
       .catch(() => onError("Failed to load lead filters"));
     void loadSectionCounts();
-  }, [isOldClients, loadSectionCounts, onError]);
+  }, [isOldClients, isMaster, loadSectionCounts, onError]);
 
   useEffect(() => {
     void loadTable();
@@ -1024,6 +1032,15 @@ export function LeadsTablePage({
     });
   }
 
+  function commitDraftField(rowId: number, field: keyof LeadTableRow, value: string) {
+    const mode = leadFieldSpellingMode(String(field));
+    if (mode === "off") {
+      updateDraft(rowId, field, value);
+      return;
+    }
+    updateDraft(rowId, field, autocorrectText(value, mode));
+  }
+
   function isRowDirty(rowId: number): boolean {
     const draft = drafts[rowId];
     if (!draft) return false;
@@ -1075,8 +1092,12 @@ export function LeadsTablePage({
   }
 
   async function saveRow(rowId: number) {
-    const draft = draftsRef.current[rowId];
-    if (!draft) return;
+    const raw = draftsRef.current[rowId];
+    if (!raw) return;
+    const draft = autocorrectLeadDraft(raw);
+    if (draft !== raw) {
+      setDrafts((prev) => ({ ...prev, [rowId]: draft }));
+    }
     const previousAssigneeId = rows.find((r) => r.id === rowId)?.assigned_to_user_id ?? null;
 
     setSavingId(rowId);
@@ -1699,8 +1720,9 @@ export function LeadsTablePage({
     try {
       const results = await Promise.all(
         dirtyIds.map(async (rowId) => {
-          const draft = draftsRef.current[rowId];
-          if (!draft) return null;
+          const raw = draftsRef.current[rowId];
+          if (!raw) return null;
+          const draft = autocorrectLeadDraft(raw);
           const payload = buildUpdatePayload(draft);
           if (!isAdmin) {
             delete payload.assigned_to_user_id;
@@ -1779,7 +1801,7 @@ export function LeadsTablePage({
     return sortDir === "asc" ? " ↑" : " ↓";
   }
 
-  const hasActiveFilters = isOldClients
+  const hasActiveFilters = useClientsFilters
     ? Boolean(
         country ||
           industry ||
@@ -2209,10 +2231,10 @@ export function LeadsTablePage({
       <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3 shrink-0">
         <div
           className={`grid gap-3 sm:grid-cols-2 ${
-            isOldClients ? "lg:grid-cols-4 xl:grid-cols-4" : "lg:grid-cols-4"
+            useClientsFilters ? "lg:grid-cols-4 xl:grid-cols-4" : "lg:grid-cols-4"
           }`}
         >
-          {isOldClients ? (
+          {useClientsFilters ? (
             <>
               <label className="block text-xs text-slate-400">
                 Sort by
@@ -2672,8 +2694,10 @@ export function LeadsTablePage({
                             : String((draft[field] as string | null | undefined) ?? "")
                         }
                         onChange={(e) => updateDraft(row.id, field, e.target.value)}
+                        onBlur={(e) => commitDraftField(row.id, field, e.target.value)}
                         onClick={(e) => e.stopPropagation()}
                         className={`${EDIT_INPUT} ${opts?.className ?? ""}`}
+                        {...spellingPropsForLeadField(String(field))}
                       />
                     ) : (
                       <span className={`block truncate ${opts?.className ?? ""}`}>{display || "—"}</span>
@@ -2947,22 +2971,25 @@ export function LeadsTablePage({
                               (row.remarks_history?.length ?? 0) > 0 ? (
                                 <div className="mt-3 space-y-2 border-t border-slate-700 pt-3">
                                   <p className="text-xs uppercase tracking-wide text-slate-500">
-                                    Previous entries
+                                    Client remarks (# 1 at top)
                                   </p>
-                                  {[...(row.remarks_history || [])]
-                                    .slice()
-                                    .reverse()
+                                  {(row.remarks_history || [])
+                                    .filter((entry) => (entry.text || "").trim())
                                     .map((entry, idx) => (
                                       <div
                                         key={`${entry.at}-${idx}`}
                                         className="rounded-md border border-slate-800 bg-slate-950/80 px-2.5 py-2"
                                       >
                                         <p className="text-[11px] text-slate-500 mb-1">
+                                          <span className="font-medium text-slate-300">
+                                            Client Remarks # {idx + 1}
+                                          </span>
+                                          {" · "}
                                           {entry.at
                                             ? new Date(entry.at).toLocaleString()
                                             : "—"}
                                           {entry.by ? ` · ${entry.by}` : ""}
-                                          {entry.source === "call" ? " · Call remarks" : ""}
+                                          {entry.source === "call" ? " · From call" : ""}
                                         </p>
                                         <p className="text-sm text-slate-300 whitespace-pre-wrap break-words">
                                           {entry.text}
@@ -2990,18 +3017,21 @@ export function LeadsTablePage({
                               onChange={(e) => updateDraft(row.id, "linkedin_company_url", e.target.value)}
                               placeholder="LinkedIn URL"
                               className={EDIT_INPUT}
+                              {...spellingPropsForLeadField("linkedin_company_url")}
                             />
                             <input
                               value={draft.facebook_company_url ?? ""}
                               onChange={(e) => updateDraft(row.id, "facebook_company_url", e.target.value)}
                               placeholder="Facebook URL"
                               className={EDIT_INPUT}
+                              {...spellingPropsForLeadField("facebook_company_url")}
                             />
                             <input
                               value={draft.instagram_company_url ?? ""}
                               onChange={(e) => updateDraft(row.id, "instagram_company_url", e.target.value)}
                               placeholder="Instagram URL"
                               className={EDIT_INPUT}
+                              {...spellingPropsForLeadField("instagram_company_url")}
                             />
                           </div>
                         ) : (
@@ -3159,6 +3189,7 @@ export function LeadsTablePage({
                           onChange={(e) => updateDraft(row.id, "legacy_serial_no", e.target.value)}
                           onClick={(e) => e.stopPropagation()}
                           className={EDIT_INPUT}
+                          {...spellingPropsForLeadField("legacy_serial_no")}
                         />
                       ) : (
                         <ExpandableCell
@@ -3174,8 +3205,12 @@ export function LeadsTablePage({
                         <input
                           value={draft.company_name}
                           onChange={(e) => updateDraft(row.id, "company_name", e.target.value)}
+                          onBlur={(e) =>
+                            commitDraftField(row.id, "company_name", e.target.value)
+                          }
                           onClick={(e) => e.stopPropagation()}
                           className={EDIT_INPUT}
+                          {...spellingPropsForLeadField("company_name")}
                         />
                       ) : (
                         <ExpandableCell
@@ -3200,6 +3235,7 @@ export function LeadsTablePage({
                           onClick={(e) => e.stopPropagation()}
                           placeholder="https://..."
                           className={EDIT_INPUT}
+                          {...spellingPropsForLeadField("website_url")}
                         />
                       ) : row.website_url ? (
                         <ExpandableCell
@@ -3232,6 +3268,7 @@ export function LeadsTablePage({
                           onChange={(e) => updateDraft(row.id, "contact_email", e.target.value)}
                           onClick={(e) => e.stopPropagation()}
                           className={EDIT_INPUT}
+                          {...spellingPropsForLeadField("contact_email")}
                         />
                       ) : row.contact_email ? (
                         <ExpandableCell
@@ -3259,6 +3296,7 @@ export function LeadsTablePage({
                           onChange={(e) => updateDraft(row.id, "contact_phone", e.target.value)}
                           onClick={(e) => e.stopPropagation()}
                           className={EDIT_INPUT}
+                          {...spellingPropsForLeadField("contact_phone")}
                         />
                       ) : row.contact_phone ? (
                         <span className="flex items-center gap-2 min-w-0">
@@ -3292,6 +3330,7 @@ export function LeadsTablePage({
                           }
                           onClick={(e) => e.stopPropagation()}
                           className={EDIT_INPUT}
+                          {...spellingPropsForLeadField("contact_secondary_mobile")}
                         />
                       ) : (row.contact_secondary_mobile || row.contact_secondary_phone) ? (
                         <span className="flex items-center gap-2 min-w-0">

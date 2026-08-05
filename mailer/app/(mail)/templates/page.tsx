@@ -2,6 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
+import {
+  EmailBodyEditor,
+  emailBodyHasContent,
+} from "@/components/EmailBodyEditor";
 
 type Template = {
   id: number;
@@ -63,8 +67,13 @@ export default function TemplatesPage() {
         <label>Subject</label>
         <input value={subject} onChange={(e) => setSubject(e.target.value)} />
         <label>Body</label>
-        <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={6} />
-        <button type="button" className="btn" onClick={() => void create()}>
+        <EmailBodyEditor value={body} onChange={setBody} rows={6} />
+        <button
+          type="button"
+          className="btn"
+          disabled={!name.trim() || !subject.trim() || !emailBodyHasContent(body)}
+          onClick={() => void create()}
+        >
           Save template
         </button>
       </div>
