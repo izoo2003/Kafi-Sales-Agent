@@ -51,7 +51,7 @@ export function ColumnVisibilityMenu({
         aria-controls={menuId}
         title="Show or hide table columns"
       >
-        <IconTable size={14} className="opacity-80" />
+        <IconTable size="sm" className="opacity-80" />
         Columns
         {hiddenCount > 0 ? (
           <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-200">
