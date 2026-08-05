@@ -212,6 +212,7 @@ export interface InboxMessageSummary {
   from_name: string | null;
   to?: string[];
   cc?: string[];
+  bcc?: string[];
   date: string | null;
   preview: string;
   unread: boolean;
@@ -231,6 +232,7 @@ export interface InboxAttachment {
 export interface InboxMessageDetail extends InboxMessageSummary {
   to: string[];
   cc: string[];
+  bcc?: string[];
   body_text: string | null;
   body_html: string | null;
   attachments: InboxAttachment[];
@@ -2086,6 +2088,14 @@ export const client = {
   listEmailTemplates: () => request<EmailTemplate[]>("/email-templates"),
   getEmailTemplatePlaceholders: () =>
     request<{ placeholders: string[]; usage: string }>("/email-templates/placeholders"),
+  generateEmailTemplateFromTitle: (title: string) =>
+    request<{ name: string; subject: string; body: string }>(
+      "/email-templates/generate-from-title",
+      {
+        method: "POST",
+        body: JSON.stringify({ title }),
+      },
+    ),
   createEmailTemplate: (data: {
     name: string;
     subject: string;

@@ -32,6 +32,10 @@ import {
   IconX,
 } from "../components/icons/AppIcons";
 import { alertNewInboxMessage, unlockNotificationAudio } from "../utils/notify";
+import {
+  buildReplyRecipients,
+  hasReplyAllTargets,
+} from "../utils/replyRecipients";
 
 interface InboxPageProps {
   section: MailSection;
@@ -426,6 +430,7 @@ export function InboxPage({
     if (analysis.suggested_subject?.trim()) {
       setReplySubjectLine(analysis.suggested_subject.trim());
     }
+    setReplyCc("");
     setReplyBody(analysis.draft_reply);
     setShowReplyForm(true);
     setNotice(null);
@@ -709,27 +714,37 @@ export function InboxPage({
     );
   }, [thread]);
 
-  function startReply() {
-    if (aiAnalysis?.draft_reply?.trim()) {
-      applyAiDraftToReplyForm(aiAnalysis);
-      return;
-    }
-    if (isThreadView) {
-      if (!thread || !replyTarget) return;
-      setShowReplyForm(true);
-      setNotice(null);
-      if (!replyBody.trim()) {
-        setReplyBody(buildQuotedReply(replyTarget));
-      }
-      return;
-    }
-    if (!messageDetail) return;
+  function startReply(mode: "reply" | "reply_all" = "reply") {
+    const mailbox = status?.email || status?.emails?.[0] || null;
+    const source = isThreadView ? replyTarget : messageDetail;
+    if (!source) return;
+
+    const recipients = buildReplyRecipients(source, mailbox, mode);
+    setReplyTo(recipients.to);
+    setReplyCc(recipients.cc);
     setShowReplyForm(true);
     setNotice(null);
+
+    if (mode === "reply" && aiAnalysis?.draft_reply?.trim()) {
+      setReplyBody(aiAnalysis.draft_reply);
+      if (aiAnalysis.suggested_subject?.trim()) {
+        setReplySubjectLine(aiAnalysis.suggested_subject.trim());
+      }
+      if (aiAnalysis.to?.trim()) setReplyTo(aiAnalysis.to.trim());
+      return;
+    }
+
     if (!replyBody.trim()) {
-      setReplyBody(buildQuotedReply(messageDetail));
+      setReplyBody(buildQuotedReply(source));
     }
   }
+
+  const canReplyAll = useMemo(() => {
+    const mailbox = status?.email || status?.emails?.[0] || null;
+    const source = isThreadView ? replyTarget : messageDetail;
+    if (!source) return false;
+    return hasReplyAllTargets(source, mailbox);
+  }, [isThreadView, replyTarget, messageDetail, status?.email, status?.emails]);
 
   async function sendReply() {
     if (!replyBody.trim()) return;
@@ -743,7 +758,8 @@ export function InboxPage({
           subject: replySubjectLine.trim() || undefined,
           cc: replyCc.trim() || undefined,
         });
-        setNotice(`Reply sent to ${result.to ?? replyTo}.`);
+        const ccNote = replyCc.trim() ? ` (Cc: ${replyCc.trim()})` : "";
+        setNotice(`Reply sent to ${result.to ?? replyTo}${ccNote}.`);
         setReplyBody("");
         setShowReplyForm(false);
         await openThread(selectedThreadId);
@@ -755,7 +771,8 @@ export function InboxPage({
           cc: replyCc.trim() || undefined,
           folder: messageDetail.folder || "INBOX",
         });
-        setNotice(`Reply sent to ${result.to ?? replyTo}.`);
+        const ccNote = replyCc.trim() ? ` (Cc: ${replyCc.trim()})` : "";
+        setNotice(`Reply sent to ${result.to ?? replyTo}${ccNote}.`);
         setReplyBody("");
         setShowReplyForm(false);
         await openMessage(messageDetail);
@@ -993,7 +1010,9 @@ export function InboxPage({
             variant="primary"
             size="md"
             onClick={() => {
-              if (onOpenMailerCompose) {
+              // Localhost: in-app compose logs Email Activity to this backend.
+              // Live: open Vercel mailer (SMTP off Railway Hobby).
+              if (onOpenMailerCompose && !import.meta.env.DEV) {
                 onOpenMailerCompose();
                 return;
               }
@@ -1372,14 +1391,29 @@ export function InboxPage({
                         Trash
                       </ActionButton>
                       {!showReplyForm && (
-                        <ActionButton
-                          icon={aiAnalysis?.draft_reply ? IconSparkles : IconReply}
-                          variant="primary"
-                          onClick={startReply}
-                          title={aiAnalysis?.draft_reply ? "Use AI draft" : "Reply"}
-                        >
-                          {aiAnalysis?.draft_reply ? "AI draft" : "Reply"}
-                        </ActionButton>
+                        <>
+                          <ActionButton
+                            icon={aiAnalysis?.draft_reply ? IconSparkles : IconReply}
+                            variant="primary"
+                            onClick={() => startReply("reply")}
+                            title={
+                              aiAnalysis?.draft_reply
+                                ? "Use AI draft (reply to sender only)"
+                                : "Reply to sender only"
+                            }
+                          >
+                            {aiAnalysis?.draft_reply ? "AI draft" : "Reply"}
+                          </ActionButton>
+                          {canReplyAll && (
+                            <ActionButton
+                              icon={IconReply}
+                              onClick={() => startReply("reply_all")}
+                              title="Reply all — sender plus To/Cc/Bcc"
+                            >
+                              Reply all
+                            </ActionButton>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
@@ -1681,14 +1715,29 @@ export function InboxPage({
                       </>
                     )}
                     {section !== "sent" && !showReplyForm && (
-                      <ActionButton
-                        icon={aiAnalysis?.draft_reply ? IconSparkles : IconReply}
-                        variant="primary"
-                        onClick={startReply}
-                        title={aiAnalysis?.draft_reply ? "Use AI draft" : "Reply"}
-                      >
-                        {aiAnalysis?.draft_reply ? "AI draft" : "Reply"}
-                      </ActionButton>
+                      <>
+                        <ActionButton
+                          icon={aiAnalysis?.draft_reply ? IconSparkles : IconReply}
+                          variant="primary"
+                          onClick={() => startReply("reply")}
+                          title={
+                            aiAnalysis?.draft_reply
+                              ? "Use AI draft (reply to sender only)"
+                              : "Reply to sender only"
+                          }
+                        >
+                          {aiAnalysis?.draft_reply ? "AI draft" : "Reply"}
+                        </ActionButton>
+                        {canReplyAll && (
+                          <ActionButton
+                            icon={IconReply}
+                            onClick={() => startReply("reply_all")}
+                            title="Reply all — sender plus To/Cc/Bcc"
+                          >
+                            Reply all
+                          </ActionButton>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>

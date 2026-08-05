@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { loginFromHandoff, clearSession } from "@/lib/api";
+import { loginFromHandoff, clearSession, getStoredToken } from "@/lib/api";
 import { useAuth } from "@/components/AuthProvider";
 import { TemplatePicker } from "@/components/TemplatePicker";
 
@@ -93,6 +93,23 @@ function BulkInner() {
     setLog((prev) => [...prev, line]);
   }
 
+  async function reportActivity(body: Record<string, unknown>) {
+    // Best-effort — posts via mailer server to Sales Agent Email Activity only.
+    try {
+      await fetch("/api/report-activity", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token,
+          authToken: getStoredToken() || undefined,
+          ...body,
+        }),
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
   async function runSend() {
     if (!token) {
       pushLog("Missing token — open from Sales Agent Send emails.");
@@ -107,9 +124,18 @@ function BulkInner() {
     const batches = chunk(leads, Math.max(1, Math.min(15, batchSize)));
     let sentTotal = 0;
     let failTotal = 0;
+    const isBulk = leads.length > 1;
     pushLog(
       `Starting ${leads.length} emails in ${batches.length} batch(es) as ${preview?.mailbox_email}`,
     );
+
+    if (isBulk) {
+      await reportActivity({
+        kind: "bulk_started",
+        selected_count: leads.length,
+        send_mode: "bulk",
+      });
+    }
 
     for (let b = 0; b < batches.length; b++) {
       const batch = batches[b];
@@ -141,6 +167,11 @@ function BulkInner() {
                   )
                   .replaceAll("{{contact_email}}", lead.contact_email || ""),
                 html: true,
+                buyer_id: lead.buyer_id,
+                company_name: lead.company_name,
+                send_mode: isBulk ? "bulk" : "individual",
+                // Bulk uses summary events only (matches in-app Sales Agent bulk).
+                record_activity: !isBulk,
               }),
             });
             const raw = await res.text();
@@ -182,6 +213,17 @@ function BulkInner() {
         await sleep(batchPause * 1000);
       }
     }
+
+    if (isBulk) {
+      await reportActivity({
+        kind: "bulk_finished",
+        selected_count: leads.length,
+        sent_count: sentTotal,
+        failed_count: failTotal,
+        send_mode: "bulk",
+      });
+    }
+
     pushLog(`Done. Sent ${sentTotal}, failed ${failTotal}.`);
     setRunning(false);
   }

@@ -296,6 +296,16 @@ class EmailTemplateUpdate(BaseModel):
     attachments: Optional[list[EmailAttachmentRead]] = None
 
 
+class EmailTemplateGenerateRequest(BaseModel):
+    title: str = Field(min_length=2, max_length=200)
+
+
+class EmailTemplateGenerateResponse(BaseModel):
+    name: str
+    subject: str
+    body: str
+
+
 class EmailTemplateRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -1044,6 +1054,7 @@ class InboxMessageSummary(BaseModel):
     from_name: Optional[str] = None
     to: list[str] = Field(default_factory=list)
     cc: list[str] = Field(default_factory=list)
+    bcc: list[str] = Field(default_factory=list)
     date: Optional[datetime] = None
     preview: str = ""
     unread: bool = False

@@ -390,6 +390,37 @@ textarea {
   max-width: 720px;
 }
 
+.compose-to-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.35rem;
+}
+
+.compose-to-label {
+  margin-bottom: 0;
+}
+
+.compose-cc-toggles {
+  display: flex;
+  gap: 0.75rem;
+}
+
+button.linkish {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+button.linkish:hover {
+  text-decoration: underline;
+}
+
 .template-picker {
   margin-bottom: 1rem;
 }

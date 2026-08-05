@@ -651,9 +651,18 @@ export function LeadsTablePage({
   const openBulkMailer = useCallback(async () => {
     const ids = [...selected];
     if (!ids.length) return;
+    // Localhost talks to 127.0.0.1 — Vercel mailer reports activity to Railway, so
+    // local Email Activity stays empty. Use in-app send so activity hits this backend.
+    if (import.meta.env.DEV) {
+      setShowBulkEmail(true);
+      showEmailNotice(
+        "Localhost: using in-app email send so Email Activity logs here. Live uses Vercel mailer.",
+      );
+      return;
+    }
     setOpeningMailer(true);
     try {
-      // Always use Railway handoff → Vercel mailer URL (SMTP cannot run on Hobby).
+      // Production: Railway handoff → Vercel mailer URL (SMTP cannot run on Hobby).
       // Do not fall back to in-app BulkEmailModal unless mailer env is missing.
       const handoff = await client.createMailerHandoff(ids);
       const opened = window.open(handoff.url, "_blank", "noopener,noreferrer");

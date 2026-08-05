@@ -59,10 +59,20 @@ export function resolveMailbox(username: string, fallbackEmail?: string): Mailbo
   return null;
 }
 
+function normalizeAddrList(value?: string | null): string | undefined {
+  const cleaned = (value || "")
+    .split(/[,;]+/)
+    .map((part) => part.trim())
+    .filter((part) => part.includes("@"));
+  return cleaned.length ? cleaned.join(", ") : undefined;
+}
+
 export async function sendSmtp(options: {
   username: string;
   mailboxEmail?: string;
   to: string;
+  cc?: string;
+  bcc?: string;
   subject: string;
   body: string;
   html?: boolean;
@@ -98,10 +108,15 @@ export async function sendSmtp(options: {
     ? `"${creds.displayName}" <${creds.email}>`
     : creds.email;
 
+  const cc = normalizeAddrList(options.cc);
+  const bcc = normalizeAddrList(options.bcc);
+
   try {
     await transporter.sendMail({
       from,
       to: options.to,
+      ...(cc ? { cc } : {}),
+      ...(bcc ? { bcc } : {}),
       subject: options.subject,
       text: options.body,
       html: options.html

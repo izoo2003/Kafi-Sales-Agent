@@ -12,7 +12,6 @@ type FolderCounts = {
   trash: number;
   archive: number;
   drafts: number;
-  activity: number;
   templates: number;
 };
 
@@ -22,7 +21,6 @@ const NAV: { href: string; label: string; key: keyof FolderCounts }[] = [
   { href: "/drafts", label: "Drafts", key: "drafts" },
   { href: "/trash", label: "Trash", key: "trash" },
   { href: "/archive", label: "Archive", key: "archive" },
-  { href: "/activity", label: "Email Activity", key: "activity" },
   { href: "/templates", label: "Email templates", key: "templates" },
 ];
 
@@ -36,7 +34,6 @@ export function MailSidebar() {
     trash: 0,
     archive: 0,
     drafts: 0,
-    activity: 0,
     templates: 0,
   });
 
@@ -44,14 +41,11 @@ export function MailSidebar() {
     let cancelled = false;
     async function load() {
       try {
-        const [folders, drafts, activity, templates] = await Promise.all([
+        const [folders, drafts, templates] = await Promise.all([
           apiFetch<{
             folders: Array<{ key: string; count: number; unread_count: number }>;
           }>("/inbox/folders"),
           apiFetch<{ count: number }>("/inbox/drafts/count").catch(() => ({ count: 0 })),
-          apiFetch<{ unread_count: number }>("/email-activity/unread-count").catch(
-            () => ({ unread_count: 0 }),
-          ),
           apiFetch<unknown[]>("/email-templates").catch(() => []),
         ]);
         if (cancelled) return;
@@ -61,7 +55,6 @@ export function MailSidebar() {
           trash: 0,
           archive: 0,
           drafts: drafts.count,
-          activity: activity.unread_count || 0,
           templates: Array.isArray(templates) ? templates.length : 0,
         };
         for (const f of folders.folders || []) {

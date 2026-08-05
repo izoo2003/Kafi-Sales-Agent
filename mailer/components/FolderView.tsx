@@ -2,6 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
+import {
+  buildReplyRecipients,
+  hasReplyAllTargets,
+} from "@/lib/replyRecipients";
 import { useAuth } from "./AuthProvider";
 
 export type MessageSummary = {
@@ -19,22 +23,39 @@ export type MessageDetail = MessageSummary & {
   body_text?: string | null;
   body_html?: string | null;
   to?: string[];
+  cc?: string[];
+  bcc?: string[];
+  direction?: string | null;
 };
 
 type Props = {
   folder: "inbox" | "sent" | "trash" | "archive";
 };
 
+type ReplyMode = "reply" | "reply_all";
+
+function formatAddrList(addrs?: string[] | null): string {
+  return (addrs || []).filter(Boolean).join(", ");
+}
+
 export function FolderView({ folder }: Props) {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const [messages, setMessages] = useState<MessageSummary[]>([]);
   const [selected, setSelected] = useState<MessageDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [replyOpen, setReplyOpen] = useState(false);
+  const [replyMode, setReplyMode] = useState<ReplyMode>("reply");
+  const [replyTo, setReplyTo] = useState("");
+  const [replyCc, setReplyCc] = useState("");
   const [replyBody, setReplyBody] = useState("");
   const [sending, setSending] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+
+  const mailboxEmail = user?.mailbox_email || null;
+  const canReplyAll = selected
+    ? hasReplyAllTargets(selected, mailboxEmail)
+    : false;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -56,6 +77,20 @@ export function FolderView({ folder }: Props) {
     setReplyOpen(false);
     void load();
   }, [load]);
+
+  function openReply(mode: ReplyMode) {
+    if (!selected) return;
+    const recipients = buildReplyRecipients(selected, mailboxEmail, mode);
+    if (!recipients.to) {
+      setError("No reply address on this message");
+      return;
+    }
+    setReplyMode(mode);
+    setReplyTo(recipients.to);
+    setReplyCc(recipients.cc);
+    setReplyOpen(true);
+    setNotice(null);
+  }
 
   async function openMessage(row: MessageSummary) {
     setNotice(null);
@@ -97,12 +132,7 @@ export function FolderView({ folder }: Props) {
   }
 
   async function sendReply() {
-    if (!selected || !token || !replyBody.trim()) return;
-    const to = selected.from_email;
-    if (!to) {
-      setError("No reply address on this message");
-      return;
-    }
+    if (!selected || !token || !replyBody.trim() || !replyTo.trim()) return;
     setSending(true);
     setError(null);
     try {
@@ -111,7 +141,8 @@ export function FolderView({ folder }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           auth_token: token,
-          to,
+          to: replyTo.trim(),
+          cc: replyCc.trim() || undefined,
           subject: selected.subject?.startsWith("Re:")
             ? selected.subject
             : `Re: ${selected.subject || ""}`,
@@ -123,7 +154,12 @@ export function FolderView({ folder }: Props) {
       if (!res.ok) throw new Error(data.error || "Send failed");
       setReplyOpen(false);
       setReplyBody("");
-      setNotice("Reply sent via Vercel SMTP");
+      setReplyCc("");
+      setNotice(
+        replyMode === "reply_all"
+          ? "Reply all sent via Vercel SMTP"
+          : "Reply sent via Vercel SMTP",
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : "Reply failed");
     } finally {
@@ -174,11 +210,31 @@ export function FolderView({ folder }: Props) {
               From: {selected.from_name || selected.from_email}
               {selected.date ? ` · ${new Date(selected.date).toLocaleString()}` : ""}
             </p>
+            {formatAddrList(selected.to) && (
+              <p className="muted small">To: {formatAddrList(selected.to)}</p>
+            )}
+            {formatAddrList(selected.cc) && (
+              <p className="muted small">Cc: {formatAddrList(selected.cc)}</p>
+            )}
+            {formatAddrList(selected.bcc) && (
+              <p className="muted small">Bcc: {formatAddrList(selected.bcc)}</p>
+            )}
             <div className="detail-actions">
               {folder === "inbox" && (
-                <button type="button" className="btn" onClick={() => setReplyOpen(true)}>
-                  Reply
-                </button>
+                <>
+                  <button type="button" className="btn" onClick={() => openReply("reply")}>
+                    Reply
+                  </button>
+                  {canReplyAll && (
+                    <button
+                      type="button"
+                      className="btn ghost"
+                      onClick={() => openReply("reply_all")}
+                    >
+                      Reply all
+                    </button>
+                  )}
+                </>
               )}
               {folder !== "trash" && (
                 <button type="button" className="btn ghost" onClick={() => void moveTo("trash")}>
@@ -208,20 +264,47 @@ export function FolderView({ folder }: Props) {
             )}
             {replyOpen && (
               <div className="reply-box">
-                <label>Reply</label>
+                <label>{replyMode === "reply_all" ? "Reply all" : "Reply"}</label>
+                <label className="small">To</label>
+                <input
+                  value={replyTo}
+                  onChange={(e) => setReplyTo(e.target.value)}
+                  placeholder="recipient@example.com"
+                />
+                <label className="small">Cc</label>
+                <input
+                  value={replyCc}
+                  onChange={(e) => setReplyCc(e.target.value)}
+                  placeholder="optional — comma-separated"
+                />
+                <label className="small">Message</label>
                 <textarea
                   value={replyBody}
                   onChange={(e) => setReplyBody(e.target.value)}
                   placeholder="Write your reply…"
                 />
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={sending || !replyBody.trim()}
-                  onClick={() => void sendReply()}
-                >
-                  {sending ? "Sending…" : "Send reply"}
-                </button>
+                <div className="detail-actions">
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={sending || !replyBody.trim() || !replyTo.trim()}
+                    onClick={() => void sendReply()}
+                  >
+                    {sending
+                      ? "Sending…"
+                      : replyMode === "reply_all"
+                        ? "Send reply all"
+                        : "Send reply"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    disabled={sending}
+                    onClick={() => setReplyOpen(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
               </div>
             )}
           </div>

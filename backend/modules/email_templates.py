@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import re
+from typing import Any
 
 from sqlalchemy.orm import Session
 
+from config import settings
 from db.models import Buyer, Contact, EmailTemplate
 
 SUPPORTED_PLACEHOLDERS = [
@@ -139,3 +142,146 @@ def preview_template(
         "company_name": buyer.company_name,
         "contact_email": contact.email or "",
     }
+
+
+def _template_api_key() -> str | None:
+    for candidate in (
+        settings.email_template_gemini_api_key,
+        settings.gemini_api_key,
+        settings.llm_api_key,
+    ):
+        key = (candidate or "").strip()
+        if key:
+            return key
+    return None
+
+
+def template_llm_enabled() -> bool:
+    return bool(_template_api_key())
+
+
+def _parse_csv(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _template_model_chain() -> list[str]:
+    from modules.llm_client import DEFAULT_FALLBACK_MODELS, DEFAULT_MODEL, _resolve_model_name
+
+    primary = _resolve_model_name(settings.email_template_gemini_model or DEFAULT_MODEL)
+    fallbacks = _parse_csv(settings.email_template_gemini_fallback_models) or list(
+        DEFAULT_FALLBACK_MODELS
+    )
+    chain: list[str] = []
+    for name in [primary, *fallbacks]:
+        resolved = _resolve_model_name(name)
+        if resolved and resolved not in chain:
+            chain.append(resolved)
+    return chain or [DEFAULT_MODEL]
+
+
+def _generate_template_text(*, system: str, prompt: str) -> str:
+    from modules.llm_client import _is_retryable_model_error
+
+    api_key = _template_api_key()
+    if not api_key:
+        raise RuntimeError(
+            "EMAIL_TEMPLATE_GEMINI_API_KEY (or GEMINI_API_KEY) is not set. "
+            "Add it to backend/.env to enable AI template creation."
+        )
+
+    try:
+        from google import genai  # type: ignore[import]
+        from google.genai import types as genai_types  # type: ignore[import]
+    except Exception as exc:
+        raise RuntimeError("Google GenAI SDK is not installed.") from exc
+
+    client = genai.Client(api_key=api_key)
+    max_tokens = max(256, int(settings.email_template_gemini_max_output_tokens or 2048))
+    config = genai_types.GenerateContentConfig(
+        max_output_tokens=max_tokens,
+        system_instruction=system,
+    )
+
+    last_error: Exception | None = None
+    retryable = False
+    for model in _template_model_chain():
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=config,
+            )
+            text = (response.text or "").strip()
+            if text:
+                return text
+            raise RuntimeError("Empty model response")
+        except Exception as exc:
+            last_error = exc
+            if _is_retryable_model_error(exc):
+                retryable = True
+                continue
+            raise RuntimeError(f"Gemini generation failed ({model}): {exc}") from exc
+
+    if retryable:
+        raise RuntimeError(
+            "Gemini failed on all configured models (rate limit or unavailable model)."
+        ) from last_error
+    raise RuntimeError(f"Gemini generation failed: {last_error}") from last_error
+
+
+def _parse_json_object(raw: str) -> dict[str, Any]:
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        end = -1 if lines[-1].startswith("```") else len(lines)
+        text = "\n".join(lines[1:end])
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        text = match.group(0)
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("Model response was not a JSON object")
+    return data
+
+
+def generate_template_from_title(title: str) -> dict[str, str]:
+    """Use Gemini to draft subject + body from a short template title/name."""
+    cleaned = (title or "").strip()
+    if len(cleaned) < 2:
+        raise ValueError("Template title is required")
+
+    placeholders = ", ".join(f"[{key}]" for key in SUPPORTED_PLACEHOLDERS)
+    system = (
+        "You write reusable B2B email templates for Kafi Commodities (Pvt) Ltd, "
+        "a Pakistani food exporter (rice, ESSENCE Himalayan pink salt, chutneys, "
+        "sauces, pickles, spices, honey). Tone: professional, concise, warm — "
+        "sales co-pilot drafts for human review, not pushy spam."
+    )
+    prompt = (
+        f'Template title / purpose: "{cleaned}"\n\n'
+        "Create one reusable outbound email template for that purpose.\n"
+        "Rules:\n"
+        f"- Use merge placeholders where personalization helps: {placeholders}\n"
+        "- Prefer [contact_name] and [company_name] in the greeting and opening.\n"
+        "- Keep subject under ~90 characters; body 120–220 words unless the title "
+        "clearly needs a short note.\n"
+        "- Plain text only (no HTML).\n"
+        "- Sign off as Kafi Commodities Export Team.\n"
+        "- Do not invent fake certifications, prices, or MOQs.\n\n"
+        "Respond with ONLY valid JSON (no markdown):\n"
+        '{"name":"...","subject":"...","body":"..."}\n'
+        "Use the given title as name (you may lightly polish capitalization)."
+    )
+
+    raw = _generate_template_text(system=system, prompt=prompt)
+    data = _parse_json_object(raw)
+
+    name = str(data.get("name") or cleaned).strip() or cleaned
+    subject = str(data.get("subject") or "").strip()
+    body = str(data.get("body") or "").strip()
+    if not subject or not body:
+        raise RuntimeError("AI returned an incomplete template — try again.")
+
+    return {"name": name[:200], "subject": subject[:500], "body": body}

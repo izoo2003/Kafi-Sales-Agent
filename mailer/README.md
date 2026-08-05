@@ -9,7 +9,7 @@ click **Send emails**.
 ```
 Sales Agent Mail click
   → POST /api/mailer/session → mailer /auth/callback?code=…
-  → full Mail UI (inbox/sent/drafts/trash/archive/activity/templates)
+  → full Mail UI (inbox/sent/drafts/trash/archive/templates)
 
 Sales Agent Send emails
   → POST /api/mailer/handoff → mailer /bulk?token=…
@@ -17,6 +17,10 @@ Sales Agent Send emails
 
 Mailer reads IMAP via Railway /api/inbox/*
 Mailer sends only via /api/send and /api/send-batch (Vercel SMTP)
+Mailer reports each send to Railway POST /api/mailer/report-activity
+  → Email Activity + Insights ONLY in Sales Agent Mail (not in mailer UI)
+Mailer asks Railway POST /api/mailer/append-sent after SMTP success
+  → IMAP APPEND into Sent (cPanel SMTP does not auto-save)
 ```
 
 ## What you must provide

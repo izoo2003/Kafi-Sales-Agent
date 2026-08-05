@@ -124,6 +124,12 @@ class Settings(BaseSettings):
     ai_mode_auto_reply_gemini_fallback_models: str | None = None
     ai_mode_auto_reply_gemini_max_output_tokens: int = 1024
 
+    # Email Templates — "Generate with AI" from template title
+    email_template_gemini_api_key: str | None = None
+    email_template_gemini_model: str = "gemini-3.1-flash-lite"
+    email_template_gemini_fallback_models: str | None = None
+    email_template_gemini_max_output_tokens: int = 2048
+
     # SerpAPI for auto-reply company research only (separate from discover-leads SERPAPI_API_KEY)
     ai_mode_auto_reply_serpapi_api_key: str | None = None
 

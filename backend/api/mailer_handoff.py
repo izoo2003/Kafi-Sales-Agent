@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal, Optional
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -16,6 +16,7 @@ from config import settings
 from db.models import AppUser
 from modules import auth as auth_module
 from modules import buyers as buyers_module
+from modules import email_activity
 from modules.mailbox_accounts import resolve_user_mailbox
 
 router = APIRouter(prefix="/mailer", tags=["mailer"])
@@ -64,6 +65,91 @@ class MailerHandoffLoginRequest(BaseModel):
 class MailerAuthResponse(BaseModel):
     token: str
     user: UserRead
+
+
+class MailerActivityReportRequest(BaseModel):
+    """Outbound send lifecycle events from the Vercel mailer → Email Activity feed."""
+
+    # Prefer session Bearer; handoff JWT is accepted for server-to-server reports.
+    token: Optional[str] = Field(default=None, description="Bulk handoff JWT")
+    kind: Literal["send_result", "bulk_started", "bulk_finished"] = "send_result"
+    ok: Optional[bool] = None
+    to_email: Optional[str] = None
+    subject: Optional[str] = None
+    company_name: Optional[str] = None
+    buyer_id: Optional[int] = None
+    error_message: Optional[str] = None
+    send_mode: Literal["individual", "bulk"] = "individual"
+    # When False, skip per-message rows (bulk summary events only).
+    record_send: bool = True
+    selected_count: Optional[int] = None
+    sent_count: Optional[int] = None
+    failed_count: Optional[int] = None
+    skipped_count: Optional[int] = None
+
+
+class MailerActivityReportResponse(BaseModel):
+    recorded: bool
+    event_id: Optional[int] = None
+    event_type: Optional[str] = None
+
+
+class MailerAppendSentRequest(BaseModel):
+    """Save a copy of a Vercel SMTP send into the user's IMAP Sent folder."""
+
+    token: Optional[str] = Field(default=None, description="Bulk handoff JWT")
+    to: str = Field(min_length=3)
+    subject: str = Field(min_length=1)
+    body: str = Field(min_length=1)
+    cc: Optional[str] = None
+    bcc: Optional[str] = None
+    html: bool = True
+
+
+class MailerAppendSentResponse(BaseModel):
+    ok: bool
+    message: str
+    folder: Optional[str] = None
+
+
+def _user_from_handoff_token(db: Session, token: str) -> AppUser:
+    secret = (settings.mailer_handoff_secret or "").strip()
+    if not secret:
+        raise HTTPException(status_code=503, detail="MAILER_HANDOFF_SECRET not configured")
+    try:
+        data = jwt.decode(token, secret, algorithms=["HS256"])
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=401, detail="Invalid or expired handoff token") from exc
+    user_id = data.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Handoff missing user")
+    user = (
+        db.query(AppUser)
+        .filter(AppUser.id == int(user_id), AppUser.is_active.is_(True))
+        .first()
+    )
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+
+def _resolve_report_user(
+    db: Session,
+    *,
+    authorization: str | None,
+    handoff_token: str | None,
+) -> AppUser:
+    session_token = auth_module.extract_session_token(
+        authorization=authorization,
+        cookie_header=None,
+    )
+    if session_token:
+        user = auth_module.get_user_by_token(db, session_token)
+        if user:
+            return user
+    if handoff_token and handoff_token.strip():
+        return _user_from_handoff_token(db, handoff_token.strip())
+    raise HTTPException(status_code=401, detail="auth_token or handoff token required")
 
 
 @router.post("/session", response_model=MailerSessionResponse)
@@ -222,4 +308,166 @@ def create_mailer_handoff(
         expires_in_seconds=expires_in,
         recipient_count=len(leads),
         skipped_no_email=skipped,
+    )
+
+
+@router.post("/report-activity", response_model=MailerActivityReportResponse)
+def report_mailer_activity(
+    payload: MailerActivityReportRequest,
+    db: Session = Depends(get_db),
+    authorization: str | None = Header(default=None),
+):
+    """Record mailer SMTP sends into Sales Agent Email Activity / Insights."""
+    user = _resolve_report_user(
+        db,
+        authorization=authorization,
+        handoff_token=payload.token,
+    )
+
+    contact_id = None
+    company = (payload.company_name or "").strip() or None
+    if payload.buyer_id:
+        buyer = buyers_module.get_buyer(db, payload.buyer_id)
+        if buyer and not company:
+            company = buyer.company_name
+        contact = buyers_module.primary_contact_with_email(db, payload.buyer_id)
+        if contact:
+            contact_id = contact.id
+
+    mailbox = resolve_user_mailbox(user)
+    source_details = {
+        "channel": "email",
+        "source": "mailer",
+        "provider": "mailer",
+        "mailbox_email": mailbox.email if mailbox else None,
+    }
+
+    if payload.kind == "bulk_started":
+        selected = int(payload.selected_count or 0)
+        event = email_activity.record_event(
+            db,
+            event_type="bulk_started",
+            title=f"Bulk send started ({selected} leads)" if selected else "Bulk send started",
+            message="Sending via Vercel mailer. Per-message updates are summarized when the batch finishes.",
+            mailbox_user=user,
+            details={
+                **source_details,
+                "selected_count": selected,
+                "mode": "mailer",
+                "send_mode": "bulk",
+            },
+        )
+        return MailerActivityReportResponse(
+            recorded=True, event_id=event.id, event_type=event.event_type
+        )
+
+    if payload.kind == "bulk_finished":
+        sent_count = int(payload.sent_count or 0)
+        failed_count = int(payload.failed_count or 0)
+        skipped_count = int(payload.skipped_count or 0)
+        selected = int(payload.selected_count or (sent_count + failed_count + skipped_count))
+        if failed_count > 0 and sent_count > 0:
+            event_type = "bulk_partial"
+            title = f"Bulk send partial — {sent_count} sent, {failed_count} failed"
+        elif failed_count > 0 and sent_count == 0:
+            event_type = "send_failed"
+            title = f"Bulk send failed — 0 of {selected} sent"
+        else:
+            event_type = "bulk_completed"
+            title = f"Bulk send completed — {sent_count} sent"
+        event = email_activity.record_event(
+            db,
+            event_type=event_type,
+            title=title,
+            message=(
+                f"{sent_count} sent, {failed_count} failed, {skipped_count} skipped "
+                f"out of {selected} selected (Vercel mailer)."
+            ),
+            mailbox_user=user,
+            details={
+                **source_details,
+                "sent_count": sent_count,
+                "failed_count": failed_count,
+                "skipped_count": skipped_count,
+                "selected_count": selected,
+                "mode": "mailer",
+                "send_mode": "bulk",
+            },
+        )
+        return MailerActivityReportResponse(
+            recorded=True, event_id=event.id, event_type=event.event_type
+        )
+
+    # kind == send_result
+    if not payload.record_send:
+        return MailerActivityReportResponse(recorded=False)
+
+    mode = "bulk" if payload.send_mode == "bulk" else "individual"
+    to_email = (payload.to_email or "").strip() or None
+    subject = (payload.subject or "").strip() or None
+    company_name = company or (to_email.split("@")[-1] if to_email else "recipient")
+
+    if payload.ok:
+        send_result = {
+            "status": "sent",
+            "message": "Email sent via Vercel mailer",
+            "provider": "mailer",
+        }
+    else:
+        send_result = {
+            "status": "error",
+            "message": (payload.error_message or "Send failed via Vercel mailer").strip(),
+            "provider": "mailer",
+        }
+
+    event = email_activity.record_send_result(
+        db,
+        send_result=send_result,
+        company_name=company_name,
+        to_email=to_email,
+        buyer_id=payload.buyer_id,
+        contact_id=contact_id,
+        subject=subject,
+        send_mode=mode,
+        mailbox_user=user,
+    )
+    # Merge source marker into details without a second write path.
+    details = dict(event.details or {})
+    details.update(source_details)
+    details["send_mode"] = mode
+    event.details = details
+    db.commit()
+    db.refresh(event)
+    return MailerActivityReportResponse(
+        recorded=True, event_id=event.id, event_type=event.event_type
+    )
+
+
+@router.post("/append-sent", response_model=MailerAppendSentResponse)
+def append_mailer_sent_copy(
+    payload: MailerAppendSentRequest,
+    db: Session = Depends(get_db),
+    authorization: str | None = Header(default=None),
+):
+    """After Vercel SMTP succeeds, APPEND a copy into IMAP Sent (cPanel does not auto-save)."""
+    from modules import inbox as inbox_module
+
+    user = _resolve_report_user(
+        db,
+        authorization=authorization,
+        handoff_token=payload.token,
+    )
+    result = inbox_module.append_sent_copy(
+        user,
+        to=payload.to,
+        subject=payload.subject,
+        body=payload.body,
+        cc=payload.cc,
+        bcc=payload.bcc,
+        html=payload.html,
+    )
+    return MailerAppendSentResponse(
+        ok=bool(result.get("ok")),
+        message=str(result.get("message") or ""),
+        folder=result.get("folder"),
     )

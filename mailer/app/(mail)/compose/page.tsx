@@ -11,6 +11,10 @@ function ComposeInner() {
   const router = useRouter();
   const { token, user } = useAuth();
   const [to, setTo] = useState(params.get("to") || "");
+  const [cc, setCc] = useState(params.get("cc") || "");
+  const [bcc, setBcc] = useState(params.get("bcc") || "");
+  const [showCc, setShowCc] = useState(Boolean(params.get("cc")));
+  const [showBcc, setShowBcc] = useState(Boolean(params.get("bcc")));
   const [subject, setSubject] = useState(params.get("subject") || "");
   const [body, setBody] = useState(params.get("body") || "");
   const [templateId, setTemplateId] = useState("");
@@ -29,6 +33,7 @@ function ComposeInner() {
         body: JSON.stringify({
           id: draftId ? Number(draftId) : undefined,
           to_addrs: to,
+          cc_addrs: cc,
           subject,
           body,
         }),
@@ -60,6 +65,8 @@ function ComposeInner() {
         body: JSON.stringify({
           auth_token: auth,
           to: to.trim(),
+          cc: cc.trim() || undefined,
+          bcc: bcc.trim() || undefined,
           subject: subject.trim(),
           body,
           html: true,
@@ -100,8 +107,49 @@ function ComposeInner() {
         }}
       />
 
-      <label>To</label>
-      <input value={to} onChange={(e) => setTo(e.target.value)} placeholder="name@example.com" />
+      <div className="compose-to-row">
+        <label className="compose-to-label">To</label>
+        <div className="compose-cc-toggles">
+          {!showCc && (
+            <button type="button" className="linkish" onClick={() => setShowCc(true)}>
+              Cc
+            </button>
+          )}
+          {!showBcc && (
+            <button type="button" className="linkish" onClick={() => setShowBcc(true)}>
+              Bcc
+            </button>
+          )}
+        </div>
+      </div>
+      <input
+        value={to}
+        onChange={(e) => setTo(e.target.value)}
+        placeholder="name@example.com"
+      />
+
+      {showCc && (
+        <>
+          <label>Cc</label>
+          <input
+            value={cc}
+            onChange={(e) => setCc(e.target.value)}
+            placeholder="cc@example.com — comma-separated for multiple"
+          />
+        </>
+      )}
+
+      {showBcc && (
+        <>
+          <label>Bcc</label>
+          <input
+            value={bcc}
+            onChange={(e) => setBcc(e.target.value)}
+            placeholder="bcc@example.com — comma-separated for multiple"
+          />
+        </>
+      )}
+
       <label>Subject</label>
       <input value={subject} onChange={(e) => setSubject(e.target.value)} />
       <label>Body</label>

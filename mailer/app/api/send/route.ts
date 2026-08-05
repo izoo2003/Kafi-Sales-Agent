@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyHandoff } from "@/lib/handoff";
+import { reportMailerActivity } from "@/lib/reportActivity";
 import { sendSmtp } from "@/lib/smtp";
+import { appendMailerSentCopy } from "@/lib/syncSent";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -39,78 +41,132 @@ async function resolveUsernameFromSession(
 
 export async function POST(req: NextRequest) {
   try {
-  let body: {
-    token?: string;
-    auth_token?: string;
-    to?: string;
-    subject?: string;
-    body?: string;
-    html?: boolean;
-  };
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+    let body: {
+      token?: string;
+      auth_token?: string;
+      to?: string;
+      cc?: string;
+      bcc?: string;
+      subject?: string;
+      body?: string;
+      html?: boolean;
+      buyer_id?: number;
+      company_name?: string;
+      send_mode?: "individual" | "bulk";
+      /** When false, skip Email Activity per-message row (bulk summary only). */
+      record_activity?: boolean;
+    };
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+    }
 
-  const to = (body.to || "").trim();
-  const subject = (body.subject || "").trim();
-  const text = (body.body || "").trim();
-  if (!to.includes("@") || !subject || !text) {
-    return NextResponse.json(
-      { error: "to, subject, and body are required" },
-      { status: 400 },
-    );
-  }
-
-  let username = "";
-  let mailboxEmail: string | undefined;
-
-  const handoffToken = (body.token || "").trim();
-  const authToken = (body.auth_token || "").trim();
-
-  if (handoffToken) {
-    const secret = process.env.MAILER_HANDOFF_SECRET || "";
-    if (!secret) {
+    const to = (body.to || "").trim();
+    const subject = (body.subject || "").trim();
+    const text = (body.body || "").trim();
+    if (!to.includes("@") || !subject || !text) {
       return NextResponse.json(
-        { error: "MAILER_HANDOFF_SECRET not configured" },
-        { status: 500 },
+        { error: "to, subject, and body are required" },
+        { status: 400 },
       );
     }
-    try {
-      const handoff = await verifyHandoff(handoffToken, secret);
-      username = handoff.username;
-      mailboxEmail = handoff.mailbox_email;
-    } catch {
-      return NextResponse.json({ error: "Invalid or expired token" }, { status: 401 });
-    }
-  } else if (authToken) {
-    const user = await resolveUsernameFromSession(authToken);
-    if (!user) {
-      return NextResponse.json({ error: "Invalid session" }, { status: 401 });
-    }
-    username = user.username;
-    mailboxEmail = user.mailbox_email || undefined;
-  } else {
-    return NextResponse.json(
-      { error: "auth_token or token required" },
-      { status: 401 },
-    );
-  }
 
-  const sent = await sendSmtp({
-    username,
-    mailboxEmail,
-    to,
-    subject,
-    body: text,
-    html: body.html !== false,
-  });
+    let username = "";
+    let mailboxEmail: string | undefined;
 
-  if (!sent.ok) {
-    return NextResponse.json({ ok: false, error: sent.message }, { status: 502 });
-  }
-  return NextResponse.json({ ok: true, message: sent.message });
+    const handoffToken = (body.token || "").trim();
+    const authToken = (body.auth_token || "").trim();
+
+    if (handoffToken) {
+      const secret = process.env.MAILER_HANDOFF_SECRET || "";
+      if (!secret) {
+        return NextResponse.json(
+          { error: "MAILER_HANDOFF_SECRET not configured" },
+          { status: 500 },
+        );
+      }
+      try {
+        const handoff = await verifyHandoff(handoffToken, secret);
+        username = handoff.username;
+        mailboxEmail = handoff.mailbox_email;
+      } catch {
+        return NextResponse.json({ error: "Invalid or expired token" }, { status: 401 });
+      }
+    } else if (authToken) {
+      const user = await resolveUsernameFromSession(authToken);
+      if (!user) {
+        return NextResponse.json({ error: "Invalid session" }, { status: 401 });
+      }
+      username = user.username;
+      mailboxEmail = user.mailbox_email || undefined;
+    } else {
+      return NextResponse.json(
+        { error: "auth_token or token required" },
+        { status: 401 },
+      );
+    }
+
+    const sendMode = body.send_mode === "bulk" ? "bulk" : "individual";
+    const recordActivity = body.record_activity !== false;
+    const buyerId =
+      typeof body.buyer_id === "number" && Number.isFinite(body.buyer_id)
+        ? body.buyer_id
+        : undefined;
+    const companyName = (body.company_name || "").trim() || undefined;
+
+    const cc = (body.cc || "").trim() || undefined;
+    const bcc = (body.bcc || "").trim() || undefined;
+    const asHtml = body.html !== false;
+
+    const sent = await sendSmtp({
+      username,
+      mailboxEmail,
+      to,
+      cc,
+      bcc,
+      subject,
+      body: text,
+      html: asHtml,
+    });
+
+    if (recordActivity) {
+      await reportMailerActivity({
+        token: handoffToken || undefined,
+        authToken: authToken || undefined,
+        kind: "send_result",
+        ok: sent.ok,
+        to_email: to,
+        subject,
+        company_name: companyName,
+        buyer_id: buyerId,
+        error_message: sent.ok ? undefined : sent.message,
+        send_mode: sendMode,
+        record_send: true,
+      });
+    }
+
+    if (!sent.ok) {
+      return NextResponse.json({ ok: false, error: sent.message }, { status: 502 });
+    }
+
+    // cPanel SMTP does not auto-save to Sent — APPEND via Railway IMAP.
+    const savedToSent = await appendMailerSentCopy({
+      token: handoffToken || undefined,
+      authToken: authToken || undefined,
+      to,
+      cc,
+      bcc,
+      subject,
+      body: text,
+      html: asHtml,
+    });
+
+    return NextResponse.json({
+      ok: true,
+      message: sent.message,
+      saved_to_sent: savedToSent,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json(

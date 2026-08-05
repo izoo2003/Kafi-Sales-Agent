@@ -636,6 +636,20 @@ class OutlookClient:
         from_email = msg.from_
         to_addrs = [addr.email for addr in (msg.to_values or []) if addr.email]
         cc_addrs = [addr.email for addr in (msg.cc_values or []) if addr.email]
+        # BCC is usually stripped for recipients; still expose when the mailbox
+        # retains the header (common on Sent items).
+        bcc_addrs = [
+            addr.email
+            for addr in (getattr(msg, "bcc_values", None) or [])
+            if getattr(addr, "email", None)
+        ]
+        if not bcc_addrs:
+            bcc_raw = self._header(msg, "Bcc", "BCC") or ""
+            bcc_addrs = [
+                part.strip()
+                for part in bcc_raw.replace(";", ",").split(",")
+                if "@" in part
+            ]
         return {
             "uid": str(msg.uid),
             "folder": folder,
@@ -644,6 +658,7 @@ class OutlookClient:
             "from_name": from_name or None,
             "to": to_addrs,
             "cc": cc_addrs,
+            "bcc": bcc_addrs,
             "date": as_utc(msg.date),
             "preview": preview[:240],
             "unread": "\\Seen" not in msg.flags,
@@ -1266,6 +1281,15 @@ class OutlookClient:
                     mailbox.logout()
                 except Exception:  # noqa: BLE001
                     pass
+
+    def append_outbound_to_sent(self, raw_message: bytes) -> bool:
+        """Public best-effort APPEND for mailer / Resend paths. Clears list caches."""
+        try:
+            self._append_to_sent(raw_message)
+            _invalidate_mail_caches()
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
     def send_reply(
         self,

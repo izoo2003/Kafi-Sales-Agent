@@ -425,6 +425,47 @@ def _quote_original(original: dict[str, Any]) -> str:
     return "\n".join([header, *quoted_lines])
 
 
+def _log_email_activity(
+    user: AppUser,
+    *,
+    send_result: dict[str, Any] | None,
+    to_email: str | None,
+    subject: str | None,
+    send_mode: str = "individual",
+    source: str = "inbox",
+) -> None:
+    """Write Email Activity for Sales Agent Mail (compose / reply). Best-effort."""
+    from modules import email_activity
+    from db.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        to_addr = (to_email or "").strip() or None
+        company = (to_addr.split("@")[-1] if to_addr and "@" in to_addr else None) or "recipient"
+        event = email_activity.record_send_result(
+            db,
+            send_result=send_result
+            or {"status": "error", "message": "Send failed", "provider": "smtp"},
+            company_name=company,
+            to_email=to_addr,
+            subject=(subject or "").strip() or None,
+            send_mode=send_mode,
+            mailbox_user=user,
+        )
+        details = dict(event.details or {})
+        details["channel"] = "email"
+        details["source"] = source
+        event.details = details
+        db.commit()
+    except Exception:  # noqa: BLE001
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        db.close()
+
+
 def reply(
     user: AppUser,
     uid: str,
@@ -478,6 +519,20 @@ def reply(
                 outlook_client.mark_read(uid, True, folder=folder)
             except Exception:  # noqa: BLE001
                 pass
+            result = {
+                **result,
+                "to": recipient,
+                "subject": reply_subject,
+                "from": account.email,
+            }
+
+        _log_email_activity(
+            user,
+            send_result=result,
+            to_email=str(recipient or ""),
+            subject=reply_subject,
+            source="inbox_reply",
+        )
         return result
 
 
@@ -553,4 +608,89 @@ def compose(
                 "subject": subject_clean,
                 "from": account.email,
             }
+        else:
+            result = {
+                **(result or {}),
+                "to": recipient,
+                "subject": subject_clean,
+            }
+
+        _log_email_activity(
+            user,
+            send_result=result,
+            to_email=recipient,
+            subject=subject_clean,
+            source="inbox_compose",
+        )
         return result
+
+
+def append_sent_copy(
+    user: AppUser,
+    *,
+    to: str,
+    subject: str,
+    body: str,
+    cc: str | None = None,
+    bcc: str | None = None,
+    html: bool = True,
+) -> dict[str, Any]:
+    """IMAP APPEND a Sent copy for a message already delivered via Vercel SMTP.
+
+    cPanel SMTP does not auto-save to Sent — the mailer calls this after sendMail.
+    """
+    from email import utils as email_utils
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    account = resolve_user_mailbox(user)
+    if not account:
+        return {
+            "ok": False,
+            "message": "No mailbox configured for your account.",
+        }
+
+    recipient = (to or "").strip()
+    if not recipient or "@" not in recipient:
+        return {"ok": False, "message": "Valid To address required"}
+    subject_clean = (subject or "").strip() or "(no subject)"
+    body_clean = (body or "").rstrip()
+    if not body_clean:
+        return {"ok": False, "message": "Body cannot be empty"}
+
+    from_addr = account.email
+    display_name = (account.display_name or "").strip()
+    message = MIMEMultipart("alternative")
+    message["From"] = f"{display_name} <{from_addr}>" if display_name else from_addr
+    message["To"] = recipient
+    cc_clean = (cc or "").strip()
+    if cc_clean:
+        message["Cc"] = cc_clean
+    bcc_clean = (bcc or "").strip()
+    if bcc_clean:
+        message["Bcc"] = bcc_clean
+    message["Subject"] = subject_clean
+    message["Date"] = email_utils.formatdate(localtime=True)
+    message["Message-ID"] = email_utils.make_msgid(domain=from_addr.split("@")[-1])
+    message["Reply-To"] = from_addr
+    message.attach(MIMEText(body_clean, "plain", "utf-8"))
+    if html:
+        message.attach(
+            MIMEText(body_clean.replace("\n", "<br/>"), "html", "utf-8")
+        )
+
+    raw = (
+        message.as_bytes()
+        if hasattr(message, "as_bytes")
+        else message.as_string().encode("utf-8")
+    )
+
+    with use_mailbox(account, user_id=user.id):
+        ok = outlook_client.append_outbound_to_sent(raw)
+
+    if not ok:
+        return {
+            "ok": False,
+            "message": "Could not append to IMAP Sent folder (folder missing or IMAP error).",
+        }
+    return {"ok": True, "message": "Saved to Sent", "folder": "sent"}

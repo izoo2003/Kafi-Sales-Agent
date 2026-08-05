@@ -7,6 +7,7 @@ import { apiFetch } from "@/lib/api";
 type Draft = {
   id: number;
   to_addrs: string;
+  cc_addrs?: string;
   subject: string;
   body: string;
   updated_at?: string;
@@ -50,11 +51,16 @@ export default function DraftsPage() {
               <button
                 type="button"
                 className="btn"
-                onClick={() =>
-                  router.push(
-                    `/compose?draft_id=${d.id}&to=${encodeURIComponent(d.to_addrs || "")}&subject=${encodeURIComponent(d.subject || "")}&body=${encodeURIComponent(d.body || "")}`,
-                  )
-                }
+                onClick={() => {
+                  const q = new URLSearchParams({
+                    draft_id: String(d.id),
+                    to: d.to_addrs || "",
+                    subject: d.subject || "",
+                    body: d.body || "",
+                  });
+                  if (d.cc_addrs) q.set("cc", d.cc_addrs);
+                  router.push(`/compose?${q.toString()}`);
+                }}
               >
                 Open
               </button>

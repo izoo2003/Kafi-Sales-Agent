@@ -19,6 +19,7 @@ export function EmailTemplatesPage({ onError, onCountChange }: EmailTemplatesPag
   const [showEditor, setShowEditor] = useState(false);
   const [templateForm, setTemplateForm] = useState(emptyTemplateForm());
   const [saving, setSaving] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
   const refreshTemplates = useCallback(async () => {
@@ -58,6 +59,42 @@ export function EmailTemplatesPage({ onError, onCountChange }: EmailTemplatesPag
     setTemplateForm(emptyTemplateForm());
     setShowEditor(true);
     setNotice(null);
+  }
+
+  function startAiCreate() {
+    setEditingId(null);
+    setTemplateForm({
+      name: "",
+      subject: "",
+      body: "",
+      attachments: [],
+    });
+    setShowEditor(true);
+    setNotice("Enter a template title, then click Generate with AI.");
+  }
+
+  async function handleGenerateWithAi() {
+    const title = templateForm.name.trim();
+    if (title.length < 2) {
+      onError("Enter a template title / name first (at least 2 characters).");
+      return;
+    }
+    setGenerating(true);
+    setNotice(null);
+    try {
+      const draft = await client.generateEmailTemplateFromTitle(title);
+      setTemplateForm((prev) => ({
+        ...prev,
+        name: draft.name || title,
+        subject: draft.subject,
+        body: draft.body,
+      }));
+      setNotice("AI draft ready — review and edit before saving.");
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "AI template generation failed");
+    } finally {
+      setGenerating(false);
+    }
   }
 
   function startEdit(template: EmailTemplate) {
@@ -125,13 +162,22 @@ export function EmailTemplatesPage({ onError, onCountChange }: EmailTemplatesPag
             when you send from the Leads table.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={startCreate}
-          className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium"
-        >
-          + New template
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={startAiCreate}
+            className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-sm font-medium"
+          >
+            AI create
+          </button>
+          <button
+            type="button"
+            onClick={startCreate}
+            className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium"
+          >
+            + New template
+          </button>
+        </div>
       </div>
 
       {notice && (
@@ -233,14 +279,29 @@ export function EmailTemplatesPage({ onError, onCountChange }: EmailTemplatesPag
                 {editingId ? "Edit template" : "New template"}
               </h3>
               <label className="block">
-                <span className="text-sm text-slate-400">Name</span>
-                <input
-                  required
-                  value={templateForm.name}
-                  onChange={(e) => setTemplateForm((p) => ({ ...p, name: e.target.value }))}
-                  placeholder="e.g. Kafi Introduction"
-                  className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm"
-                />
+                <span className="text-sm text-slate-400">Name / title</span>
+                <div className="mt-1 flex flex-col sm:flex-row gap-2">
+                  <input
+                    required
+                    value={templateForm.name}
+                    onChange={(e) => setTemplateForm((p) => ({ ...p, name: e.target.value }))}
+                    placeholder="e.g. Follow-up after Gulfood meeting"
+                    className="w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleGenerateWithAi()}
+                    disabled={generating || templateForm.name.trim().length < 2}
+                    className="shrink-0 px-3 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-sm font-medium disabled:opacity-50"
+                    title="Draft subject and body from this title with Gemini"
+                  >
+                    {generating ? "Generating…" : "Generate with AI"}
+                  </button>
+                </div>
+                <p className="text-xs text-slate-500 mt-1.5">
+                  Write a short title describing the email, then Generate with AI fills subject and
+                  body (with placeholders). Edit before saving.
+                </p>
               </label>
               <label className="block">
                 <span className="text-sm text-slate-400">Subject</span>
@@ -310,13 +371,22 @@ export function EmailTemplatesPage({ onError, onCountChange }: EmailTemplatesPag
                 Templates created here appear in the compose window when sending email from the
                 Leads table — preview there, then send.
               </p>
-              <button
-                type="button"
-                onClick={startCreate}
-                className="mt-4 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium"
-              >
-                + New template
-              </button>
+              <div className="mt-4 flex flex-wrap gap-2 justify-center">
+                <button
+                  type="button"
+                  onClick={startAiCreate}
+                  className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-sm font-medium"
+                >
+                  AI create
+                </button>
+                <button
+                  type="button"
+                  onClick={startCreate}
+                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium"
+                >
+                  + New template
+                </button>
+              </div>
             </div>
           )}
         </div>

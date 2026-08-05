@@ -125,7 +125,8 @@ export function EmailActivityPage({
   const [loading, setLoading] = useState(true);
   const [catalog, setCatalog] = useState<EmailActivityCatalogItem[]>([]);
   const [showCatalog, setShowCatalog] = useState(false);
-  const [showInsights, setShowInsights] = useState(false);
+  // Insights open by default for email so mailer + in-app sends are easy to review.
+  const [showInsights, setShowInsights] = useState(channel === "email");
   const [insightsPeriod, setInsightsPeriod] = useState<InsightsPeriod>(30);
   const [insights, setInsights] = useState<EmailActivityInsights | null>(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
@@ -178,6 +179,7 @@ export function EmailActivityPage({
 
   useEffect(() => {
     setPage(1);
+    setShowInsights(channel === "email");
   }, [channel]);
 
   useEffect(() => {
@@ -226,8 +228,8 @@ export function EmailActivityPage({
                 ? "Outbound WhatsApp notifications for all users — sent, failed, and bulk batches."
                 : "Your outbound WhatsApp notifications — sent, failed, and bulk batches."
               : isAdmin
-                ? "Outbound email notifications for all users — sent, failed, bulk batches, and engagement."
-                : "Your outbound email notifications — sent, failed, bulk batches, and engagement. Other users’ activity is hidden."}
+                ? "Outbound email for all users — compose, bulk mailer, and in-app sends. Use Insights for sent / failed / opened (individual vs bulk)."
+                : "Your outbound email — compose, bulk mailer, and in-app sends. Use Insights for sent / failed / opened (individual vs bulk)."}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -407,12 +409,18 @@ export function EmailActivityPage({
       )}
 
       {loading && rows.length === 0 ? (
-        <p className="text-slate-400">Loading email activity…</p>
+        <p className="text-slate-400">
+          {isWhatsApp ? "Loading WhatsApp activity…" : "Loading email activity…"}
+        </p>
       ) : rows.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-700 p-8 text-center">
-          <p className="text-slate-300 font-medium">No email activity yet</p>
+          <p className="text-slate-300 font-medium">
+            {isWhatsApp ? "No WhatsApp activity yet" : "No email activity yet"}
+          </p>
           <p className="text-sm text-slate-500 mt-2">
-            Send a manual or template email from the Leads table — results show up here in real time.
+            {isWhatsApp
+              ? "Send a WhatsApp template campaign or reply — results show up here."
+              : "Send from Leads (Send emails / mailer) or Mail compose — successful and failed sends appear here and in Insights."}
           </p>
         </div>
       ) : (

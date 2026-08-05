@@ -4,6 +4,8 @@ from sqlalchemy.orm import Session
 from api.deps import get_current_user, get_db
 from api.schemas import (
     EmailTemplateCreate,
+    EmailTemplateGenerateRequest,
+    EmailTemplateGenerateResponse,
     EmailTemplatePreviewRead,
     EmailTemplateRead,
     EmailTemplateUpdate,
@@ -72,6 +74,30 @@ def list_placeholders():
         "placeholders": SUPPORTED_PLACEHOLDERS,
         "usage": "Use [company_name], [contact_name], etc. in subject and body.",
     }
+
+
+@router.post("/generate-from-title", response_model=EmailTemplateGenerateResponse)
+def generate_email_template_from_title(
+    payload: EmailTemplateGenerateRequest,
+    user: AppUser = Depends(get_current_user),
+):
+    """Draft subject + body from a short template title using Gemini."""
+    _ = user
+    if not templates_module.template_llm_enabled():
+        raise HTTPException(
+            503,
+            "AI template creation is not configured. Set EMAIL_TEMPLATE_GEMINI_API_KEY "
+            "(or GEMINI_API_KEY) on the backend.",
+        )
+    try:
+        result = templates_module.generate_template_from_title(payload.title)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"AI template generation failed: {exc}") from exc
+    return EmailTemplateGenerateResponse(**result)
 
 
 @router.get("/{template_id}", response_model=EmailTemplateRead)

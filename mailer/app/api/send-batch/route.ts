@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyHandoff } from "@/lib/handoff";
+import { reportMailerActivity } from "@/lib/reportActivity";
 import { sendSmtp, sleep } from "@/lib/smtp";
+import { appendMailerSentCopy } from "@/lib/syncSent";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -79,6 +81,16 @@ export async function POST(req: NextRequest) {
       Math.round((body.message_delay_seconds ?? 2) * 1000),
     );
 
+    const isBulk = leads.length > 1;
+    if (isBulk) {
+      await reportMailerActivity({
+        token,
+        kind: "bulk_started",
+        selected_count: leads.length,
+        send_mode: "bulk",
+      });
+    }
+
     const results: Array<{
       buyer_id: number;
       email: string;
@@ -105,12 +117,46 @@ export async function POST(req: NextRequest) {
           ok: sent.ok,
           message: sent.message,
         });
+        // Match in-app bulk: only per-message activity when a single recipient.
+        await reportMailerActivity({
+          token,
+          kind: "send_result",
+          ok: sent.ok,
+          to_email: lead.contact_email,
+          subject,
+          company_name: lead.company_name,
+          buyer_id: lead.buyer_id,
+          error_message: sent.ok ? undefined : sent.message,
+          send_mode: isBulk ? "bulk" : "individual",
+          record_send: !isBulk,
+        });
+        if (sent.ok) {
+          await appendMailerSentCopy({
+            token,
+            to: lead.contact_email,
+            subject,
+            body: text,
+            html: true,
+          });
+        }
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
         results.push({
           buyer_id: lead.buyer_id,
           email: lead.contact_email,
           ok: false,
-          message: err instanceof Error ? err.message : String(err),
+          message,
+        });
+        await reportMailerActivity({
+          token,
+          kind: "send_result",
+          ok: false,
+          to_email: lead.contact_email,
+          company_name: lead.company_name,
+          buyer_id: lead.buyer_id,
+          error_message: message,
+          send_mode: isBulk ? "bulk" : "individual",
+          record_send: !isBulk,
         });
       }
       if (i < leads.length - 1 && delayMs > 0) {
@@ -120,6 +166,16 @@ export async function POST(req: NextRequest) {
 
     const sent = results.filter((r) => r.ok).length;
     const failed = results.length - sent;
+    if (isBulk) {
+      await reportMailerActivity({
+        token,
+        kind: "bulk_finished",
+        selected_count: leads.length,
+        sent_count: sent,
+        failed_count: failed,
+        send_mode: "bulk",
+      });
+    }
     return NextResponse.json({ sent, failed, results });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
